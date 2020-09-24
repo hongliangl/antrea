@@ -28,6 +28,7 @@ NUM_WORKERS=2
 SUBNETS=""
 ENCAP_MODE=""
 PROXY=true
+KUBE_PROXY_MODE="iptables"
 PROMETHEUS=false
 
 THIS_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
@@ -49,6 +50,7 @@ where:
   --pod-cidr: specifies pod cidr used in kind cluster, default is $POD_CIDR
   --encap-mode: inter-node pod traffic encap mode, default is encap
   --no-proxy: disable Antrea proxy
+  --no-kube-proxy: disable Kube proxy
   --antrea-cni: specifies install Antrea CNI in kind cluster, default is true
   --prometheus: create RBAC resources for Prometheus, default is false
   --num-workers: specifies number of worker nodes in kind cluster, default is $NUM_WORKERS
@@ -244,6 +246,7 @@ networking:
   disableDefaultCNI: true
   podSubnet: $POD_CIDR
   ipFamily: $IP_FAMILY
+  kubeProxyMode: $KUBE_PROXY_MODE
 nodes:
 - role: control-plane
 EOF
@@ -338,6 +341,10 @@ while [[ $# -gt 0 ]]
       ;;
     --no-proxy)
       PROXY=false
+      shift
+      ;;
+    --no-kube-proxy)
+      KUBE_PROXY_MODE="none"
       shift
       ;;
     --prometheus)
