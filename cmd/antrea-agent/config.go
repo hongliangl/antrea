@@ -148,4 +148,7 @@ type AgentConfig struct {
 	TLSCipherSuites string `yaml:"tlsCipherSuites,omitempty"`
 	// TLS min version.
 	TLSMinVersion string `yaml:"tlsMinVersion,omitempty"`
+	// A string slice of values which specifies the host IPv4/IPv6 addresses for NodePorts. Values may be valid IP blocks.
+	// (e.g. 1.2.3.0/24, 1.2.3.4/32). An empty string slice is meant to select all host node IPv4/IPv6 addresses.
+	NodePortAddresses []string `yaml:"nodePortAddresses,omitempty"`
 }

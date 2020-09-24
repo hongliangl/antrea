@@ -37,6 +37,7 @@ example, to enable `AntreaProxy` on Linux, edit the Agent configuration in the
 | ----------------------- | ------------------ | ------- | ----- | ------------- | ------------ | ---------- | ------------------ | ----- |
 | `AntreaProxy`           | Agent              | `true`  | Beta  | v0.8          | v0.11        | N/A        | Yes                | Must be enabled for Windows. |
 | `EndpointSlice`         | Agent              | `false` | Alpha | v0.13.0       | N/A          | N/A        | Yes                |       |
+| `AntreaProxyFull`       | Agent              | `false` | Alpha | v1.3          | N/A          | N/A        | Yes                |       |
 | `AntreaPolicy`          | Agent + Controller | `true`  | Beta  | v0.8          | v1.0         | N/A        | No                 | Agent side config required from v0.9.0+. |
 | `Traceflow`             | Agent + Controller | `true`  | Beta  | v0.8          | v0.11        | N/A        | Yes                |       |
 | `FlowExporter`          | Agent              | `false` | Alpha | v0.9          | N/A          | N/A        | Yes                |       |
@@ -80,6 +81,15 @@ and will not implement Cluster IP functionality as expected.
 
 When using the OVS built-in kernel module (which is the most common case), your
 kernel version must be >= 4.6 (as opposed to >= 4.4 without this feature).
+
+### AntreaProxyFull
+
+`AntreaProxyFull` enables full Service support in AntreaProxy. After enabling this
+feature, all type of Services can be accessed from outside the cluster.
+
+#### Requirements for this Feature
+
+None
 
 ### AntreaPolicy
 

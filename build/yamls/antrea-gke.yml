@@ -3673,6 +3673,10 @@ data:
     # this flag will not take effect.
     #  EndpointSlice: false
 
+    # Enable full Service support in AntreaProxy in antrea-agent. All type of Services can be
+    # accessed from outside the cluster.
+    #  AntreaProxyFull: false
+
     # Enable traceflow which provides packet tracing feature to diagnose network issue.
     #  Traceflow: true
 
@@ -3805,6 +3809,10 @@ data:
 
     # TLS min version from: VersionTLS10, VersionTLS11, VersionTLS12, VersionTLS13.
     #tlsMinVersion:
+
+    # A string slice of values which specifies the host node IPv4/IPv6 addresses for NodePort. Values can be valid IP blocks.
+    # (e.g. 1.2.3.0/24, 1.2.3.4/32). An empty string slice is meant to select all host node IPv4/IPv6 addresses.
+    #nodePortAddresses: []
   antrea-cni.conflist: |
     {
         "cniVersion":"0.3.0",
@@ -3887,7 +3895,7 @@ metadata:
   annotations: {}
   labels:
     app: antrea
-  name: antrea-config-246k7dkb5c
+  name: antrea-config-8bf5gc4d6h
   namespace: kube-system
 ---
 apiVersion: v1
@@ -3958,7 +3966,7 @@ spec:
             fieldRef:
               fieldPath: spec.serviceAccountName
         - name: ANTREA_CONFIG_MAP_NAME
-          value: antrea-config-246k7dkb5c
+          value: antrea-config-8bf5gc4d6h
         image: projects.registry.vmware.com/antrea/antrea-ubuntu:latest
         imagePullPolicy: IfNotPresent
         livenessProbe:
@@ -4009,7 +4017,7 @@ spec:
         key: node-role.kubernetes.io/master
       volumes:
       - configMap:
-          name: antrea-config-246k7dkb5c
+          name: antrea-config-8bf5gc4d6h
         name: antrea-config
       - name: antrea-controller-tls
         secret:
@@ -4308,7 +4316,7 @@ spec:
           path: /home/kubernetes/bin
         name: host-cni-bin
       - configMap:
-          name: antrea-config-246k7dkb5c
+          name: antrea-config-8bf5gc4d6h
         name: antrea-config
       - hostPath:
           path: /etc/cni/net.d

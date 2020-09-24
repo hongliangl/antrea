@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+
+	netutils "k8s.io/utils/net"
 )
 
 const (
@@ -148,4 +150,137 @@ func GetIPWithFamily(ips []net.IP, addrFamily uint8) (net.IP, error) {
 		}
 		return nil, errors.New("no IP found with IPv4 AddressFamily")
 	}
+}
+
+// GetAvailableNodePortIPs gets available NodePort IP addresses with config.
+func GetAvailableNodePortIPs(nodePortIPsFromConfig []string, gateway string) (map[int][]net.IP, map[int][]net.IP, error) {
+	var nodePortIPNets []*net.IPNet
+	nodePortIPMap := make(map[int][]net.IP)
+	nodePortIPv6Map := make(map[int][]net.IP)
+	_, ipv6LinkLocalNet, _ := net.ParseCIDR("fe80::/64")
+
+	// Convert every NodePort address to IPNet.
+	for _, nodePortIP := range nodePortIPsFromConfig {
+		_, ipNet, _ := net.ParseCIDR(nodePortIP)
+		nodePortIPNets = append(nodePortIPNets, ipNet)
+	}
+
+	// Get all interfaces.
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, itf := range interfaces {
+		// Get all IPs of every interface
+		addrs, err := itf.Addrs()
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, addr := range addrs {
+			ip, _, _ := net.ParseCIDR(addr.String())
+			if ipv6LinkLocalNet.Contains(ip) {
+				continue // Skip IPv6 link local address
+			}
+
+			// If the NodePort IPNet that is converted from config contains the current IP address, then the current IP
+			// address from config is available.
+			var contains bool
+			for _, nodePortIPNet := range nodePortIPNets {
+				if nodePortIPNet.Contains(ip) {
+					contains = true
+					break
+				}
+			}
+			// If option 'nodePortAddresses' is not specified in config, every IPv4/IPv6 address will be NodePort IP address.
+			// An interface may has more than one IPv4/IPv6 addresses for NodePort.
+			// Interface index will be used to generate Linux TC filter chain and handle ID.
+			if len(nodePortIPNets) == 0 || contains {
+				if netutils.IsIPv6(ip) {
+					nodePortIPv6Map[itf.Index] = append(nodePortIPv6Map[itf.Index], ip)
+				} else {
+					nodePortIPMap[itf.Index] = append(nodePortIPMap[itf.Index], ip)
+				}
+			}
+		}
+	}
+	// Gateway IP addresses can't be as NodePort IP addresses.
+	gatewayItf, err := net.InterfaceByName(gateway)
+	if err != nil {
+		return nil, nil, err
+	}
+	delete(nodePortIPMap, gatewayItf.Index)
+	delete(nodePortIPv6Map, gatewayItf.Index)
+
+	if len(nodePortIPMap) == 0 {
+		return nil, nil, fmt.Errorf("no qualified NodePort IPv4 addresses was found")
+	}
+	if len(nodePortIPv6Map) == 0 {
+		return nil, nil, fmt.Errorf("no qualified NodePort IPv6 addresses was found")
+	}
+	return nodePortIPMap, nodePortIPv6Map, nil
+}
+
+// ExtendCIDRWithIP is used for extending an IPNet with an IP.
+func ExtendCIDRWithIP(ipNet *net.IPNet, ip net.IP) (*net.IPNet, error) {
+	cpl := commonPrefixLen(ipNet.IP, ip)
+	if cpl == 0 {
+		return nil, fmt.Errorf("invalid common prefix length")
+	}
+	_, newIpNet, err := net.ParseCIDR(fmt.Sprintf("%s/%d", ipNet.IP.String(), cpl))
+	if err != nil {
+		return nil, err
+	}
+	return newIpNet, nil
+}
+
+/*
+This is copied from net/addrselect.go as this function cannot be used outside of standard lib net.
+Modifies:
+- Replace argument type IP with type net.IP.
+*/
+func commonPrefixLen(a, b net.IP) (cpl int) {
+	if a4 := a.To4(); a4 != nil {
+		a = a4
+	}
+	if b4 := b.To4(); b4 != nil {
+		b = b4
+	}
+	if len(a) != len(b) {
+		return 0
+	}
+	// If IPv6, only up to the prefix (first 64 bits)
+	if len(a) > 8 {
+		a = a[:8]
+		b = b[:8]
+	}
+	for len(a) > 0 {
+		if a[0] == b[0] {
+			cpl += 8
+			a = a[1:]
+			b = b[1:]
+			continue
+		}
+		bits := 8
+		ab, bb := a[0], b[0]
+		for {
+			ab >>= 1
+			bb >>= 1
+			bits--
+			if ab == bb {
+				cpl += bits
+				return
+			}
+		}
+	}
+	return
+}
+
+func GetNameByIndex(ifIndex int) string {
+	dev, _ := net.InterfaceByIndex(ifIndex)
+	return dev.Name
+}
+
+func GetIndexByName(name string) int {
+	dev, _ := net.InterfaceByName(name)
+	return dev.Index
 }

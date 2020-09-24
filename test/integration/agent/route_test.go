@@ -541,7 +541,7 @@ func TestRouteTablePolicyOnly(t *testing.T) {
 
 	routeClient, err := route.NewClient(serviceCIDR, &config.NetworkConfig{TrafficEncapMode: config.TrafficEncapModeNetworkPolicyOnly}, false)
 	assert.NoError(t, err)
-	err = routeClient.Initialize(nodeConfig, func() {})
+	routeClient.Initialize(nodeConfig, func() {})
 	assert.NoError(t, err)
 	// Verify gw IP
 	gwName := nodeConfig.GatewayConfig.Name

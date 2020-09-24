@@ -46,6 +46,11 @@ const (
 	// Service traffic.
 	AntreaProxy featuregate.Feature = "AntreaProxy"
 
+	// alpha: v1.3
+	// Enable full Service support in AntreaProxy in antrea-agent. All type of Services can be
+	// accessed from outside the cluster.
+	AntreaProxyFull featuregate.Feature = "AntreaProxyFull"
+
 	// alpha: v0.8
 	// beta: v0.11
 	// Allows to trace path from a generated packet.
@@ -85,6 +90,7 @@ var (
 		AntreaProxy:        {Default: true, PreRelease: featuregate.Beta},
 		Egress:             {Default: false, PreRelease: featuregate.Alpha},
 		EndpointSlice:      {Default: false, PreRelease: featuregate.Alpha},
+		AntreaProxyFull:    {Default: false, PreRelease: featuregate.Alpha},
 		Traceflow:          {Default: true, PreRelease: featuregate.Beta},
 		FlowExporter:       {Default: false, PreRelease: featuregate.Alpha},
 		NetworkPolicyStats: {Default: true, PreRelease: featuregate.Beta},
@@ -102,8 +108,9 @@ var (
 	// can have different FeatureSpecs between Linux and Windows, we should
 	// still define a separate defaultAntreaFeatureGates map for Windows.
 	unsupportedFeaturesOnWindows = map[featuregate.Feature]struct{}{
-		NodePortLocal: {},
-		Egress:        {},
+		AntreaProxyFull: {},
+		NodePortLocal:   {},
+		Egress:          {},
 	}
 )
 

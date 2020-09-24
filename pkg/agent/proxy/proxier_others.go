@@ -16,24 +16,79 @@
 package proxy
 
 import (
+	"fmt"
 	"net"
 
 	binding "antrea.io/antrea/pkg/ovs/openflow"
 )
 
-// installLoadBalancerServiceFlows install OpenFlow entries for LoadBalancer Service.
-// The rules for traffic from local Pod to LoadBalancer Service are same with rules for Cluster Service.
-// For the LoadBalancer Service traffic from outside, kube-proxy will handle it.
-func (p *proxier) installLoadBalancerServiceFlows(groupID binding.GroupIDType, svcIP net.IP, svcPort uint16, protocol binding.Protocol, affinityTimeout uint16) error {
-	if err := p.ofClient.InstallServiceFlows(groupID, svcIP, svcPort, protocol, affinityTimeout); err != nil {
-		return err
+// installLoadBalancerService installs flows and configurations for Service LoadBalancer.
+func (p *proxier) installLoadBalancerService(groupID binding.GroupIDType, loadBalancerIPStrings []string,
+	svcPort uint16, protocol binding.Protocol, affinityTimeout uint16, nodeLocalExternal bool) error {
+	for _, ingress := range loadBalancerIPStrings {
+		if ingress != "" {
+			if err := p.ofClient.InstallServiceFlows(groupID, net.ParseIP(ingress), svcPort, protocol, affinityTimeout); err != nil {
+				return fmt.Errorf("failed to install Service LoadBalancer load balancing flows: %w", err)
+			}
+			if err := p.ofClient.InstallServiceClassifierFlow(groupID, net.ParseIP(ingress), svcPort, protocol, affinityTimeout, nodeLocalExternal); err != nil {
+				return fmt.Errorf("failed to install Service LoadBalancer classifying flows: %w", err)
+			}
+		}
+	}
+	if err := p.routeClient.AddLoadBalancer(svcPort, protocol, loadBalancerIPStrings, p.isIPv6); err != nil {
+		return fmt.Errorf("failed to install Service LoadBalancer traffic redirecting flows: %w", err)
 	}
 	return nil
 }
 
-func (p *proxier) uninstallLoadBalancerServiceFlows(svcIP net.IP, svcPort uint16, protocol binding.Protocol) error {
-	if err := p.ofClient.UninstallServiceFlows(svcIP, svcPort, protocol); err != nil {
-		return err
+// uninstallLoadBalancerService removes flows and configurations for Service LoadBalancer.
+func (p *proxier) uninstallLoadBalancerService(loadBalancerIPStrings []string, svcPort uint16, protocol binding.Protocol) error {
+	for _, ingress := range loadBalancerIPStrings {
+		if ingress != "" {
+			if err := p.ofClient.UninstallServiceFlows(net.ParseIP(ingress), svcPort, protocol); err != nil {
+				return fmt.Errorf("failed to remove Service LoadBalancer load balancing flows: %w", err)
+			}
+			if err := p.ofClient.UninstallServiceClassifierFlow(net.ParseIP(ingress), svcPort, protocol); err != nil {
+				return fmt.Errorf("failed to remove Service LoadBalancer classifying flows: %w", err)
+			}
+		}
+	}
+	if err := p.routeClient.DeleteLoadBalancer(svcPort, protocol, loadBalancerIPStrings, p.isIPv6); err != nil {
+		return fmt.Errorf("failed to remove Service LoadBalancer traffic redirecting flows: %w", err)
+	}
+	return nil
+}
+
+func (p *proxier) installNodePortService(groupID binding.GroupIDType, svcPort uint16, protocol binding.Protocol, affinityTimeout uint16, nodeLocalExternal bool) error {
+	for _, nodeIPs := range p.nodePortIPMap {
+		for _, nodeIP := range nodeIPs {
+			if err := p.ofClient.InstallServiceFlows(groupID, nodeIP, svcPort, protocol, affinityTimeout); err != nil {
+				return fmt.Errorf("failed to install Service NodePort load balancing flows: %w", err)
+			}
+			if err := p.ofClient.InstallServiceClassifierFlow(groupID, nodeIP, svcPort, protocol, affinityTimeout, nodeLocalExternal); err != nil {
+				return fmt.Errorf("failed to install Service NodePort classifying flows: %w", err)
+			}
+		}
+	}
+	if err := p.routeClient.AddNodePort(p.nodePortIPMap, svcPort, protocol); err != nil {
+		return fmt.Errorf("failed to install Service NodePort traffic redirecting flows: %w", err)
+	}
+	return nil
+}
+
+func (p *proxier) uninstallNodePortService(svcPort uint16, protocol binding.Protocol) error {
+	for _, nodeIPs := range p.nodePortIPMap {
+		for _, nodeIP := range nodeIPs {
+			if err := p.ofClient.UninstallServiceFlows(nodeIP, svcPort, protocol); err != nil {
+				return fmt.Errorf("failed to remove Service NodePort load balancing flows: %w", err)
+			}
+			if err := p.ofClient.UninstallServiceClassifierFlow(nodeIP, svcPort, protocol); err != nil {
+				return fmt.Errorf("failed to remove Service NodePort classifying flows: %w", err)
+			}
+		}
+	}
+	if err := p.routeClient.DeleteNodePort(p.nodePortIPMap, svcPort, protocol); err != nil {
+		return fmt.Errorf("failed to remove Service NodePort traffic redirecting flows: %w", err)
 	}
 	return nil
 }

@@ -35,6 +35,7 @@ import (
 	"antrea.io/antrea/pkg/agent/openflow"
 	"antrea.io/antrea/pkg/agent/proxy/metrics"
 	"antrea.io/antrea/pkg/agent/proxy/types"
+	"antrea.io/antrea/pkg/agent/route"
 	"antrea.io/antrea/pkg/features"
 	binding "antrea.io/antrea/pkg/ovs/openflow"
 	k8sproxy "antrea.io/antrea/third_party/proxy"
@@ -66,10 +67,12 @@ type Proxier interface {
 }
 
 type proxier struct {
-	once                sync.Once
-	endpointSliceConfig *config.EndpointSliceConfig
-	endpointsConfig     *config.EndpointsConfig
-	serviceConfig       *config.ServiceConfig
+	onceRun                  sync.Once
+	onceInitializedReconcile sync.Once
+	once                     sync.Once
+	endpointSliceConfig      *config.EndpointSliceConfig
+	endpointsConfig          *config.EndpointsConfig
+	serviceConfig            *config.ServiceConfig
 	// endpointsChanges and serviceChanges contains all changes to endpoints and
 	// services that happened since last syncProxyRules call. For a single object,
 	// changes are accumulated. Once both endpointsChanges and serviceChanges
@@ -99,11 +102,15 @@ type proxier struct {
 	// oversizeServiceSet records the Services that have more than 800 Endpoints.
 	oversizeServiceSet sets.String
 
-	runner              *k8sproxy.BoundedFrequencyRunner
-	stopChan            <-chan struct{}
-	ofClient            openflow.Client
-	isIPv6              bool
-	enableEndpointSlice bool
+	runner               *k8sproxy.BoundedFrequencyRunner
+	stopChan             <-chan struct{}
+	ofClient             openflow.Client
+	routeClient          route.Interface
+	nodePortIPMap        map[int][]net.IP
+	hostGateWay          string
+	isIPv6               bool
+	proxyFullEnabled     bool
+	endpointSliceEnabled bool
 }
 
 func endpointKey(endpoint k8sproxy.Endpoint, protocol binding.Protocol) string {
@@ -132,22 +139,40 @@ func (p *proxier) removeStaleServices() {
 			klog.Errorf("Failed to remove flows of Service %v: %v", svcPortName, err)
 			continue
 		}
-		for _, ingress := range svcInfo.LoadBalancerIPStrings() {
-			if ingress != "" {
-				if err := p.uninstallLoadBalancerServiceFlows(net.ParseIP(ingress), uint16(svcInfo.Port()), svcInfo.OFProtocol); err != nil {
-					klog.Errorf("Error when removing Service flows: %v", err)
-					continue
-				}
-			}
-		}
-		groupID, _ := p.groupCounter.Get(svcPortName)
+		groupID, _ := p.groupCounter.Get(svcPortName, false)
 		if err := p.ofClient.UninstallServiceGroup(groupID); err != nil {
 			klog.Errorf("Failed to remove flows of Service %v: %v", svcPortName, err)
 			continue
 		}
+
+		if p.proxyFullEnabled {
+			// Remove Service group whose Endpoints are local.
+			if svcInfo.NodeLocalExternal() {
+				groupIDLocal, _ := p.groupCounter.Get(svcPortName, false)
+				if err := p.ofClient.UninstallServiceGroup(groupIDLocal); err != nil {
+					klog.Errorf("Failed to remove flows of Service %v: %v", svcPortName, err)
+					continue
+				}
+			}
+			// Remove NodePort flows and configurations.
+			if svcInfo.NodePort() > 0 {
+				if err := p.uninstallNodePortService(uint16(svcInfo.NodePort()), svcInfo.OFProtocol); err != nil {
+					klog.Errorf("Failed to remove flows and configurations of Service %v: %v", svcPortName, err)
+					continue
+				}
+			}
+			// Remove LoadBalancer flows and configurations.
+			if len(svcInfo.LoadBalancerIPStrings()) > 0 {
+				if err := p.uninstallLoadBalancerService(svcInfo.LoadBalancerIPStrings(), uint16(svcInfo.Port()), svcInfo.OFProtocol); err != nil {
+					klog.Errorf("Failed to remove flows and configurations of Service %v: %v", svcPortName, err)
+					continue
+				}
+			}
+		}
+
 		delete(p.serviceInstalledMap, svcPortName)
 		p.deleteServiceByIP(svcInfo.String())
-		p.groupCounter.Recycle(svcPortName)
+		p.groupCounter.Recycle(svcPortName, false)
 	}
 }
 
@@ -217,7 +242,9 @@ func (p *proxier) removeStaleEndpoints() {
 func serviceIdentityChanged(svcInfo, pSvcInfo *types.ServiceInfo) bool {
 	return svcInfo.ClusterIP().String() != pSvcInfo.ClusterIP().String() ||
 		svcInfo.Port() != pSvcInfo.Port() ||
-		svcInfo.OFProtocol != pSvcInfo.OFProtocol
+		svcInfo.OFProtocol != pSvcInfo.OFProtocol ||
+		svcInfo.NodePort() != pSvcInfo.NodePort() ||
+		svcInfo.NodeLocalExternal() != pSvcInfo.NodeLocalExternal()
 }
 
 // smallSliceDifference builds a slice which includes all the strings from s1
@@ -244,7 +271,7 @@ func smallSliceDifference(s1, s2 []string) []string {
 func (p *proxier) installServices() {
 	for svcPortName, svcPort := range p.serviceMap {
 		svcInfo := svcPort.(*types.ServiceInfo)
-		groupID, _ := p.groupCounter.Get(svcPortName)
+		groupID, _ := p.groupCounter.Get(svcPortName, false)
 		endpointsInstalled, ok := p.endpointsInstalledMap[svcPortName]
 		if !ok {
 			endpointsInstalled = map[string]k8sproxy.Endpoint{}
@@ -342,6 +369,23 @@ func (p *proxier) installServices() {
 				klog.Errorf("Error when installing Endpoints groups: %v", err)
 				continue
 			}
+
+			// Install another group when Service externalTrafficPolicy is Local.
+			if p.proxyFullEnabled && svcInfo.NodeLocalExternal() {
+				groupIDLocal, _ := p.groupCounter.Get(svcPortName, true)
+				var localEndpointList []k8sproxy.Endpoint
+				for _, ed := range endpointUpdateList {
+					if !ed.GetIsLocal() {
+						continue
+					}
+					localEndpointList = append(localEndpointList, ed)
+				}
+				if err = p.ofClient.InstallServiceGroup(groupIDLocal, svcInfo.StickyMaxAgeSeconds() != 0, localEndpointList); err != nil {
+					klog.Errorf("Error when installing Group for Service whose externalTrafficPolicy is Local: %v", err)
+					continue
+				}
+			}
+
 			for _, e := range endpointUpdateList {
 				// If the Endpoint is newly installed, add a reference.
 				if _, ok := endpointsInstalled[e.String()]; !ok {
@@ -355,40 +399,75 @@ func (p *proxier) installServices() {
 		if needUpdateService {
 			// Delete previous flow.
 			if needRemoval {
+				// If previous Service should be removed, remove ClusterIP flows of previous Service.
 				if err := p.ofClient.UninstallServiceFlows(pSvcInfo.ClusterIP(), uint16(pSvcInfo.Port()), pSvcInfo.OFProtocol); err != nil {
 					klog.Errorf("Failed to remove flows of Service %v: %v", svcPortName, err)
 					continue
 				}
+
+				if p.proxyFullEnabled {
+					// If previous Service which has NodePort should be removed, remove NodePort flows and configurations of previous Service.
+					if pSvcInfo.NodePort() > 0 {
+						if err := p.uninstallNodePortService(uint16(pSvcInfo.NodePort()), pSvcInfo.OFProtocol); err != nil {
+							klog.Errorf("Failed to remove flows and configurations of Service %v: %v", svcPortName, err)
+							continue
+						}
+					}
+				}
 			}
+
+			// Install ClusterIP flows of current Service.
 			if err := p.ofClient.InstallServiceFlows(groupID, svcInfo.ClusterIP(), uint16(svcInfo.Port()), svcInfo.OFProtocol, uint16(svcInfo.StickyMaxAgeSeconds())); err != nil {
 				klog.Errorf("Error when installing Service flows: %v", err)
 				continue
 			}
-			// Install OpenFlow entries for the ingress IPs of LoadBalancer Service.
-			// The LoadBalancer Service should be accessible from Pod, Node and
-			// external host.
-			var toDelete, toAdd []string
-			if needRemoval {
-				toDelete = pSvcInfo.LoadBalancerIPStrings()
-				toAdd = svcInfo.LoadBalancerIPStrings()
-			} else {
-				toDelete = deletedLoadBalancerIPs
-				toAdd = addedLoadBalancerIPs
-			}
-			for _, ingress := range toDelete {
-				if ingress != "" {
-					// It is safe to access pSvcInfo here. If this is a new Service,
-					// then toDelete will be an empty slice.
-					if err := p.uninstallLoadBalancerServiceFlows(net.ParseIP(ingress), uint16(pSvcInfo.Port()), pSvcInfo.OFProtocol); err != nil {
-						klog.Errorf("Error when removing LoadBalancer Service flows: %v", err)
+
+			if p.proxyFullEnabled {
+				// Install ClusterIP route on k8s node so that ClusterIP can be accessed on k8s node. When thWhen the
+				// Service is removed, the route does not need to be removed, because the route target IP block is calculated
+				// every time a new ClusterIP is created. When there are enough ClusterIPs, the Service CIDR can be finally
+				// calculated.
+				if err := p.routeClient.AddClusterIPRoute(svcInfo.ClusterIP(), p.isIPv6); err != nil {
+					klog.Errorf("Failed to install ClusterIP route of Service %v: %v", svcPortName, err)
+				}
+
+				// If externalTrafficPolicy of the Service is Local, Service NodePort or LoadBalancer should use the Service
+				// group whose Endpoints are local.
+				nGroupID := groupID
+				if svcInfo.NodeLocalExternal() {
+					nGroupID, _ = p.groupCounter.Get(svcPortName, true)
+				}
+
+				// If previous Service is nil or NodePort flows and configurations of previous Service have been removed,
+				// install NodePort flows and configurations of current Service.
+				if svcInfo.NodePort() > 0 && (pSvcInfo == nil || needRemoval) {
+					if err := p.installNodePortService(nGroupID, uint16(svcInfo.NodePort()), svcInfo.OFProtocol, uint16(svcInfo.StickyMaxAgeSeconds()), svcInfo.NodeLocalExternal()); err != nil {
+						klog.Errorf("Failed to install NodePort flows and configurations of Service %v: %v", svcPortName, err)
 						continue
 					}
 				}
-			}
-			for _, ingress := range toAdd {
-				if ingress != "" {
-					if err := p.installLoadBalancerServiceFlows(groupID, net.ParseIP(ingress), uint16(svcInfo.Port()), svcInfo.OFProtocol, uint16(svcInfo.StickyMaxAgeSeconds())); err != nil {
-						klog.Errorf("Error when installing LoadBalancer Service flows: %v", err)
+
+				// Service LoadBalancer flows can be partially updated.
+				var toDelete, toAdd []string
+				if needRemoval {
+					toDelete = pSvcInfo.LoadBalancerIPStrings()
+					toAdd = svcInfo.LoadBalancerIPStrings()
+				} else {
+					toDelete = deletedLoadBalancerIPs
+					toAdd = addedLoadBalancerIPs
+				}
+				// Remove LoadBalancer flows and configurations.
+				if len(toDelete) > 0 {
+					if err := p.uninstallLoadBalancerService(toDelete, uint16(pSvcInfo.Port()), pSvcInfo.OFProtocol); err != nil {
+						klog.Errorf("Failed to remove flows and configurations of Service %v: %v", svcPortName, err)
+						continue
+					}
+				}
+
+				// Install LoadBalancer flows and configurations.
+				if len(toAdd) > 0 {
+					if err := p.installLoadBalancerService(nGroupID, toAdd, uint16(svcInfo.Port()), svcInfo.OFProtocol, uint16(svcInfo.StickyMaxAgeSeconds()), svcInfo.NodeLocalExternal()); err != nil {
+						klog.Errorf("Failed to install LoadBalancer flows and configurations of Service %v: %v", svcPortName, err)
 						continue
 					}
 				}
@@ -555,9 +634,14 @@ func (p *proxier) deleteServiceByIP(serviceStr string) {
 }
 
 func (p *proxier) Run(stopCh <-chan struct{}) {
-	p.once.Do(func() {
+	p.onceRun.Do(func() {
+		if p.proxyFullEnabled {
+			if err := p.routeClient.InitService(p.nodePortIPMap, p.isIPv6); err != nil {
+				panic(err)
+			}
+		}
 		go p.serviceConfig.Run(stopCh)
-		if p.enableEndpointSlice {
+		if p.endpointSliceEnabled {
 			go p.endpointSliceConfig.Run(stopCh)
 		} else {
 			go p.endpointsConfig.Run(stopCh)
@@ -605,7 +689,7 @@ func (p *proxier) GetServiceFlowKeys(serviceName, namespace string) ([]string, [
 		svcFlows := p.ofClient.GetServiceFlowKeys(svcInfo.ClusterIP(), uint16(svcInfo.Port()), svcInfo.OFProtocol, epList)
 		flows = append(flows, svcFlows...)
 
-		groupID, _ := p.groupCounter.Get(svcPortName)
+		groupID, _ := p.groupCounter.Get(svcPortName, false)
 		groups = append(groups, groupID)
 	}
 
@@ -616,7 +700,9 @@ func NewProxier(
 	hostname string,
 	informerFactory informers.SharedInformerFactory,
 	ofClient openflow.Client,
-	isIPv6 bool) *proxier {
+	isIPv6 bool,
+	routeClient route.Interface,
+	nodePortIPMap map[int][]net.IP) *proxier {
 	recorder := record.NewBroadcaster().NewRecorder(
 		runtime.NewScheme(),
 		corev1.EventSource{Component: componentName, Host: hostname},
@@ -624,18 +710,17 @@ func NewProxier(
 	metrics.Register()
 	klog.V(2).Infof("Creating proxier with IPv6 enabled=%t", isIPv6)
 
-	enableEndpointSlice := features.DefaultFeatureGate.Enabled(features.EndpointSlice)
-
+	endpointSliceEnabled := features.DefaultFeatureGate.Enabled(features.EndpointSlice)
+	proxyFullEnabled := features.DefaultFeatureGate.Enabled(features.AntreaProxyFull)
 	ipFamily := corev1.IPv4Protocol
 	if isIPv6 {
 		ipFamily = corev1.IPv6Protocol
 	}
 
 	p := &proxier{
-		enableEndpointSlice:      enableEndpointSlice,
 		endpointsConfig:          config.NewEndpointsConfig(informerFactory.Core().V1().Endpoints(), resyncPeriod),
 		serviceConfig:            config.NewServiceConfig(informerFactory.Core().V1().Services(), resyncPeriod),
-		endpointsChanges:         newEndpointsChangesTracker(hostname, enableEndpointSlice, isIPv6),
+		endpointsChanges:         newEndpointsChangesTracker(hostname, endpointSliceEnabled, isIPv6),
 		serviceChanges:           newServiceChangesTracker(recorder, ipFamily),
 		serviceMap:               k8sproxy.ServiceMap{},
 		serviceInstalledMap:      k8sproxy.ServiceMap{},
@@ -646,12 +731,17 @@ func NewProxier(
 		oversizeServiceSet:       sets.NewString(),
 		groupCounter:             types.NewGroupCounter(isIPv6),
 		ofClient:                 ofClient,
+		routeClient:              routeClient,
+		nodePortIPMap:            nodePortIPMap,
 		isIPv6:                   isIPv6,
+		proxyFullEnabled:         proxyFullEnabled,
+		endpointSliceEnabled:     endpointSliceEnabled,
 	}
+
 	p.serviceConfig.RegisterEventHandler(p)
 	p.endpointsConfig.RegisterEventHandler(p)
 	p.runner = k8sproxy.NewBoundedFrequencyRunner(componentName, p.syncProxyRules, time.Second, 30*time.Second, 2)
-	if enableEndpointSlice {
+	if endpointSliceEnabled {
 		p.endpointSliceConfig = config.NewEndpointSliceConfig(informerFactory.Discovery().V1beta1().EndpointSlices(), resyncPeriod)
 		p.endpointSliceConfig.RegisterEventHandler(p)
 	} else {
@@ -692,13 +782,18 @@ func (p *metaProxierWrapper) GetServiceByIP(serviceStr string) (k8sproxy.Service
 }
 
 func NewDualStackProxier(
-	hostname string, informerFactory informers.SharedInformerFactory, ofClient openflow.Client) *metaProxierWrapper {
+	hostname string,
+	informerFactory informers.SharedInformerFactory,
+	ofClient openflow.Client,
+	routeClient route.Interface,
+	nodePortIPMap map[int][]net.IP,
+	nodePortIPv6Map map[int][]net.IP) *metaProxierWrapper {
 
-	// Create an ipv4 instance of the single-stack proxier
-	ipv4Proxier := NewProxier(hostname, informerFactory, ofClient, false)
+	// Create an ipv4 instance of the single-stack proxier.
+	ipv4Proxier := NewProxier(hostname, informerFactory, ofClient, false, routeClient, nodePortIPMap)
 
-	// Create an ipv6 instance of the single-stack proxier
-	ipv6Proxier := NewProxier(hostname, informerFactory, ofClient, true)
+	// Create an ipv6 instance of the single-stack proxier.
+	ipv6Proxier := NewProxier(hostname, informerFactory, ofClient, true, routeClient, nodePortIPv6Map)
 
 	// Create a meta-proxier that dispatch calls between the two
 	// single-stack proxier instances.

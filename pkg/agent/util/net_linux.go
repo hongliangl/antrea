@@ -221,3 +221,33 @@ func ListenLocalSocket(address string) (net.Listener, error) {
 func DialLocalSocket(address string) (net.Conn, error) {
 	return dialUnix(address)
 }
+
+// GetDefaultRouteInterfaces gets the output interfaces of default IPv4 and IPv6 route with highest priority (with
+// lowest metric value)
+func GetDefaultRouteInterfaces() (map[int]int, error) {
+	defaultRouteInterfaces := map[int]int{netlink.FAMILY_V4: -1, netlink.FAMILY_V6: -1}
+
+	var defaultRouteIPv4, defaultRouteIPv6 *netlink.Route
+	routesIPv4, err := netlink.RouteList(nil, netlink.FAMILY_V4)
+	if err != nil {
+		return nil, err
+	}
+	for i := range routesIPv4 {
+		if routesIPv4[i].Dst == nil && (defaultRouteIPv4 == nil || routesIPv4[i].Priority < defaultRouteIPv4.Priority) {
+			defaultRouteIPv4 = &routesIPv4[i]
+			defaultRouteInterfaces[netlink.FAMILY_V4] = routesIPv4[i].LinkIndex
+		}
+	}
+
+	routesIPv6, err := netlink.RouteList(nil, netlink.FAMILY_V6)
+	if err != nil {
+		return nil, err
+	}
+	for i := range routesIPv6 {
+		if routesIPv6[i].Dst == nil && (defaultRouteIPv6 == nil || routesIPv6[i].Priority < defaultRouteIPv6.Priority) {
+			defaultRouteIPv6 = &routesIPv6[i]
+			defaultRouteInterfaces[netlink.FAMILY_V4] = routesIPv6[i].LinkIndex
+		}
+	}
+	return defaultRouteInterfaces, nil
+}
