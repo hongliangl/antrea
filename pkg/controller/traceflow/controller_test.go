@@ -101,7 +101,7 @@ func TestTraceflow(t *testing.T) {
 
 		tfc.kubeClient.CoreV1().Pods("ns1").Create(context.TODO(), &pod1, metav1.CreateOptions{})
 		tfc.client.CrdV1alpha1().Traceflows().Create(context.TODO(), &tf1, metav1.CreateOptions{})
-		res, _ := tfc.waitForTraceflow("tf1", crdv1alpha1.Running, time.Second)
+		res, _ := tfc.waitForTraceflow("tf1", crdv1alpha1.Running, time.Second*5)
 		assert.NotNil(t, res)
 		// DataplaneTag should be allocated by Controller.
 		assert.True(t, res.Status.DataplaneTag > 0)

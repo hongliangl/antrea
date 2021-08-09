@@ -551,7 +551,7 @@ func (exp *FlowExporter) findFlowType(conn flowexporter.Connection) uint8 {
 		return 0
 	}
 	if exp.nodeRouteController.IPInPodSubnets(conn.FlowKey.SourceAddress) {
-		if conn.Mark == openflow.ServiceCTMark.GetValue() || exp.nodeRouteController.IPInPodSubnets(conn.FlowKey.DestinationAddress) {
+		if conn.Mark == openflow.ServiceCTMark.GetValueWithOffset() || exp.nodeRouteController.IPInPodSubnets(conn.FlowKey.DestinationAddress) {
 			if conn.SourcePodName == "" || conn.DestinationPodName == "" {
 				return ipfixregistry.FlowTypeInterNode
 			}

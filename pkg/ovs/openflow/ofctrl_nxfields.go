@@ -90,6 +90,10 @@ func (m *CtMark) GetValue() uint32 {
 	return m.value
 }
 
+func (m *CtMark) GetValueWithOffset() uint32 {
+	return m.value << m.rng.Offset()
+}
+
 func (m *CtMark) isFullRange() bool {
 	return m.rng.Length() == 32
 }

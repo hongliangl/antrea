@@ -31,8 +31,8 @@ import (
 )
 
 type expectTableFlows struct {
-	tableID int
-	flows   []string
+	tableName string
+	flows     []string
 }
 
 // TestProxy is the top-level test which contains all subtests for
@@ -506,20 +506,21 @@ func testProxyServiceSessionAffinity(ipFamily *corev1.IPFamily, ingressIPs []str
 
 	agentName, err := data.getAntreaPodOnNode(nodeName)
 	require.NoError(t, err)
-	table40Output, _, err := data.runCommandFromPod(metav1.NamespaceSystem, agentName, "antrea-agent", []string{"ovs-ofctl", "dump-flows", defaultBridgeName, "table=40"})
+	tableSessionAffinityName := "SessionAffinity"
+	tableSessionAffinityOutput, _, err := data.runCommandFromPod(metav1.NamespaceSystem, agentName, "antrea-agent", []string{"ovs-ofctl", "dump-flows", defaultBridgeName, fmt.Sprintf("table=%s", tableSessionAffinityName)})
 	require.NoError(t, err)
 	if *ipFamily == corev1.IPv4Protocol {
-		require.Contains(t, table40Output, fmt.Sprintf("nw_dst=%s,tp_dst=80", svc.Spec.ClusterIP))
-		require.Contains(t, table40Output, fmt.Sprintf("load:0x%s->NXM_NX_REG3[]", strings.TrimLeft(hex.EncodeToString(nginxIP.ipv4.To4()), "0")))
+		require.Contains(t, tableSessionAffinityOutput, fmt.Sprintf("nw_dst=%s,tp_dst=80", svc.Spec.ClusterIP))
+		require.Contains(t, tableSessionAffinityOutput, fmt.Sprintf("load:0x%s->NXM_NX_REG3[]", strings.TrimLeft(hex.EncodeToString(nginxIP.ipv4.To4()), "0")))
 		for _, ingressIP := range ingressIPs {
-			require.Contains(t, table40Output, fmt.Sprintf("nw_dst=%s,tp_dst=80", ingressIP))
+			require.Contains(t, tableSessionAffinityOutput, fmt.Sprintf("nw_dst=%s,tp_dst=80", ingressIP))
 		}
 	} else {
-		require.Contains(t, table40Output, fmt.Sprintf("ipv6_dst=%s,tp_dst=80", svc.Spec.ClusterIP))
-		require.Contains(t, table40Output, fmt.Sprintf("load:0x%s->NXM_NX_XXREG3[0..63]", strings.TrimLeft(hex.EncodeToString([]byte(*nginxIP.ipv6)[8:16]), "0")))
-		require.Contains(t, table40Output, fmt.Sprintf("load:0x%s->NXM_NX_XXREG3[64..127]", strings.TrimLeft(hex.EncodeToString([]byte(*nginxIP.ipv6)[0:8]), "0")))
+		require.Contains(t, tableSessionAffinityOutput, fmt.Sprintf("ipv6_dst=%s,tp_dst=80", svc.Spec.ClusterIP))
+		require.Contains(t, tableSessionAffinityOutput, fmt.Sprintf("load:0x%s->NXM_NX_XXREG3[0..63]", strings.TrimLeft(hex.EncodeToString([]byte(*nginxIP.ipv6)[8:16]), "0")))
+		require.Contains(t, tableSessionAffinityOutput, fmt.Sprintf("load:0x%s->NXM_NX_XXREG3[64..127]", strings.TrimLeft(hex.EncodeToString([]byte(*nginxIP.ipv6)[0:8]), "0")))
 		for _, ingressIP := range ingressIPs {
-			require.Contains(t, table40Output, fmt.Sprintf("ipv6_dst=%s,tp_dst=80", ingressIP))
+			require.Contains(t, tableSessionAffinityOutput, fmt.Sprintf("ipv6_dst=%s,tp_dst=80", ingressIP))
 		}
 	}
 }
@@ -623,8 +624,8 @@ func testProxyEndpointLifeCycle(ipFamily *corev1.IPFamily, data *TestData, t *te
 		nginxIP = nginxIPs.ipv4.String()
 	}
 
-	keywords := make(map[int]string)
-	keywords[42] = fmt.Sprintf("nat(dst=%s)", net.JoinHostPort(nginxIP, "80")) // endpointNATTable
+	keywords := make(map[string]string)
+	keywords["EndpointDNAT"] = fmt.Sprintf("nat(dst=%s)", net.JoinHostPort(nginxIP, "80")) // endpointNATTable
 
 	var groupKeywords []string
 	if *ipFamily == corev1.IPv6Protocol {
@@ -633,8 +634,8 @@ func testProxyEndpointLifeCycle(ipFamily *corev1.IPFamily, data *TestData, t *te
 		groupKeywords = append(groupKeywords, fmt.Sprintf("0x%s->NXM_NX_REG3[]", strings.TrimPrefix(hex.EncodeToString(nginxIPs.ipv4.To4()), "0")))
 	}
 
-	for tableID, keyword := range keywords {
-		tableOutput, _, err := data.runCommandFromPod(metav1.NamespaceSystem, agentName, "antrea-agent", []string{"ovs-ofctl", "dump-flows", defaultBridgeName, fmt.Sprintf("table=%d", tableID)})
+	for tableName, keyword := range keywords {
+		tableOutput, _, err := data.runCommandFromPod(metav1.NamespaceSystem, agentName, "antrea-agent", []string{"ovs-ofctl", "dump-flows", defaultBridgeName, fmt.Sprintf("table=%s", tableName)})
 		require.NoError(t, err)
 		require.Contains(t, tableOutput, keyword)
 	}
@@ -650,8 +651,8 @@ func testProxyEndpointLifeCycle(ipFamily *corev1.IPFamily, data *TestData, t *te
 	// Wait for one second to make sure the pipeline to be updated.
 	time.Sleep(time.Second)
 
-	for tableID, keyword := range keywords {
-		tableOutput, _, err := data.runCommandFromPod(metav1.NamespaceSystem, agentName, "antrea-agent", []string{"ovs-ofctl", "dump-flows", defaultBridgeName, fmt.Sprintf("table=%d", tableID)})
+	for tableName, keyword := range keywords {
+		tableOutput, _, err := data.runCommandFromPod(metav1.NamespaceSystem, agentName, "antrea-agent", []string{"ovs-ofctl", "dump-flows", defaultBridgeName, fmt.Sprintf("table=%s", tableName)})
 		require.NoError(t, err)
 		require.NotContains(t, tableOutput, keyword)
 	}
@@ -732,18 +733,18 @@ func testProxyServiceLifeCycle(ipFamily *corev1.IPFamily, ingressIPs []string, d
 		}
 	}
 
-	table42Format := "nat(dst=%s:80)"
+	tableEndpointDNATFlowFormat := "nat(dst=%s:80)"
 	if *ipFamily == corev1.IPv6Protocol {
-		table42Format = "nat(dst=[%s]:80)"
+		tableEndpointDNATFlowFormat = "nat(dst=[%s]:80)"
 	}
 	expectedFlows := []expectTableFlows{
 		{
-			41, // serviceLBTable
+			"ServiceLB", // serviceLBTable
 			svcLBflows,
 		},
 		{
-			42,
-			[]string{fmt.Sprintf(table42Format, nginxIP)}, // endpointNATTable
+			"EndpointDNAT",
+			[]string{fmt.Sprintf(tableEndpointDNATFlowFormat, nginxIP)}, // endpointNATTable
 		},
 	}
 
@@ -757,7 +758,7 @@ func testProxyServiceLifeCycle(ipFamily *corev1.IPFamily, ingressIPs []string, d
 	require.NoError(t, err)
 	require.Contains(t, groupOutput, groupKeyword)
 	for _, expectedTable := range expectedFlows {
-		tableOutput, _, err := data.runCommandFromPod(metav1.NamespaceSystem, agentName, "antrea-agent", []string{"ovs-ofctl", "dump-flows", defaultBridgeName, fmt.Sprintf("table=%d", expectedTable.tableID)})
+		tableOutput, _, err := data.runCommandFromPod(metav1.NamespaceSystem, agentName, "antrea-agent", []string{"ovs-ofctl", "dump-flows", defaultBridgeName, fmt.Sprintf("table=%s", expectedTable.tableName)})
 		require.NoError(t, err)
 		for _, expectedFlow := range expectedTable.flows {
 			require.Contains(t, tableOutput, expectedFlow)
@@ -774,7 +775,7 @@ func testProxyServiceLifeCycle(ipFamily *corev1.IPFamily, ingressIPs []string, d
 	require.NoError(t, err)
 	require.NotContains(t, groupOutput, groupKeyword)
 	for _, expectedTable := range expectedFlows {
-		tableOutput, _, err := data.runCommandFromPod(metav1.NamespaceSystem, agentName, "antrea-agent", []string{"ovs-ofctl", "dump-flows", defaultBridgeName, fmt.Sprintf("table=%d", expectedTable.tableID)})
+		tableOutput, _, err := data.runCommandFromPod(metav1.NamespaceSystem, agentName, "antrea-agent", []string{"ovs-ofctl", "dump-flows", defaultBridgeName, fmt.Sprintf("table=%s", expectedTable.tableName)})
 		require.NoError(t, err)
 		for _, expectedFlow := range expectedTable.flows {
 			require.NotContains(t, tableOutput, expectedFlow)
