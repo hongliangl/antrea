@@ -699,8 +699,11 @@ func (c *client) conntrackBypassRejectFlow(proto binding.Protocol) binding.Flow 
 // dnsResponseBypassConntrackFlow generates a flow which is used to bypass the
 // dns response packetout from conntrack, to avoid unexpected packet drop.
 func (c *client) dnsResponseBypassConntrackFlow() binding.Flow {
-	conntrackTable := c.pipeline[conntrackTable]
-	return conntrackTable.BuildFlow(priorityHigh).
+	table := c.pipeline[conntrackTable]
+	if c.proxyAll {
+		table = c.pipeline[serviceConntrackTable]
+	}
+	return table.BuildFlow(priorityHigh).
 		MatchRegFieldWithValue(CustomReasonField, CustomReasonDNS).
 		Cookie(c.cookieAllocator.Request(cookie.Default).Raw()).
 		Action().ResubmitToTable(l2ForwardingCalcTable).

@@ -69,7 +69,7 @@ func skipIfProxyDisabled(t *testing.T) {
 func testProxyServiceSessionAffinityCase(t *testing.T, data *TestData) {
 	if len(clusterInfo.podV4NetworkCIDR) != 0 {
 		ipFamily := corev1.IPv4Protocol
-		testProxyServiceSessionAffinity(&ipFamily, []string{"169.254.169.253", "169.254.169.254"}, data, t)
+		testProxyServiceSessionAffinity(&ipFamily, []string{"169.254.169.1", "169.254.169.2"}, data, t)
 	}
 	if len(clusterInfo.podV6NetworkCIDR) != 0 {
 		ipFamily := corev1.IPv6Protocol
@@ -100,13 +100,13 @@ func skipIfKubeProxyEnabledOnLinux(t *testing.T, data *TestData, nodeName string
 }
 
 func TestProxyLoadBalancerService(t *testing.T) {
+	skipIfProxyDisabled(t)
 	data, err := setupTest(t)
 	if err != nil {
 		t.Fatalf("Error when setting up test: %v", err)
 	}
 	defer teardownTest(t, data)
 
-	skipIfProxyDisabled(t)
 	skipIfProxyAllDisabled(t, data)
 	skipIfHasWindowsNodes(t)
 	skipIfNumNodesLessThan(t, 2)
@@ -169,12 +169,12 @@ func testLoadBalancerClusterFromLocal(t *testing.T, data *TestData, url string) 
 
 	nodeCp := controlPlaneNodeName()
 	skipIfKubeProxyEnabledOnLinux(t, data, nodeCp)
-	_, _, _, err := RunCommandOnNode(nodeCp, strings.Join([]string{"wget", "-O", "-", url, "-T", "1"}, " "))
+	_, _, _, err := RunCommandOnNode(nodeCp, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", url))
 	require.NoError(t, err, errMsg)
 
 	nodeWk := workerNodeName(1)
 	skipIfKubeProxyEnabledOnLinux(t, data, nodeWk)
-	_, _, _, err = RunCommandOnNode(nodeWk, strings.Join([]string{"wget", "-O", "-", url, "-T", "1"}, " "))
+	_, _, _, err = RunCommandOnNode(nodeWk, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", url))
 	require.NoError(t, err, errMsg)
 }
 
@@ -191,13 +191,13 @@ func testLoadBalancerLocalFromLocal(t *testing.T, data *TestData, url, nodeHostn
 
 	nodeCp := controlPlaneNodeName()
 	skipIfKubeProxyEnabledOnLinux(t, data, nodeCp)
-	_, output, _, err := RunCommandOnNode(nodeCp, strings.Join([]string{"wget", "-O", "-", url, "-T", "1"}, " "))
+	_, output, _, err := RunCommandOnNode(nodeCp, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", url))
 	require.NoError(t, err, errMsg)
 	require.Contains(t, output, fmt.Sprintf("Hostname: %s", nodeHostnameCp), fmt.Sprintf("hostname should be %s", nodeHostnameCp))
 
 	nodeWk := workerNodeName(1)
 	skipIfKubeProxyEnabledOnLinux(t, data, nodeWk)
-	_, output, _, err = RunCommandOnNode(nodeWk, strings.Join([]string{"wget", "-O", "-", url, "-T", "1"}, " "))
+	_, output, _, err = RunCommandOnNode(nodeWk, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", url))
 	require.NoError(t, err, errMsg)
 	require.Contains(t, output, fmt.Sprintf("Hostname: %s", nodeHostnameWk), fmt.Sprintf("hostname should be %s", nodeHostnameWk))
 }
@@ -216,13 +216,13 @@ func testLoadBalancerLocalFromPod(t *testing.T, data *TestData, url, clientCp, c
 }
 
 func TestProxyNodePortService(t *testing.T) {
+	skipIfProxyDisabled(t)
 	data, err := setupTest(t)
 	if err != nil {
 		t.Fatalf("Error when setting up test: %v", err)
 	}
 	defer teardownTest(t, data)
 
-	skipIfProxyDisabled(t)
 	skipIfProxyAllDisabled(t, data)
 	skipIfHasWindowsNodes(t)
 	skipIfNumNodesLessThan(t, 2)
@@ -355,9 +355,9 @@ func createNodePortServices(t *testing.T, data *TestData) (string, string) {
 
 func testNodePortClusterFromRemote(t *testing.T, urlCp, urlWk string) {
 	errMsg := "Server NodePort whose externalTrafficPolicy is Cluster should be able to be connected from remote"
-	_, _, _, err := RunCommandOnNode(controlPlaneNodeName(), strings.Join([]string{"wget", "-O", "-", urlWk, "-T", "1"}, " "))
+	_, _, _, err := RunCommandOnNode(controlPlaneNodeName(), fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", urlWk))
 	require.NoError(t, err, errMsg)
-	_, _, _, err = RunCommandOnNode(workerNodeName(1), strings.Join([]string{"wget", "-O", "-", urlCp, "-T", "1"}, " "))
+	_, _, _, err = RunCommandOnNode(workerNodeName(1), fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", urlCp))
 	require.NoError(t, err, errMsg)
 }
 
@@ -366,23 +366,23 @@ func testNodePortClusterFromLocal(t *testing.T, data *TestData, urlCp, urlWk, ur
 
 	nodeCp := controlPlaneNodeName()
 	skipIfKubeProxyEnabledOnLinux(t, data, nodeCp)
-	_, _, _, err := RunCommandOnNode(nodeCp, strings.Join([]string{"wget", "-O", "-", urlCp, "-T", "1"}, " "))
+	_, _, _, err := RunCommandOnNode(nodeCp, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", urlCp))
 	require.NoError(t, err, errMsg)
 
 	//TODO: Accessing NodePort from 127.0.0.1:port or [::1]:port is not supported for now. To support this, sysctl
 	// parameter route_localnet of Antreate gateway should be set as 1, but this can lead to CVE-2020-8558.
 
-	// _, _, _, err = RunCommandOnNode(nodeCp, strings.Join([]string{"wget", "-O", "-", urlLo, "-T", "1"}, " "))
+	// _, _, _, err = RunCommandOnNode(nodeCp, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", urlLo))
 	// require.NoError(t, err, errMsg)
 
 	nodeWk := workerNodeName(1)
 	skipIfKubeProxyEnabledOnLinux(t, data, nodeWk)
-	_, _, _, err = RunCommandOnNode(nodeWk, strings.Join([]string{"wget", "-O", "-", urlWk, "-T", "1"}, " "))
+	_, _, _, err = RunCommandOnNode(nodeWk, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", urlWk))
 	require.NoError(t, err, errMsg)
 
 	//TODO: As above TODO.
 
-	// _, _, _, err = RunCommandOnNode(nodeWk, strings.Join([]string{"wget", "-O", "-", urlLo, "-T", "1"}, " "))
+	// _, _, _, err = RunCommandOnNode(nodeWk, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", urlLo))
 	// require.NoError(t, err, errMsg)
 }
 
@@ -400,11 +400,11 @@ func testNodePortClusterFromPod(t *testing.T, data *TestData, urlCp, urlWk, clie
 
 func testNodePortLocalFromRemote(t *testing.T, urlCp, urlWk, nodeIPCp, nodeIPWk, nodeHostnameCp, nodeHostnameWk string) {
 	errMsg := "Server NodePort whose externalTrafficPolicy is Local should be able to be connected from remote"
-	_, output, _, err := RunCommandOnNode(controlPlaneNodeName(), strings.Join([]string{"wget", "-O", "-", urlWk, "-T", "1"}, " "))
+	_, output, _, err := RunCommandOnNode(controlPlaneNodeName(), fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", urlWk))
 	require.NoError(t, err, errMsg)
 	require.Contains(t, output, fmt.Sprintf("Hostname: %s", nodeHostnameWk), fmt.Sprintf("hostname should be %s", nodeHostnameWk))
 	require.Contains(t, output, fmt.Sprintf("client_address=%s", nodeIPCp), fmt.Sprintf("client IP should be %s", nodeIPCp))
-	_, output, _, err = RunCommandOnNode(workerNodeName(1), strings.Join([]string{"wget", "-O", "-", urlCp, "-T", "1"}, " "))
+	_, output, _, err = RunCommandOnNode(workerNodeName(1), fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", urlCp))
 	require.NoError(t, err, errMsg)
 	require.Contains(t, output, fmt.Sprintf("Hostname: %s", nodeHostnameCp), fmt.Sprintf("hostname should be %s", nodeHostnameCp))
 	require.Contains(t, output, fmt.Sprintf("client_address=%s", nodeIPWk), fmt.Sprintf("client IP should be %s", nodeIPWk))
@@ -415,25 +415,26 @@ func testNodePortLocalFromLocal(t *testing.T, data *TestData, urlCp, urlWk, urlL
 
 	nodeCp := controlPlaneNodeName()
 	skipIfKubeProxyEnabledOnLinux(t, data, nodeCp)
-	_, output, _, err := RunCommandOnNode(nodeCp, strings.Join([]string{"wget", "-O", "-", urlCp, "-T", "1"}, " "))
-	require.NoError(t, err, errMsg)
-	require.Contains(t, output, fmt.Sprintf("Hostname: %s", nodeHostnameCp), fmt.Sprintf("hostname should be %s", nodeHostnameCp))
-	require.NotContains(t, output, fmt.Sprintf("client_address=%s", nodeIPCp), fmt.Sprintf("client IP should not be %s", nodeIPCp))
-	_, output, _, err = RunCommandOnNode(nodeCp, strings.Join([]string{"wget", "-O", "-", urlLo, "-T", "1"}, " "))
+	_, output, _, err := RunCommandOnNode(nodeCp, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", urlCp))
 	require.NoError(t, err, errMsg)
 	require.Contains(t, output, fmt.Sprintf("Hostname: %s", nodeHostnameCp), fmt.Sprintf("hostname should be %s", nodeHostnameCp))
 	require.NotContains(t, output, fmt.Sprintf("client_address=%s", nodeIPCp), fmt.Sprintf("client IP should not be %s", nodeIPCp))
 
+	// _, output, _, err = RunCommandOnNode(nodeCp, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", urlLo))
+	// require.NoError(t, err, errMsg)
+	// require.Contains(t, output, fmt.Sprintf("Hostname: %s", nodeHostnameCp), fmt.Sprintf("hostname should be %s", nodeHostnameCp))
+	// require.NotContains(t, output, fmt.Sprintf("client_address=%s", nodeIPCp), fmt.Sprintf("client IP should not be %s", nodeIPCp))
+
 	nodeWk := nodeName(1)
 	skipIfKubeProxyEnabledOnLinux(t, data, nodeWk)
-	_, output, _, err = RunCommandOnNode(nodeWk, strings.Join([]string{"wget", "-O", "-", urlWk, "-T", "1"}, " "))
+	_, output, _, err = RunCommandOnNode(nodeWk, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", urlWk))
 	require.NoError(t, err, errMsg)
 	require.Contains(t, output, fmt.Sprintf("Hostname: %s", nodeHostnameWk), fmt.Sprintf("hostname should be %s", nodeHostnameWk))
 	require.NotContains(t, output, fmt.Sprintf("client_address=%s", nodeIPWk), fmt.Sprintf("client IP should not be %s", nodeIPWk))
-	_, output, _, err = RunCommandOnNode(nodeWk, strings.Join([]string{"wget", "-O", "-", urlLo, "-T", "1"}, " "))
-	require.NoError(t, err, errMsg)
-	require.Contains(t, output, fmt.Sprintf("Hostname: %s", nodeHostnameWk), fmt.Sprintf("hostname should be %s", nodeHostnameWk))
-	require.NotContains(t, output, fmt.Sprintf("client_address=%s", nodeIPWk), fmt.Sprintf("client IP should not be %s", nodeIPWk))
+	// _, output, _, err = RunCommandOnNode(nodeWk, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", urlLo))
+	// require.NoError(t, err, errMsg)
+	// require.Contains(t, output, fmt.Sprintf("Hostname: %s", nodeHostnameWk), fmt.Sprintf("hostname should be %s", nodeHostnameWk))
+	// require.NotContains(t, output, fmt.Sprintf("client_address=%s", nodeIPWk), fmt.Sprintf("client IP should not be %s", nodeIPWk))
 }
 
 func testNodePortLocalFromPod(t *testing.T, data *TestData, urlCp, urlWk, clientCp, clientWk, clientIPCp, clientIPWk, nodeHostnameCp, nodeHostnameWk string) {
@@ -474,10 +475,6 @@ func TestProxyServiceSessionAffinity(t *testing.T) {
 func testProxyServiceSessionAffinity(ipFamily *corev1.IPFamily, ingressIPs []string, data *TestData, t *testing.T) {
 	nodeName := nodeName(1)
 	nginx := randName("nginx-")
-	isProxyFull, err := data.IsProxyAll()
-	if err != nil {
-		t.Fatalf("Error getting option antreaProxyFull value")
-	}
 
 	require.NoError(t, data.createNginxPodOnNode(nginx, testNamespace, nodeName))
 	nginxIP, err := data.podWaitForIPs(defaultTimeout, nginx, testNamespace)
@@ -512,19 +509,15 @@ func testProxyServiceSessionAffinity(ipFamily *corev1.IPFamily, ingressIPs []str
 	if *ipFamily == corev1.IPv4Protocol {
 		require.Contains(t, table40Output, fmt.Sprintf("nw_dst=%s,tp_dst=80", svc.Spec.ClusterIP))
 		require.Contains(t, table40Output, fmt.Sprintf("load:0x%s->NXM_NX_REG3[]", strings.TrimLeft(hex.EncodeToString(nginxIP.ipv4.To4()), "0")))
-		if isProxyFull {
-			for _, ingressIP := range ingressIPs {
-				require.Contains(t, table40Output, fmt.Sprintf("nw_dst=%s,tp_dst=80", ingressIP))
-			}
+		for _, ingressIP := range ingressIPs {
+			require.Contains(t, table40Output, fmt.Sprintf("nw_dst=%s,tp_dst=80", ingressIP))
 		}
 	} else {
 		require.Contains(t, table40Output, fmt.Sprintf("ipv6_dst=%s,tp_dst=80", svc.Spec.ClusterIP))
 		require.Contains(t, table40Output, fmt.Sprintf("load:0x%s->NXM_NX_XXREG3[0..63]", strings.TrimLeft(hex.EncodeToString([]byte(*nginxIP.ipv6)[8:16]), "0")))
 		require.Contains(t, table40Output, fmt.Sprintf("load:0x%s->NXM_NX_XXREG3[64..127]", strings.TrimLeft(hex.EncodeToString([]byte(*nginxIP.ipv6)[0:8]), "0")))
-		if isProxyFull {
-			for _, ingressIP := range ingressIPs {
-				require.Contains(t, table40Output, fmt.Sprintf("ipv6_dst=%s,tp_dst=80", ingressIP))
-			}
+		for _, ingressIP := range ingressIPs {
+			require.Contains(t, table40Output, fmt.Sprintf("ipv6_dst=%s,tp_dst=80", ingressIP))
 		}
 	}
 }
@@ -675,7 +668,7 @@ func testProxyEndpointLifeCycle(ipFamily *corev1.IPFamily, data *TestData, t *te
 func testProxyServiceLifeCycleCase(t *testing.T, data *TestData) {
 	if len(clusterInfo.podV4NetworkCIDR) != 0 {
 		ipFamily := corev1.IPv4Protocol
-		testProxyServiceLifeCycle(&ipFamily, []string{"169.254.169.253", "169.254.169.254"}, data, t)
+		testProxyServiceLifeCycle(&ipFamily, []string{"169.254.169.1", "169.254.169.2"}, data, t)
 	}
 	if len(clusterInfo.podV6NetworkCIDR) != 0 {
 		ipFamily := corev1.IPv6Protocol
@@ -707,10 +700,6 @@ func TestProxyServiceLifeCycle(t *testing.T) {
 func testProxyServiceLifeCycle(ipFamily *corev1.IPFamily, ingressIPs []string, data *TestData, t *testing.T) {
 	nodeName := nodeName(1)
 	nginx := randName("nginx-")
-	isProxyFull, err := data.IsProxyAll()
-	if err != nil {
-		t.Fatalf("Error getting option antreaProxyFull value")
-	}
 
 	require.NoError(t, data.createNginxPodOnNode(nginx, testNamespace, nodeName))
 	defer data.deletePodAndWait(defaultTimeout, nginx, testNamespace)
@@ -737,17 +726,13 @@ func testProxyServiceLifeCycle(ipFamily *corev1.IPFamily, ingressIPs []string, d
 	var svcLBflows []string
 	if *ipFamily == corev1.IPv6Protocol {
 		svcLBflows = append(svcLBflows, fmt.Sprintf("ipv6_dst=%s,tp_dst=80", svc.Spec.ClusterIP))
-		if isProxyFull {
-			for _, ingressIP := range ingressIPs {
-				svcLBflows = append(svcLBflows, fmt.Sprintf("ipv6_dst=%s,tp_dst=80", ingressIP))
-			}
+		for _, ingressIP := range ingressIPs {
+			svcLBflows = append(svcLBflows, fmt.Sprintf("ipv6_dst=%s,tp_dst=80", ingressIP))
 		}
 	} else {
 		svcLBflows = append(svcLBflows, fmt.Sprintf("nw_dst=%s,tp_dst=80", svc.Spec.ClusterIP))
-		if isProxyFull {
-			for _, ingressIP := range ingressIPs {
-				svcLBflows = append(svcLBflows, fmt.Sprintf("nw_dst=%s,tp_dst=80", ingressIP))
-			}
+		for _, ingressIP := range ingressIPs {
+			svcLBflows = append(svcLBflows, fmt.Sprintf("nw_dst=%s,tp_dst=80", ingressIP))
 		}
 	}
 

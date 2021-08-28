@@ -417,9 +417,6 @@ func testReconcileGatewayRoutesOnStartup(t *testing.T, data *TestData, isIPv6 bo
 			t.Fatalf("Error getting option proxyAll value")
 		}
 		if isProxyAll {
-			if !isIPv6 {
-				expectedRtNumMin += 2
-			}
 			expectedRtNumMax += 2
 		}
 	}

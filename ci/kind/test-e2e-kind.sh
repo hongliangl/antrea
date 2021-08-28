@@ -181,8 +181,10 @@ function run_test {
       apiserver=$(docker exec -i kind-control-plane kubectl get endpoints kubernetes --no-headers | awk '{print $2}')
       if $coverage; then
         docker exec -i kind-control-plane sed -i.bak -E "s/^[[:space:]]*#kubeAPIServerOverride[[:space:]]*:[[:space:]]*[a-z\"]+[[:space:]]*$/    kubeAPIServerOverride: \"$apiserver\"/" /root/antrea-coverage.yml
+        docker exec -i kind-control-plane sed -i.bak -E "s/^[[:space:]]*#kubeAPIServerOverride[[:space:]]*:[[:space:]]*[a-z\"]+[[:space:]]*$/    kubeAPIServerOverride: \"$apiserver\"/" /root/antrea-wireguard-go-coverage.yml
       else
         docker exec -i kind-control-plane sed -i.bak -E "s/^[[:space:]]*#kubeAPIServerOverride[[:space:]]*:[[:space:]]*[a-z\"]+[[:space:]]*$/    kubeAPIServerOverride: \"$apiserver\"/" /root/antrea.yml
+        docker exec -i kind-control-plane sed -i.bak -E "s/^[[:space:]]*#kubeAPIServerOverride[[:space:]]*:[[:space:]]*[a-z\"]+[[:space:]]*$/    kubeAPIServerOverride: \"$apiserver\"/" /root/antrea-wireguard-go.yml
       fi
   fi
   sleep 1
