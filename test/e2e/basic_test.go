@@ -26,14 +26,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	"antrea.io/antrea/pkg/agent/apiserver/handlers/podinterface"
 	"antrea.io/antrea/pkg/agent/config"
 	"antrea.io/antrea/pkg/agent/openflow/cookie"
 	"antrea.io/antrea/pkg/clusteridentity"
-	"antrea.io/antrea/pkg/features"
 )
 
 // TestBasic is the top-level test which contains some subtests for
@@ -386,15 +384,21 @@ func testReconcileGatewayRoutesOnStartup(t *testing.T, data *TestData, isIPv6 bo
 				continue
 			}
 			route := Route{}
-			m1 := matches[1]
-			if !strings.Contains(m1, "/") {
-				m1 = m1 + "/32"
-			}
-			if _, route.peerPodCIDR, err = net.ParseCIDR(m1); err != nil {
+			if _, route.peerPodCIDR, err = net.ParseCIDR(matches[1]); err != nil {
 				return nil, fmt.Errorf("%s is not a valid net CIDR", matches[1])
 			}
 			if route.peerPodGW = net.ParseIP(matches[2]); route.peerPodGW == nil {
 				return nil, fmt.Errorf("%s is not a valid IP", matches[2])
+			}
+			// For gateway routes, the Antrea Node controller will not clean the route whose gateway is virtual Service IP.
+			// When running all e2e tests together, AntreaProxy could be installed and uninstalled several times.
+			// After uninstalling AntreaProxy, the route which is used to route ClusterIP to gateway still exists.
+			// When installing AntreaProxy again, a new route which used to route ClusterIP to gateway will be installed.
+			// The old route will be an orphan route, but Antrea Node controller cannot clean it because the func `Reconcile`
+			// of Antrea Node controller will not clean the route whose gateway is virtual Service IP. In short, the number
+			// of gateway routes is uncertain because there may be orphan routes, so it should not be counted.
+			if route.peerPodGW.Equal(config.VirtualServiceIPv4) || route.peerPodGW.Equal(config.VirtualServiceIPv6) {
+				continue
 			}
 			routes = append(routes, route)
 		}
@@ -407,18 +411,6 @@ func testReconcileGatewayRoutesOnStartup(t *testing.T, data *TestData, isIPv6 bo
 
 	} else if encapMode == config.TrafficEncapModeHybrid {
 		expectedRtNumMin = 1
-	}
-	agentFeatures, err := GetAgentFeatures()
-	require.NoError(t, err)
-
-	if agentFeatures.Enabled(features.AntreaProxy) {
-		isProxyAll, err := data.IsProxyAll()
-		if err != nil {
-			t.Fatalf("Error getting option proxyAll value")
-		}
-		if isProxyAll {
-			expectedRtNumMax += 2
-		}
 	}
 
 	t.Logf("Retrieving gateway routes on Node '%s'", nodeName)

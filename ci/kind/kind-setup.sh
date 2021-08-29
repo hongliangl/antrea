@@ -82,6 +82,12 @@ function modify {
   peerName=$(docker run --net=host antrea/ethtool:latest ip link | grep ^"$peerIdx": | awk -F[:@] '{ print $2 }' | cut -c 2-)
   echo "Disabling TX checksum offload for node $node ($peerName)"
   docker run --net=host --privileged antrea/ethtool:latest ethtool -K "$peerName" tx off
+  # On control plane Node of Kind cluster, DNS request from Pod CoreDNS will be DNATed to localhost. When KubeProxy is
+  # enabled, parameter net.ipv4.conf.all.route_localnet is set as 1 by KubeProxy. This setting ensures that the DNS
+  # response can be forwarded back to Pod CoreDNS, otherwise DNS response will be discarded. When KubeProxy is disabled,
+  # to ensure that DNS response can be forwarded back to Pod CoreDNS, parameter net.ipv4.conf.all.route_localnet should
+  # be set as 1 through the following command.
+  docker exec "$node" sysctl -w net.ipv4.conf.all.route_localnet=1
 }
 
 function configure_networks {
