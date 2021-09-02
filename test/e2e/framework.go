@@ -107,8 +107,8 @@ const (
 	busyboxImage        = "projects.registry.vmware.com/library/busybox"
 	nginxImage          = "projects.registry.vmware.com/antrea/nginx"
 	perftoolImage       = "projects.registry.vmware.com/antrea/perftool"
-	ipfixCollectorImage = "projects.registry.vmware.com/antrea/ipfix-collector:v0.5.7"
 	echoServerImage     = "k8s.gcr.io/echoserver:1.10"
+	ipfixCollectorImage = "projects.registry.vmware.com/antrea/ipfix-collector:v0.5.7"
 	ipfixCollectorPort  = "4739"
 
 	nginxLBService = "nginx-loadbalancer"
@@ -277,9 +277,9 @@ func workerNodeName(idx int) string {
 	return node.name
 }
 
-// workerNodeIP returns an empty string if there is no worker Node with the provided idx
+// workerNodeIPv4 returns an empty string if there is no worker Node with the provided idx
 // (including if idx is 0, which is reserved for the control-plane Node)
-func workerNodeIP(idx int) string {
+func workerNodeIPv4(idx int) string {
 	if idx == 0 { // control-plane Node
 		return ""
 	}
@@ -287,7 +287,18 @@ func workerNodeIP(idx int) string {
 	if !ok {
 		return ""
 	}
-	return node.ip()
+	return node.ipv4Addr
+}
+
+func workerNodeIPv6(idx int) string {
+	if idx == 0 { // control-plane Node
+		return ""
+	}
+	node, ok := clusterInfo.nodes[idx]
+	if !ok {
+		return ""
+	}
+	return node.ipv6Addr
 }
 
 // nodeGatewayIPs returns the Antrea gateway's IPv4 address and IPv6 address for the provided Node

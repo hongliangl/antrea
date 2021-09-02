@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilnet "k8s.io/utils/net"
 
 	"antrea.io/antrea/pkg/features"
 )
@@ -99,7 +100,16 @@ func skipIfKubeProxyEnabledOnLinux(t *testing.T, data *TestData, nodeName string
 	}
 }
 
-func TestProxyLoadBalancerService(t *testing.T) {
+func TestProxyLoadBalancerServiceIPv4(t *testing.T) {
+	testProxyLoadBalancerService(t, false)
+}
+
+func TestProxyLoadBalancerServiceIPv6(t *testing.T) {
+	skipIfNotIPv6Cluster(t)
+	testProxyLoadBalancerService(t, true)
+}
+
+func testProxyLoadBalancerService(t *testing.T, isIPv6 bool) {
 	skipIfProxyDisabled(t)
 	data, err := setupTest(t)
 	if err != nil {
@@ -118,10 +128,18 @@ func TestProxyLoadBalancerService(t *testing.T) {
 	clusterIngressIP := []string{"169.254.169.1"}
 	localIngressIP := []string{"169.254.169.2"}
 	port := "8080"
+	clientCpIPv4, clientWkIPv4, clientCpIPv6, clientWkIPv6 := createTestClientPods(t, data, clientPodCp, clientPodWk)
+	clientCpIP := clientCpIPv4
+	clientWkIP := clientWkIPv4
+	if isIPv6 {
+		clusterIngressIP = []string{"fd75::aabb:ccdd:ef00"}
+		localIngressIP = []string{"fd75::aabb:ccdd:ef01"}
+		clientCpIP = clientCpIPv6
+		clientWkIP = clientWkIPv6
+	}
 
-	clientCpIP, clientWkIP := createTestClientPods(t, data, clientPodCp, clientPodWk)
 	createTestEchoServerPods(t, data, testPodNameCp, testPodNameWk, false)
-	createLoadBalancerServices(t, data, clusterIngressIP, localIngressIP)
+	createLoadBalancerServices(t, data, clusterIngressIP, localIngressIP, isIPv6)
 	clusterUrl := net.JoinHostPort(clusterIngressIP[0], port)
 	localUrl := net.JoinHostPort(localIngressIP[0], port)
 
@@ -156,8 +174,11 @@ func loadBalancerTestCases(t *testing.T, data *TestData, clusterUrl, localUrl, c
 	})
 }
 
-func createLoadBalancerServices(t *testing.T, data *TestData, ingressIPCluster, ingressIPLocal []string) {
+func createLoadBalancerServices(t *testing.T, data *TestData, ingressIPCluster, ingressIPLocal []string, isIPv6 bool) {
 	ipProctol := corev1.IPv4Protocol
+	if isIPv6 {
+		ipProctol = corev1.IPv6Protocol
+	}
 	_, err := data.createEchoServerLoadBalancerService("echoserver-cluster", true, false, ingressIPCluster, &ipProctol)
 	require.NoError(t, err)
 	_, err = data.createEchoServerLoadBalancerService("echoserver-local", true, true, ingressIPLocal, &ipProctol)
@@ -207,15 +228,32 @@ func testLoadBalancerLocalFromPod(t *testing.T, data *TestData, url, clientCp, c
 	output, _, err := data.runCommandFromPod(testNamespace, clientCp, busyboxContainerName, []string{"wget", "-O", "-", url, "-T", "1"})
 	require.NoError(t, err, errMsg)
 	require.Contains(t, output, fmt.Sprintf("Hostname: %s", testPodHostnameCp), fmt.Sprintf("hostname should be %s", testPodHostnameCp))
-	require.Contains(t, output, fmt.Sprintf("client_address=%s", clientCpIP), fmt.Sprintf("client IP should be %s", clientCpIP))
+	if utilnet.IsIPv6(net.ParseIP(clientCpIP)) {
+		require.Contains(t, output, fmt.Sprintf("client_address=%s", clientCpIP), fmt.Sprintf("client IP should be %s", clientCpIP))
+	} else {
+		require.Contains(t, output, fmt.Sprintf("client_address=::ffff:%s", clientCpIP), fmt.Sprintf("client IP should be %s", clientCpIP))
+	}
 
 	output, _, err = data.runCommandFromPod(testNamespace, clientWk, busyboxContainerName, []string{"wget", "-O", "-", url, "-T", "1"})
 	require.NoError(t, err, errMsg)
 	require.Contains(t, output, fmt.Sprintf("Hostname: %s", testPodHostnameWk), fmt.Sprintf("hostname should be %s", testPodHostnameWk))
-	require.Contains(t, output, fmt.Sprintf("client_address=%s", clientWkIP), fmt.Sprintf("client IP should be %s", clientWkIP))
+	if utilnet.IsIPv6(net.ParseIP(clientWkIP)) {
+		require.Contains(t, output, fmt.Sprintf("client_address=%s", clientWkIP), fmt.Sprintf("client IP should be %s", clientWkIP))
+	} else {
+		require.Contains(t, output, fmt.Sprintf("client_address=::ffff:%s", clientWkIP), fmt.Sprintf("client IP should be %s", clientWkIP))
+	}
 }
 
-func TestProxyNodePortService(t *testing.T) {
+func TestProxyNodePortServiceIPv4(t *testing.T) {
+	testProxyNodePortService(t, false)
+}
+
+func TestProxyNodePortServiceIPv6(t *testing.T) {
+	skipIfNotIPv6Cluster(t)
+	testProxyNodePortService(t, true)
+}
+
+func testProxyNodePortService(t *testing.T, isIPv6 bool) {
 	skipIfProxyDisabled(t)
 	data, err := setupTest(t)
 	if err != nil {
@@ -231,18 +269,28 @@ func TestProxyNodePortService(t *testing.T) {
 	testPodNameWk := "echoserver-wk"
 	clientPodCp := "busybox-cp"
 	clientPodWk := "busybox-wk"
+	localhostIP := "127.0.0.1"
+	podClientCpIPv4, podClientWkIPv4, podClientCpIPv6, podClientWkIPv6 := createTestClientPods(t, data, clientPodCp, clientPodWk)
+	podClientCpIP := podClientCpIPv4
+	podClientWkIP := podClientWkIPv4
+	nodeCpIP := controlPlaneNodeIPv4()
+	nodeWkIP := workerNodeIPv4(1)
+	if isIPv6 {
+		localhostIP = "::1"
+		podClientCpIP = podClientCpIPv6
+		podClientWkIP = podClientWkIPv6
+		nodeCpIP = controlPlaneNodeIPv6()
+		nodeWkIP = workerNodeIPv6(1)
+	}
 
-	podClientCpIP, podClientWkIP := createTestClientPods(t, data, clientPodCp, clientPodWk)
 	createTestEchoServerPods(t, data, testPodNameCp, testPodNameWk, false)
-	portCluster, portLocal := createNodePortServices(t, data)
-	nodeCpIP := controlPlaneNodeIP()
-	nodeWkIP := workerNodeIP(1)
+	portCluster, portLocal := createNodePortServices(t, data, isIPv6)
 	clusterUrlCp := net.JoinHostPort(nodeCpIP, portCluster)
 	clusterUrlWk := net.JoinHostPort(nodeWkIP, portCluster)
-	clusterUrlLo := net.JoinHostPort("127.0.0.1", portCluster)
+	clusterUrlLo := net.JoinHostPort(localhostIP, portCluster)
 	localUrlCp := net.JoinHostPort(nodeCpIP, portLocal)
 	localUrlWk := net.JoinHostPort(nodeWkIP, portLocal)
-	localUrlLo := net.JoinHostPort("127.0.0.1", portLocal)
+	localUrlLo := net.JoinHostPort(localhostIP, portLocal)
 
 	t.Run("Pod CIDR Endpoints", func(t *testing.T) {
 		nodePortTestCases(t, data, clusterUrlCp, clusterUrlWk, clusterUrlLo, localUrlCp, localUrlWk, localUrlLo,
@@ -280,7 +328,7 @@ func nodePortTestCases(t *testing.T, data *TestData, clusterUrlCp, clusterUrlWk,
 		testNodePortLocalFromRemote(t, localUrlCp, localUrlWk, nodeCpIP, nodeWkIP, testPodHostnameCp, testPodHostnameWk)
 	})
 	t.Run("Case=ExternalTrafficPolicy:Local Client:Local", func(t *testing.T) {
-		testNodePortLocalFromLocal(t, data, localUrlCp, localUrlWk, localUrlLo, nodeCpIP, nodeWkIP, testPodHostnameCp, testPodHostnameWk)
+		testNodePortLocalFromLocal(t, data, localUrlCp, localUrlWk, localUrlLo, testPodHostnameCp, testPodHostnameWk)
 	})
 	t.Run("Case=ExternalTrafficPolicy:Local Client:Pod", func(t *testing.T) {
 		testNodePortLocalFromPod(t, data, localUrlCp, localUrlWk, clientPodCp, clientPodWk, podClientCpIP, podClientWkIP, testPodHostnameCp, testPodHostnameWk)
@@ -303,7 +351,7 @@ func createTestEchoServerPods(t *testing.T, data *TestData, echoServerCp, echoSe
 	}
 }
 
-func createTestClientPods(t *testing.T, data *TestData, clientCp, clientWk string) (string, string) {
+func createTestClientPods(t *testing.T, data *TestData, clientCp, clientWk string) (string, string, string, string) {
 	// Create a busybox Pod on each node which is used as test client.
 	require.NoError(t, data.createBusyboxPodOnNode(clientCp, testNamespace, nodeName(0)))
 	require.NoError(t, data.podWaitForRunning(defaultTimeout, clientCp, testNamespace))
@@ -319,7 +367,25 @@ func createTestClientPods(t *testing.T, data *TestData, clientCp, clientWk strin
 	})
 	require.NoError(t, err)
 	require.NotNil(t, busyboxWkPod.Status)
-	return busyboxCpPod.Status.PodIP, busyboxWkPod.Status.PodIP
+
+	cpPodIPv4 := busyboxCpPod.Status.PodIP
+	wkPodIPv4 := busyboxWkPod.Status.PodIP
+
+	var cpPodIPv6, wkPodIPv6 string
+	for _, ip := range busyboxCpPod.Status.PodIPs {
+		if utilnet.IsIPv6(net.ParseIP(ip.IP)) {
+			cpPodIPv6 = ip.IP
+			break
+		}
+	}
+	for _, ip := range busyboxWkPod.Status.PodIPs {
+		if utilnet.IsIPv6(net.ParseIP(ip.IP)) {
+			wkPodIPv6 = ip.IP
+			break
+		}
+	}
+
+	return cpPodIPv4, wkPodIPv4, cpPodIPv6, wkPodIPv6
 }
 
 func deleteTestEchoServerPods(t *testing.T, data *TestData, echoServerCp, echoServerWk string) {
@@ -331,8 +397,11 @@ func deleteTestEchoServerPods(t *testing.T, data *TestData, echoServerCp, echoSe
 	}
 }
 
-func createNodePortServices(t *testing.T, data *TestData) (string, string) {
+func createNodePortServices(t *testing.T, data *TestData, isIPv6 bool) (string, string) {
 	ipProctol := corev1.IPv4Protocol
+	if isIPv6 {
+		ipProctol = corev1.IPv6Protocol
+	}
 	nodePortCluster, err := data.createEchoServerNodePortService("echoserver-cluster", false, false, &ipProctol)
 	require.NoError(t, err)
 	nodePortLocal, err := data.createEchoServerNodePortService("echoserver-local", false, true, &ipProctol)
@@ -403,14 +472,23 @@ func testNodePortLocalFromRemote(t *testing.T, urlCp, urlWk, nodeIPCp, nodeIPWk,
 	_, output, _, err := RunCommandOnNode(controlPlaneNodeName(), fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", urlWk))
 	require.NoError(t, err, errMsg)
 	require.Contains(t, output, fmt.Sprintf("Hostname: %s", nodeHostnameWk), fmt.Sprintf("hostname should be %s", nodeHostnameWk))
-	require.Contains(t, output, fmt.Sprintf("client_address=%s", nodeIPCp), fmt.Sprintf("client IP should be %s", nodeIPCp))
+	if utilnet.IsIPv6(net.ParseIP(nodeIPCp)) {
+		require.Contains(t, output, fmt.Sprintf("client_address=%s", nodeIPCp), fmt.Sprintf("client IP should be %s", nodeIPCp))
+	} else {
+		require.Contains(t, output, fmt.Sprintf("client_address=::ffff:%s", nodeIPCp), fmt.Sprintf("client IP should be %s", nodeIPCp))
+	}
+
 	_, output, _, err = RunCommandOnNode(workerNodeName(1), fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", urlCp))
 	require.NoError(t, err, errMsg)
 	require.Contains(t, output, fmt.Sprintf("Hostname: %s", nodeHostnameCp), fmt.Sprintf("hostname should be %s", nodeHostnameCp))
-	require.Contains(t, output, fmt.Sprintf("client_address=%s", nodeIPWk), fmt.Sprintf("client IP should be %s", nodeIPWk))
+	if utilnet.IsIPv6(net.ParseIP(nodeIPWk)) {
+		require.Contains(t, output, fmt.Sprintf("client_address=%s", nodeIPWk), fmt.Sprintf("client IP should be %s", nodeIPWk))
+	} else {
+		require.Contains(t, output, fmt.Sprintf("client_address=::ffff:%s", nodeIPWk), fmt.Sprintf("client IP should be %s", nodeIPWk))
+	}
 }
 
-func testNodePortLocalFromLocal(t *testing.T, data *TestData, urlCp, urlWk, urlLo, nodeIPCp, nodeIPWk, nodeHostnameCp, nodeHostnameWk string) {
+func testNodePortLocalFromLocal(t *testing.T, data *TestData, urlCp, urlWk, urlLo, nodeHostnameCp, nodeHostnameWk string) {
 	errMsg := "Server NodePort whose externalTrafficPolicy is Local should be able to be connected from local"
 
 	nodeCp := controlPlaneNodeName()
@@ -418,23 +496,25 @@ func testNodePortLocalFromLocal(t *testing.T, data *TestData, urlCp, urlWk, urlL
 	_, output, _, err := RunCommandOnNode(nodeCp, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", urlCp))
 	require.NoError(t, err, errMsg)
 	require.Contains(t, output, fmt.Sprintf("Hostname: %s", nodeHostnameCp), fmt.Sprintf("hostname should be %s", nodeHostnameCp))
-	require.NotContains(t, output, fmt.Sprintf("client_address=%s", nodeIPCp), fmt.Sprintf("client IP should not be %s", nodeIPCp))
+
+	//TODO: Accessing NodePort from 127.0.0.1:port or [::1]:port is not supported for now. To support this, sysctl
+	// parameter route_localnet of Antreate gateway should be set as 1, but this can lead to CVE-2020-8558.
 
 	// _, output, _, err = RunCommandOnNode(nodeCp, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", urlLo))
 	// require.NoError(t, err, errMsg)
 	// require.Contains(t, output, fmt.Sprintf("Hostname: %s", nodeHostnameCp), fmt.Sprintf("hostname should be %s", nodeHostnameCp))
-	// require.NotContains(t, output, fmt.Sprintf("client_address=%s", nodeIPCp), fmt.Sprintf("client IP should not be %s", nodeIPCp))
 
 	nodeWk := nodeName(1)
 	skipIfKubeProxyEnabledOnLinux(t, data, nodeWk)
 	_, output, _, err = RunCommandOnNode(nodeWk, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", urlWk))
 	require.NoError(t, err, errMsg)
 	require.Contains(t, output, fmt.Sprintf("Hostname: %s", nodeHostnameWk), fmt.Sprintf("hostname should be %s", nodeHostnameWk))
-	require.NotContains(t, output, fmt.Sprintf("client_address=%s", nodeIPWk), fmt.Sprintf("client IP should not be %s", nodeIPWk))
+
+	//TODO: As above TODO.
+
 	// _, output, _, err = RunCommandOnNode(nodeWk, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", urlLo))
 	// require.NoError(t, err, errMsg)
 	// require.Contains(t, output, fmt.Sprintf("Hostname: %s", nodeHostnameWk), fmt.Sprintf("hostname should be %s", nodeHostnameWk))
-	// require.NotContains(t, output, fmt.Sprintf("client_address=%s", nodeIPWk), fmt.Sprintf("client IP should not be %s", nodeIPWk))
 }
 
 func testNodePortLocalFromPod(t *testing.T, data *TestData, urlCp, urlWk, clientCp, clientWk, clientIPCp, clientIPWk, nodeHostnameCp, nodeHostnameWk string) {
@@ -442,12 +522,20 @@ func testNodePortLocalFromPod(t *testing.T, data *TestData, urlCp, urlWk, client
 	output, _, err := data.runCommandFromPod(testNamespace, clientCp, busyboxContainerName, []string{"wget", "-O", "-", urlCp, "-T", "1"})
 	require.NoError(t, err, errMsg)
 	require.Contains(t, output, fmt.Sprintf("Hostname: %s", nodeHostnameCp), fmt.Sprintf("hostname should be %s", nodeHostnameCp))
-	require.Contains(t, output, fmt.Sprintf("client_address=%s", clientIPCp), fmt.Sprintf("client IP should be %s", clientIPCp))
+	if utilnet.IsIPv6(net.ParseIP(clientIPCp)) {
+		require.Contains(t, output, fmt.Sprintf("client_address=%s", clientIPCp), fmt.Sprintf("client IP should be %s", clientIPCp))
+	} else {
+		require.Contains(t, output, fmt.Sprintf("client_address=::ffff:%s", clientIPCp), fmt.Sprintf("client IP should be %s", clientIPCp))
+	}
 
 	output, _, err = data.runCommandFromPod(testNamespace, clientWk, busyboxContainerName, []string{"wget", "-O", "-", urlWk, "-T", "1"})
 	require.NoError(t, err, errMsg)
 	require.Contains(t, output, fmt.Sprintf("Hostname: %s", nodeHostnameWk), fmt.Sprintf("hostname should be %s", nodeHostnameWk))
-	require.Contains(t, output, fmt.Sprintf("client_address=%s", clientIPWk), fmt.Sprintf("client IP should be %s", clientIPWk))
+	if utilnet.IsIPv6(net.ParseIP(clientIPWk)) {
+		require.Contains(t, output, fmt.Sprintf("client_address=%s", clientIPWk), fmt.Sprintf("client IP should be %s", clientIPWk))
+	} else {
+		require.Contains(t, output, fmt.Sprintf("client_address=::ffff:%s", clientIPWk), fmt.Sprintf("client IP should be %s", clientIPWk))
+	}
 }
 
 func TestProxyServiceSessionAffinity(t *testing.T) {
