@@ -107,7 +107,6 @@ const (
 	busyboxImage        = "projects.registry.vmware.com/library/busybox"
 	nginxImage          = "projects.registry.vmware.com/antrea/nginx"
 	perftoolImage       = "projects.registry.vmware.com/antrea/perftool"
-	echoServerImage     = "k8s.gcr.io/echoserver:1.10"
 	ipfixCollectorImage = "projects.registry.vmware.com/antrea/ipfix-collector:v0.5.7"
 	ipfixCollectorPort  = "4739"
 
@@ -1043,18 +1042,6 @@ func (data *TestData) createNginxPodOnNode(name string, ns string, nodeName stri
 	}, false, nil)
 }
 
-// createEchoServerPodOnNode creates a Pod in the test namespace with a single echoserver container. The
-// Pod will be scheduled on the specified Node (if nodeName is not empty).
-func (data *TestData) createEchoServerPodOnNode(name string, nodeName string, hostNetwork bool) error {
-	return data.createPodOnNode(name, testNamespace, nodeName, echoServerImage, []string{}, nil, nil, []corev1.ContainerPort{
-		{
-			Name:          "http",
-			ContainerPort: 8080,
-			Protocol:      corev1.ProtocolTCP,
-		},
-	}, hostNetwork, nil)
-}
-
 // createNginxPodOnNode2 creates a Pod in the test namespace with a single nginx container. The
 // Pod will be scheduled on the specified Node (if nodeName is not empty).
 func (data *TestData) createNginxPodOnNodeV2(name string, nodeName string, hostNetwork bool) error {
@@ -1469,14 +1456,14 @@ func (data *TestData) createNginxClusterIPService(name string, affinity bool, ip
 	return data.createService(name, 80, 80, map[string]string{"app": "nginx"}, affinity, false, corev1.ServiceTypeClusterIP, ipFamily)
 }
 
-// createEchoServerNodePortService create a NodePort echoserver service with the given name.
-func (data *TestData) createEchoServerNodePortService(serviceName string, affinity, nodeLocalExternal bool, ipFamily *corev1.IPFamily) (*corev1.Service, error) {
-	return data.createService(serviceName, 8080, 8080, map[string]string{"app": "echoserver"}, affinity, nodeLocalExternal, corev1.ServiceTypeNodePort, ipFamily)
+// createAgnhostNodePortService create a NodePort agnhost service with the given name.
+func (data *TestData) createAgnhostNodePortService(serviceName string, affinity, nodeLocalExternal bool, ipFamily *corev1.IPFamily) (*corev1.Service, error) {
+	return data.createService(serviceName, 8080, 8080, map[string]string{"app": "agnhost"}, affinity, nodeLocalExternal, corev1.ServiceTypeNodePort, ipFamily)
 }
 
-// createEchoServerLoadBalancerService create a LoadBalancer echoserver service with the given name.
-func (data *TestData) createEchoServerLoadBalancerService(serviceName string, affinity, nodeLocalExternal bool, ingressIPs []string, ipFamily *corev1.IPFamily) (*corev1.Service, error) {
-	svc, err := data.createService(serviceName, 8080, 8080, map[string]string{"app": "echoserver"}, affinity, nodeLocalExternal, corev1.ServiceTypeLoadBalancer, ipFamily)
+// createAgnhostLoadBalancerService create a LoadBalancer agnhost service with the given name.
+func (data *TestData) createAgnhostLoadBalancerService(serviceName string, affinity, nodeLocalExternal bool, ingressIPs []string, ipFamily *corev1.IPFamily) (*corev1.Service, error) {
+	svc, err := data.createService(serviceName, 8080, 8080, map[string]string{"app": "agnhost"}, affinity, nodeLocalExternal, corev1.ServiceTypeLoadBalancer, ipFamily)
 	if err != nil {
 		return svc, err
 	}
@@ -1491,11 +1478,6 @@ func (data *TestData) createEchoServerLoadBalancerService(serviceName string, af
 		return svc, err
 	}
 	return data.clientset.CoreV1().Services(svc.Namespace).Patch(context.TODO(), svc.Name, types.MergePatchType, patchData, metav1.PatchOptions{}, "status")
-}
-
-// createEchoServerClusterIPService create a ClusterIP echoserver service with the given name.
-func (data *TestData) createEchoServerClusterIPService(serviceName string, affinity bool, ipFamily *corev1.IPFamily) (*corev1.Service, error) {
-	return data.createService(serviceName, 8080, 8080, map[string]string{"app": "echoserver"}, affinity, false, corev1.ServiceTypeClusterIP, ipFamily)
 }
 
 func (data *TestData) createNginxLoadBalancerService(affinity bool, ingressIPs []string, ipFamily *corev1.IPFamily) (*corev1.Service, error) {

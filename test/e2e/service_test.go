@@ -64,20 +64,20 @@ func testClusterIPHelper(t *testing.T, data *TestData, isIPv6 bool, clientPodCp,
 	time.Sleep(2 * time.Second)
 	url := "http://" + net.JoinHostPort(clusterIP, "80")
 	t.Run("Pod CIDR Endpoints", func(t *testing.T) {
-		testClusterIPCases(t, data, url, testPodName, clientPodCp, clientPodWk)
+		testClusterIPCases(t, data, url, clientPodCp, clientPodWk)
 	})
 	deleteTestNginxPod(t, data, testPodName)
 
-	testPodHostNetworkName := fmt.Sprintf("echoserver-cp-h-%v", isIPv6)
+	testPodHostNetworkName := fmt.Sprintf("nginx-cp-h-%v", isIPv6)
 	createTestNginxPod(t, data, testPodHostNetworkName, true)
 	time.Sleep(2 * time.Second)
 	t.Run("Host Network Endpoints", func(t *testing.T) {
-		testClusterIPCases(t, data, url, nodeName(0), clientPodCp, clientPodWk)
+		testClusterIPCases(t, data, url, clientPodCp, clientPodWk)
 	})
 	deleteTestNginxPod(t, data, testPodHostNetworkName)
 }
 
-func testClusterIPCases(t *testing.T, data *TestData, url, hostname, clientPodCp, clientPodWk string) {
+func testClusterIPCases(t *testing.T, data *TestData, url, clientPodCp, clientPodWk string) {
 	t.Run("Host on different Node can access the Service", func(t *testing.T) {
 		t.Parallel()
 		skipIfKubeProxyEnabledOnLinux(t, data, nodeName(1))
@@ -117,7 +117,7 @@ func createClusterIPService(t *testing.T, data *TestData, isIPv6 bool) string {
 	if isIPv6 {
 		ipProctol = corev1.IPv6Protocol
 	}
-	clusterIP, err := data.createNginxClusterIPService(fmt.Sprintf("echoserver-%v", isIPv6), false, &ipProctol)
+	clusterIP, err := data.createNginxClusterIPService(fmt.Sprintf("nginx-%v", isIPv6), false, &ipProctol)
 	require.NoError(t, err)
 	return clusterIP.Spec.ClusterIP
 }
