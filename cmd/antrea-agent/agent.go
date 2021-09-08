@@ -130,12 +130,12 @@ func run(o *Options) error {
 		TransportIface:        o.config.TransportInterface,
 	}
 
+	wireguardConfig := &config.WireGuardConfig{
+		Port: o.config.WireGuard.Port,
+	}
 	routeClient, err := route.NewClient(serviceCIDRNet, networkConfig, o.config.NoSNAT, o.config.AntreaProxy.ProxyAll)
 	if err != nil {
 		return fmt.Errorf("error creating route client: %v", err)
-	}
-	wireguardConfig := &config.WireGuardConfig{
-		Port: o.config.WireGuard.Port,
 	}
 
 	// Create an ifaceStore that caches network interfaces managed by this node.

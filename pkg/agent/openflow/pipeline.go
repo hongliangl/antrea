@@ -49,7 +49,7 @@ const (
 	arpResponderTable            binding.TableIDType = 20
 	ipv6Table                    binding.TableIDType = 21
 	serviceHairpinTable          binding.TableIDType = 23
-	serviceConntrackTable        binding.TableIDType = 24 // serviceConntrackTable use a new ct_zone to transform SNATed connections.
+	serviceConntrackTable        binding.TableIDType = 24 // serviceConntrackTable use a new ct_zone to transform SNAT'd connections.
 	conntrackTable               binding.TableIDType = 30
 	conntrackStateTable          binding.TableIDType = 31
 	serviceClassifierTable       binding.TableIDType = 35

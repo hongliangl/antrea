@@ -25,69 +25,70 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-func TestIPv4ClusterIP(t *testing.T) {
-	data, err := setupTest(t)
-	if err != nil {
-		t.Fatalf("Error when setting up test: %v", err)
-	}
-	defer teardownTest(t, data)
-
-	skipIfNumNodesLessThan(t, 2)
+func TestClusterIPIPv4(t *testing.T) {
 	skipIfNotIPv4Cluster(t)
-
-	clientPodCp := "busybox-cp"
-	clientPodWk := "busybox-wk"
-	createTestClientPods(t, data, clientPodCp, clientPodWk)
-	testClusterIPHelper(t, data, false, clientPodCp, clientPodWk)
-}
-
-func TestIPv6ClusterIP(t *testing.T) {
+	skipIfNumNodesLessThan(t, 2)
 	data, err := setupTest(t)
 	if err != nil {
 		t.Fatalf("Error when setting up test: %v", err)
 	}
 	defer teardownTest(t, data)
 
-	skipIfNumNodesLessThan(t, 2)
-	skipIfNotIPv6Cluster(t)
-
-	clientPodCp := "busybox-cp"
-	clientPodWk := "busybox-wk"
-	createTestClientPods(t, data, clientPodCp, clientPodWk)
-	testClusterIPHelper(t, data, true, clientPodCp, clientPodWk)
+	busybox0 := "busybox-0"
+	busybox1 := "busybox-1"
+	createTestClientPod(t, data, busybox0, nodeName(0))
+	createTestClientPod(t, data, busybox1, nodeName(1))
+	testClusterIPHelper(t, data, false, busybox0, busybox1)
 }
 
-func testClusterIPHelper(t *testing.T, data *TestData, isIPv6 bool, clientPodCp, clientPodWk string) {
-	testPodName := fmt.Sprintf("nginx-%v", isIPv6)
-	createTestNginxPod(t, data, testPodName, false)
-	clusterIP := createClusterIPService(t, data, isIPv6)
-	time.Sleep(2 * time.Second)
-	url := "http://" + net.JoinHostPort(clusterIP, "80")
-	t.Run("Pod CIDR Endpoints", func(t *testing.T) {
-		testClusterIPCases(t, data, url, clientPodCp, clientPodWk)
-	})
-	deleteTestNginxPod(t, data, testPodName)
+func TestClusterIPIPv6(t *testing.T) {
+	skipIfNotIPv6Cluster(t)
+	skipIfNumNodesLessThan(t, 2)
+	data, err := setupTest(t)
+	if err != nil {
+		t.Fatalf("Error when setting up test: %v", err)
+	}
+	defer teardownTest(t, data)
 
-	testPodHostNetworkName := fmt.Sprintf("nginx-cp-h-%v", isIPv6)
-	createTestNginxPod(t, data, testPodHostNetworkName, true)
+	busybox0 := "busybox-0"
+	busybox1 := "busybox-1"
+	createTestClientPod(t, data, busybox0, nodeName(0))
+	createTestClientPod(t, data, busybox1, nodeName(1))
+	testClusterIPHelper(t, data, true, busybox0, busybox1)
+}
+
+func testClusterIPHelper(t *testing.T, data *TestData, isIPv6 bool, clientPod0, clientPod1 string) {
+	nginx := fmt.Sprintf("nginx-%v", isIPv6)
+	hostNginx := fmt.Sprintf("nginx-host-%v", isIPv6)
+	clusterIP := createClusterIPService(t, data, isIPv6)
+	url := net.JoinHostPort(clusterIP, "80")
+
+	createTestNginxPod(t, data, nginx, false)
+	time.Sleep(2 * time.Second)
+	t.Run("Pod CIDR Endpoints", func(t *testing.T) {
+		testClusterIPCases(t, data, url, clientPod0, clientPod1)
+	})
+	require.NoError(t, data.deletePod(testNamespace, nginx))
+
+	createTestNginxPod(t, data, hostNginx, true)
 	time.Sleep(2 * time.Second)
 	t.Run("Host Network Endpoints", func(t *testing.T) {
-		testClusterIPCases(t, data, url, clientPodCp, clientPodWk)
+		testClusterIPCases(t, data, url, clientPod0, clientPod1)
 	})
-	deleteTestNginxPod(t, data, testPodHostNetworkName)
+	require.NoError(t, data.deletePod(testNamespace, hostNginx))
 }
 
 func testClusterIPCases(t *testing.T, data *TestData, url, clientPodCp, clientPodWk string) {
 	t.Run("Host on different Node can access the Service", func(t *testing.T) {
-		t.Parallel()
-		skipIfKubeProxyEnabledOnLinux(t, data, nodeName(1))
 		skipIfProxyAllDisabled(t, data)
+		skipIfKubeProxyEnabled(t, data)
+		t.Parallel()
 		testClusterIPFromNode(t, url, nodeName(1))
 	})
 	t.Run("Host on the same Node can access the Service", func(t *testing.T) {
-		t.Parallel()
-		skipIfKubeProxyEnabledOnLinux(t, data, nodeName(0))
 		skipIfProxyAllDisabled(t, data)
+		skipIfKubeProxyEnabled(t, data)
+		t.Parallel()
 		testClusterIPFromNode(t, url, nodeName(0))
 	})
 	t.Run("Pod on same Node can access the Service", func(t *testing.T) {
@@ -123,15 +124,10 @@ func createClusterIPService(t *testing.T, data *TestData, isIPv6 bool) string {
 }
 
 func createTestNginxPod(t *testing.T, data *TestData, testPodName string, hostNetwork bool) {
-	require.NoError(t, data.createNginxPodOnNodeV2(testPodName, nodeName(0), false))
+	require.NoError(t, data.createNginxPodOnNode(testPodName, testNamespace, nodeName(0), hostNetwork))
 	_, err := data.podWaitForIPs(defaultTimeout, testPodName, testNamespace)
 	require.NoError(t, err)
 	require.NoError(t, data.podWaitForRunning(defaultTimeout, testPodName, testNamespace))
-}
-
-func deleteTestNginxPod(t *testing.T, data *TestData, testPodName string) {
-	err := data.deletePod(testNamespace, testPodName)
-	require.NoError(t, err)
 }
 
 // TestNodePortWindows tests NodePort Service on Windows Node. It is a temporary test to replace upstream Kubernetes one:

@@ -1018,9 +1018,9 @@ func (data *TestData) createPodOnNodeInNamespace(name, ns string, nodeName, ctrN
 
 // createBusyboxPodOnNode creates a Pod in the test namespace with a single busybox container. The
 // Pod will be scheduled on the specified Node (if nodeName is not empty).
-func (data *TestData) createBusyboxPodOnNode(name string, ns string, nodeName string) error {
+func (data *TestData) createBusyboxPodOnNode(name string, ns string, nodeName string, hostNetowrk bool) error {
 	sleepDuration := 3600 // seconds
-	return data.createPodOnNode(name, ns, nodeName, busyboxImage, []string{"sleep", strconv.Itoa(sleepDuration)}, nil, nil, nil, false, nil)
+	return data.createPodOnNode(name, ns, nodeName, busyboxImage, []string{"sleep", strconv.Itoa(sleepDuration)}, nil, nil, nil, hostNetowrk, nil)
 }
 
 // createHostNetworkBusyboxPodOnNode creates a host network Pod in the test namespace with a single busybox container.
@@ -1032,20 +1032,8 @@ func (data *TestData) createHostNetworkBusyboxPodOnNode(name string, ns string, 
 
 // createNginxPodOnNode creates a Pod in the test namespace with a single nginx container. The
 // Pod will be scheduled on the specified Node (if nodeName is not empty).
-func (data *TestData) createNginxPodOnNode(name string, ns string, nodeName string) error {
+func (data *TestData) createNginxPodOnNode(name string, ns string, nodeName string, hostNetwork bool) error {
 	return data.createPodOnNode(name, ns, nodeName, nginxImage, []string{}, nil, nil, []corev1.ContainerPort{
-		{
-			Name:          "http",
-			ContainerPort: 80,
-			Protocol:      corev1.ProtocolTCP,
-		},
-	}, false, nil)
-}
-
-// createNginxPodOnNode2 creates a Pod in the test namespace with a single nginx container. The
-// Pod will be scheduled on the specified Node (if nodeName is not empty).
-func (data *TestData) createNginxPodOnNodeV2(name string, nodeName string, hostNetwork bool) error {
-	return data.createPodOnNode(name, testNamespace, nodeName, nginxImage, []string{}, nil, nil, []corev1.ContainerPort{
 		{
 			Name:          "http",
 			ContainerPort: 80,
@@ -1448,7 +1436,7 @@ func (data *TestData) createNginxClusterIPServiceWithAnnotations(affinity bool, 
 	return data.createServiceWithAnnotations("nginx", 80, 80, map[string]string{"app": "nginx"}, affinity, false, corev1.ServiceTypeClusterIP, ipFamily, annotation)
 }
 
-// createNginxClusterIPService create a nginx service with the given name.
+// createNginxClusterIPService creates a nginx service with the given name.
 func (data *TestData) createNginxClusterIPService(name string, affinity bool, ipFamily *corev1.IPFamily) (*corev1.Service, error) {
 	if name == "" {
 		name = "nginx"
@@ -1456,12 +1444,12 @@ func (data *TestData) createNginxClusterIPService(name string, affinity bool, ip
 	return data.createService(name, 80, 80, map[string]string{"app": "nginx"}, affinity, false, corev1.ServiceTypeClusterIP, ipFamily)
 }
 
-// createAgnhostNodePortService create a NodePort agnhost service with the given name.
+// createAgnhostNodePortService creates a NodePort agnhost service with the given name.
 func (data *TestData) createAgnhostNodePortService(serviceName string, affinity, nodeLocalExternal bool, ipFamily *corev1.IPFamily) (*corev1.Service, error) {
 	return data.createService(serviceName, 8080, 8080, map[string]string{"app": "agnhost"}, affinity, nodeLocalExternal, corev1.ServiceTypeNodePort, ipFamily)
 }
 
-// createAgnhostLoadBalancerService create a LoadBalancer agnhost service with the given name.
+// createAgnhostLoadBalancerService creates a LoadBalancer agnhost service with the given name.
 func (data *TestData) createAgnhostLoadBalancerService(serviceName string, affinity, nodeLocalExternal bool, ingressIPs []string, ipFamily *corev1.IPFamily) (*corev1.Service, error) {
 	svc, err := data.createService(serviceName, 8080, 8080, map[string]string{"app": "agnhost"}, affinity, nodeLocalExternal, corev1.ServiceTypeLoadBalancer, ipFamily)
 	if err != nil {
@@ -1735,7 +1723,7 @@ func (data *TestData) GetEncapMode() (config.TrafficEncapModeType, error) {
 	return config.TrafficEncapModeEncap, nil
 }
 
-func (data *TestData) IsProxyAll() (bool, error) {
+func (data *TestData) isProxyAll() (bool, error) {
 	configMap, err := data.GetAntreaConfigMap(antreaNamespace)
 	if err != nil {
 		return false, fmt.Errorf("failed to get Antrea ConfigMap: %v", err)
