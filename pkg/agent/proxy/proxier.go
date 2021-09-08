@@ -101,15 +101,16 @@ type proxier struct {
 	// oversizeServiceSet records the Services that have more than 800 Endpoints.
 	oversizeServiceSet sets.String
 
-	runner               *k8sproxy.BoundedFrequencyRunner
-	stopChan             <-chan struct{}
-	ofClient             openflow.Client
-	routeClient          route.Interface
-	nodePortAddresses    []net.IP
-	hostGateWay          string
-	isIPv6               bool
-	proxyAll             bool
-	endpointSliceEnabled bool
+	runner                          *k8sproxy.BoundedFrequencyRunner
+	stopChan                        <-chan struct{}
+	ofClient                        openflow.Client
+	routeClient                     route.Interface
+	nodePortAddresses               []net.IP
+	hostGateWay                     string
+	isIPv6                          bool
+	proxyAll                        bool
+	endpointSliceEnabled            bool
+	svcInternalTrafficPolicyEnabled bool
 }
 
 func endpointKey(endpoint k8sproxy.Endpoint, protocol binding.Protocol) string {
@@ -155,8 +156,9 @@ func (p *proxier) removeStaleServices() {
 				continue
 			}
 		}
-		// Remove Service group whose Endpoints are local.
-		if svcInfo.NodeLocalExternal() {
+		// If externalTrafficPolicy of the Service is Local and internalTrafficPolicy of the Service is not Local, a Service group
+		// that only has local Endpoints should have been already created, and it should be removed.
+		if svcInfo.NodeLocalExternal() && !(p.svcInternalTrafficPolicyEnabled && svcInfo.NodeLocalInternal()) {
 			groupIDLocal, _ := p.groupCounter.Get(svcPortName, true)
 			if err := p.ofClient.UninstallServiceGroup(groupIDLocal); err != nil {
 				klog.ErrorS(err, "Failed to remove flows of Service", "Service", svcPortName)
@@ -164,8 +166,16 @@ func (p *proxier) removeStaleServices() {
 			}
 			p.groupCounter.Recycle(svcPortName, true)
 		}
-		// Remove Service group which has all Endpoints.
-		groupID, _ := p.groupCounter.Get(svcPortName, false)
+
+		var groupID binding.GroupIDType
+		// If internalTrafficPolicy of the Service is Local, a Service group that only has local Endpoints should have been
+		// already created. If internalTrafficPolicy of the theService is Cluster, a Service group that has all Endpoints
+		// should have been created. Remove the Service group.
+		if p.svcInternalTrafficPolicyEnabled && svcInfo.NodeLocalInternal() {
+			groupID, _ = p.groupCounter.Get(svcPortName, true)
+		} else {
+			groupID, _ = p.groupCounter.Get(svcPortName, false)
+		}
 		if err := p.ofClient.UninstallServiceGroup(groupID); err != nil {
 			klog.ErrorS(err, "Failed to remove flows of Service", "Service", svcPortName)
 			continue
@@ -245,7 +255,8 @@ func serviceIdentityChanged(svcInfo, pSvcInfo *types.ServiceInfo) bool {
 		svcInfo.Port() != pSvcInfo.Port() ||
 		svcInfo.OFProtocol != pSvcInfo.OFProtocol ||
 		svcInfo.NodePort() != pSvcInfo.NodePort() ||
-		svcInfo.NodeLocalExternal() != pSvcInfo.NodeLocalExternal()
+		svcInfo.NodeLocalExternal() != pSvcInfo.NodeLocalExternal() ||
+		svcInfo.NodeLocalInternal() != pSvcInfo.NodeLocalInternal()
 }
 
 // smallSliceDifference builds a slice which includes all the strings from s1
@@ -340,7 +351,14 @@ func (p *proxier) uninstallLoadBalancerService(loadBalancerIPStrings []string, s
 func (p *proxier) installServices() {
 	for svcPortName, svcPort := range p.serviceMap {
 		svcInfo := svcPort.(*types.ServiceInfo)
-		groupID, _ := p.groupCounter.Get(svcPortName, false)
+		var groupID binding.GroupIDType
+		// If internalTrafficPolicy of the Service is Local, then a Service that has only local Endpoints should be created,
+		// otherwise a Service that has all Endpoints should be created.
+		if p.svcInternalTrafficPolicyEnabled && svcInfo.NodeLocalInternal() {
+			groupID, _ = p.groupCounter.Get(svcPortName, true)
+		} else {
+			groupID, _ = p.groupCounter.Get(svcPortName, false)
+		}
 		endpointsInstalled, ok := p.endpointsInstalledMap[svcPortName]
 		if !ok {
 			endpointsInstalled = map[string]k8sproxy.Endpoint{}
@@ -376,11 +394,18 @@ func (p *proxier) installServices() {
 			// slice endpointList after sorting can avoid this situation in some degree.
 			var endpointList []k8sproxy.Endpoint
 			for _, endpoint := range endpoints {
+				// If internalTrafficPolicy of the Service is Local, skip the Endpoints which are not local.
+				if p.svcInternalTrafficPolicyEnabled && svcInfo.NodeLocalInternal() && !endpoint.GetIsLocal() {
+					continue
+				}
 				endpointList = append(endpointList, endpoint)
 			}
 			sort.Sort(byEndpoint(endpointList))
-			endpointList = endpointList[:maxEndpoints]
-
+			// As non-local Endpoints are skipped, the number of Endpoints may be less than maxEndpoints. If so, it's
+			// unnecessary to drop any Endpoints.
+			if len(endpointList) > maxEndpoints {
+				endpointList = endpointList[:maxEndpoints]
+			}
 			for _, endpoint := range endpointList { // Check if there is any installed Endpoint which is not expected anymore.
 				if _, ok := endpointsInstalled[endpoint.String()]; !ok { // There is an expected Endpoint which is not installed.
 					needUpdateEndpoints = true
@@ -392,6 +417,10 @@ func (p *proxier) installServices() {
 				p.oversizeServiceSet.Delete(svcPortName.String())
 			}
 			for _, endpoint := range endpoints { // Check if there is any installed Endpoint which is not expected anymore.
+				// If internalTrafficPolicy of the Service is Local, skip the Endpoints which are not local.
+				if p.svcInternalTrafficPolicyEnabled && svcInfo.NodeLocalInternal() && !endpoint.GetIsLocal() {
+					continue
+				}
 				if _, ok := endpointsInstalled[endpoint.String()]; !ok { // There is an expected Endpoint which is not installed.
 					needUpdateEndpoints = true
 				}
@@ -439,8 +468,9 @@ func (p *proxier) installServices() {
 				continue
 			}
 
-			// Install another group when Service externalTrafficPolicy is Local.
-			if p.proxyAll && svcInfo.NodeLocalExternal() {
+			// If externalTrafficPolicy of the Service is Local and internalTrafficPolicy of the Service is not Local, another
+			// Service group that has only local Endpoints should be created.
+			if p.proxyAll && svcInfo.NodeLocalExternal() && !(p.svcInternalTrafficPolicyEnabled && svcInfo.NodeLocalInternal()) {
 				groupIDLocal, _ := p.groupCounter.Get(svcPortName, true)
 				var localEndpointList []k8sproxy.Endpoint
 				for _, ed := range endpointUpdateList {
@@ -491,10 +521,14 @@ func (p *proxier) installServices() {
 				continue
 			}
 
-			// If externalTrafficPolicy of the Service is Local, Service NodePort or LoadBalancer should use the Service
-			// group whose Endpoints are local.
+			// When creating a Service of NodePort/LoadBalancer, a ClusterIP will be also created. If externalTrafficPolicy
+			// of the Service is Local and internalTrafficPolicy of the Service is Cluster,  Service NodePort/LoadBalancer
+			// should use the Service group that which has only local Endpoints, rather than the Service group that has all
+			// Endpoints, which is for the ClusterIP. However, if internalTrafficPolicy of the Service is Local, the Service
+			// group that has only local Endpoints should have been created for the ClusterIP, Service NodePort/LoadBalancer
+			// should also use the same Service group.
 			nGroupID := groupID
-			if svcInfo.NodeLocalExternal() {
+			if svcInfo.NodeLocalExternal() && !(p.svcInternalTrafficPolicyEnabled && svcInfo.NodeLocalInternal()) {
 				nGroupID, _ = p.groupCounter.Get(svcPortName, true)
 			}
 
@@ -768,7 +802,8 @@ func NewProxier(
 	isIPv6 bool,
 	routeClient route.Interface,
 	nodePortAddresses []net.IP,
-	proxyAllEnabled bool) *proxier {
+	proxyAllEnabled bool,
+	svcInternalTrafficPolicyEnabled bool) *proxier {
 	recorder := record.NewBroadcaster().NewRecorder(
 		runtime.NewScheme(),
 		corev1.EventSource{Component: componentName, Host: hostname},
@@ -783,24 +818,25 @@ func NewProxier(
 	}
 
 	p := &proxier{
-		endpointsConfig:          config.NewEndpointsConfig(informerFactory.Core().V1().Endpoints(), resyncPeriod),
-		serviceConfig:            config.NewServiceConfig(informerFactory.Core().V1().Services(), resyncPeriod),
-		endpointsChanges:         newEndpointsChangesTracker(hostname, endpointSliceEnabled, isIPv6),
-		serviceChanges:           newServiceChangesTracker(recorder, ipFamily),
-		serviceMap:               k8sproxy.ServiceMap{},
-		serviceInstalledMap:      k8sproxy.ServiceMap{},
-		endpointsInstalledMap:    types.EndpointsMap{},
-		endpointsMap:             types.EndpointsMap{},
-		endpointReferenceCounter: map[string]int{},
-		serviceStringMap:         map[string]k8sproxy.ServicePortName{},
-		oversizeServiceSet:       sets.NewString(),
-		groupCounter:             types.NewGroupCounter(isIPv6),
-		ofClient:                 ofClient,
-		routeClient:              routeClient,
-		nodePortAddresses:        nodePortAddresses,
-		isIPv6:                   isIPv6,
-		proxyAll:                 proxyAllEnabled,
-		endpointSliceEnabled:     endpointSliceEnabled,
+		endpointsConfig:                 config.NewEndpointsConfig(informerFactory.Core().V1().Endpoints(), resyncPeriod),
+		serviceConfig:                   config.NewServiceConfig(informerFactory.Core().V1().Services(), resyncPeriod),
+		endpointsChanges:                newEndpointsChangesTracker(hostname, endpointSliceEnabled, isIPv6),
+		serviceChanges:                  newServiceChangesTracker(recorder, ipFamily),
+		serviceMap:                      k8sproxy.ServiceMap{},
+		serviceInstalledMap:             k8sproxy.ServiceMap{},
+		endpointsInstalledMap:           types.EndpointsMap{},
+		endpointsMap:                    types.EndpointsMap{},
+		endpointReferenceCounter:        map[string]int{},
+		serviceStringMap:                map[string]k8sproxy.ServicePortName{},
+		oversizeServiceSet:              sets.NewString(),
+		groupCounter:                    types.NewGroupCounter(isIPv6),
+		ofClient:                        ofClient,
+		routeClient:                     routeClient,
+		nodePortAddresses:               nodePortAddresses,
+		isIPv6:                          isIPv6,
+		proxyAll:                        proxyAllEnabled,
+		endpointSliceEnabled:            endpointSliceEnabled,
+		svcInternalTrafficPolicyEnabled: svcInternalTrafficPolicyEnabled,
 	}
 
 	p.serviceConfig.RegisterEventHandler(p)
@@ -852,13 +888,14 @@ func NewDualStackProxier(
 	routeClient route.Interface,
 	nodePortAddressesIPv4 []net.IP,
 	nodePortAddressesIPv6 []net.IP,
-	proxyAllEnabled bool) *metaProxierWrapper {
+	proxyAllEnabled bool,
+	serviceInternalTrafficPolicyEnabled bool) *metaProxierWrapper {
 
 	// Create an ipv4 instance of the single-stack proxier.
-	ipv4Proxier := NewProxier(hostname, informerFactory, ofClient, false, routeClient, nodePortAddressesIPv4, proxyAllEnabled)
+	ipv4Proxier := NewProxier(hostname, informerFactory, ofClient, false, routeClient, nodePortAddressesIPv4, proxyAllEnabled, serviceInternalTrafficPolicyEnabled)
 
 	// Create an ipv6 instance of the single-stack proxier.
-	ipv6Proxier := NewProxier(hostname, informerFactory, ofClient, true, routeClient, nodePortAddressesIPv6, proxyAllEnabled)
+	ipv6Proxier := NewProxier(hostname, informerFactory, ofClient, true, routeClient, nodePortAddressesIPv6, proxyAllEnabled, serviceInternalTrafficPolicyEnabled)
 
 	// Create a meta-proxier that dispatch calls between the two
 	// single-stack proxier instances.

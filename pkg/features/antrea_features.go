@@ -39,6 +39,11 @@ const (
 	// flag will not take effect.
 	EndpointSlice featuregate.Feature = "EndpointSlice"
 
+	// alpha: v1.4
+	// Enable ServiceInternalTrafficPolicy support in AntreaProxy. If AntreaProxy is not
+	// enabled, this flag will not take effect.
+	ServiceInternalTrafficPolicy featuregate.Feature = "ServiceInternalTrafficPolicy"
+
 	// alpha: v0.8
 	// beta: v0.11
 	// Enable antrea proxy which provides ServiceLB for in-cluster services in antrea agent.
@@ -85,15 +90,16 @@ var (
 	// To add a new feature, define a key for it above and add it here. The features will be
 	// available throughout Antrea binaries.
 	DefaultAntreaFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
-		AntreaPolicy:       {Default: true, PreRelease: featuregate.Beta},
-		AntreaProxy:        {Default: true, PreRelease: featuregate.Beta},
-		Egress:             {Default: false, PreRelease: featuregate.Alpha},
-		EndpointSlice:      {Default: false, PreRelease: featuregate.Alpha},
-		Traceflow:          {Default: true, PreRelease: featuregate.Beta},
-		FlowExporter:       {Default: false, PreRelease: featuregate.Alpha},
-		NetworkPolicyStats: {Default: true, PreRelease: featuregate.Beta},
-		NodePortLocal:      {Default: false, PreRelease: featuregate.Alpha},
-		NodeIPAM:           {Default: false, PreRelease: featuregate.Alpha},
+		AntreaPolicy:                 {Default: true, PreRelease: featuregate.Beta},
+		AntreaProxy:                  {Default: true, PreRelease: featuregate.Beta},
+		ServiceInternalTrafficPolicy: {Default: false, PreRelease: featuregate.Alpha},
+		Egress:                       {Default: false, PreRelease: featuregate.Alpha},
+		EndpointSlice:                {Default: false, PreRelease: featuregate.Alpha},
+		Traceflow:                    {Default: true, PreRelease: featuregate.Beta},
+		FlowExporter:                 {Default: false, PreRelease: featuregate.Alpha},
+		NetworkPolicyStats:           {Default: true, PreRelease: featuregate.Beta},
+		NodePortLocal:                {Default: false, PreRelease: featuregate.Alpha},
+		NodeIPAM:                     {Default: false, PreRelease: featuregate.Alpha},
 	}
 
 	// UnsupportedFeaturesOnWindows records the features not supported on

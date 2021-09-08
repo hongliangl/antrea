@@ -33,17 +33,18 @@ example, to enable `AntreaProxy` on Linux, edit the Agent configuration in the
 
 ## List of Available Features
 
-| Feature Name            | Component          | Default | Stage | Alpha Release | Beta Release | GA Release | Extra Requirements | Notes |
-| ----------------------- | ------------------ | ------- | ----- | ------------- | ------------ | ---------- | ------------------ | ----- |
-| `AntreaProxy`           | Agent              | `true`  | Beta  | v0.8          | v0.11        | N/A        | Yes                | Must be enabled for Windows. |
-| `EndpointSlice`         | Agent              | `false` | Alpha | v0.13.0       | N/A          | N/A        | Yes                |       |
-| `AntreaPolicy`          | Agent + Controller | `true`  | Beta  | v0.8          | v1.0         | N/A        | No                 | Agent side config required from v0.9.0+. |
-| `Traceflow`             | Agent + Controller | `true`  | Beta  | v0.8          | v0.11        | N/A        | Yes                |       |
-| `FlowExporter`          | Agent              | `false` | Alpha | v0.9          | N/A          | N/A        | Yes                |       |
-| `NetworkPolicyStats`    | Agent + Controller | `true`  | Beta  | v0.10         | v1.2         | N/A        | No                 |       |
-| `NodePortLocal`         | Agent              | `false` | Alpha | v0.13         | N/A          | N/A        | Yes                | Important user-facing change in v1.2.0 |
-| `Egress`                | Agent + Controller | `false` | Alpha | v1.0          | N/A          | N/A        | Yes                |       |
-| `NodeIPAM`              | Controller         | `false` | Alpha | v1.4          | N/A          | N/A        | Yes                |       |
+| Feature Name                    | Component          | Default | Stage | Alpha Release | Beta Release | GA Release | Extra Requirements | Notes |
+| ------------------------------- | ------------------ | ------- | ----- | ------------- | ------------ | ---------- | ------------------ | ----- |
+| `AntreaProxy`                   | Agent              | `true`  | Beta  | v0.8          | v0.11        | N/A        | Yes                | Must be enabled for Windows. |
+| `EndpointSlice`                 | Agent              | `false` | Alpha | v0.13.0       | N/A          | N/A        | Yes                |       |
+| `ServiceInternalTrafficPolicy`  | Agent              | `false` | Alpha | v1.4          | N/A          | N/A        | No                 |       |
+| `AntreaPolicy`                  | Agent + Controller | `true`  | Beta  | v0.8          | v1.0         | N/A        | No                 | Agent side config required from v0.9.0+. |
+| `Traceflow`                     | Agent + Controller | `true`  | Beta  | v0.8          | v0.11        | N/A        | Yes                |       |
+| `FlowExporter`                  | Agent              | `false` | Alpha | v0.9          | N/A          | N/A        | Yes                |       |
+| `NetworkPolicyStats`            | Agent + Controller | `true`  | Beta  | v0.10         | v1.2         | N/A        | No                 |       |
+| `NodePortLocal`                 | Agent              | `false` | Alpha | v0.13         | N/A          | N/A        | Yes                | Important user-facing change in v1.2.0 |
+| `Egress`                        | Agent + Controller | `false` | Alpha | v1.0          | N/A          | N/A        | Yes                |       |
+| `NodeIPAM`                      | Controller         | `false` | Alpha | v1.4          | N/A          | N/A        | Yes                |       |
 
 ## Description and Requirements of Features
 
@@ -81,6 +82,13 @@ and will not implement Cluster IP functionality as expected.
 
 When using the OVS built-in kernel module (which is the most common case), your
 kernel version must be >= 4.6 (as opposed to >= 4.4 without this feature).
+
+### ServiceInternalTrafficPolicy
+
+`ServiceInternalTrafficPolicy` enables internal traffic restrictions to only route internal
+traffic to Endpoints within the Node the traffic originated from. The "internal" traffic
+here refers to traffic originated from Pods in the current cluster. This can help to reduce
+costs and improve performance.
 
 ### AntreaPolicy
 

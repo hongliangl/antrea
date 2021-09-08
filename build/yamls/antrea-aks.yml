@@ -3773,6 +3773,11 @@ data:
     # this flag will not take effect.
     #  EndpointSlice: false
 
+    # Enables ServiceInternalTrafficPolicy in AntreaProxy. Don't enable this feature unless that feature gateway
+    # ServiceInternalTrafficPolicy of Kubernetes APIServer is set as enabled. If AntreaProxy is not enabled,
+    # this flag will not take effect.
+    #  ServiceInternalTrafficPolicy: false
+
     # Enable traceflow which provides packet tracing feature to diagnose network issue.
     #  Traceflow: true
 
@@ -4054,7 +4059,7 @@ metadata:
   annotations: {}
   labels:
     app: antrea
-  name: antrea-config-dtc759g79k
+  name: antrea-config-4k8284md8c
   namespace: kube-system
 ---
 apiVersion: v1
@@ -4125,7 +4130,7 @@ spec:
             fieldRef:
               fieldPath: spec.serviceAccountName
         - name: ANTREA_CONFIG_MAP_NAME
-          value: antrea-config-dtc759g79k
+          value: antrea-config-4k8284md8c
         image: projects.registry.vmware.com/antrea/antrea-ubuntu:latest
         imagePullPolicy: IfNotPresent
         livenessProbe:
@@ -4176,7 +4181,7 @@ spec:
         key: node-role.kubernetes.io/master
       volumes:
       - configMap:
-          name: antrea-config-dtc759g79k
+          name: antrea-config-4k8284md8c
         name: antrea-config
       - name: antrea-controller-tls
         secret:
@@ -4457,7 +4462,7 @@ spec:
         operator: Exists
       volumes:
       - configMap:
-          name: antrea-config-dtc759g79k
+          name: antrea-config-4k8284md8c
         name: antrea-config
       - hostPath:
           path: /etc/cni/net.d

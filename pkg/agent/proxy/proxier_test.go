@@ -51,6 +51,7 @@ var (
 	loadBalancerIPv6 = net.ParseIP("fec0::169:254:169:1")
 	svcNodePortIPv4  = net.ParseIP("192.168.77.100")
 	svcNodePortIPv6  = net.ParseIP("2001::192:168:77:100")
+	hostname         = "localhost"
 
 	nodePortAddressesIPv4 = []net.IP{svcNodePortIPv4}
 	nodePortAddressesIPv6 = []net.IP{svcNodePortIPv6}
@@ -99,8 +100,7 @@ func makeTestEndpoints(namespace, name string, eptFunc func(*corev1.Endpoints)) 
 	return ept
 }
 
-func NewFakeProxier(routeClient route.Interface, ofClient openflow.Client, nodePortAddresses []net.IP, isIPv6, proxyAllEnabled bool) *proxier {
-	hostname := "localhost"
+func NewFakeProxier(routeClient route.Interface, ofClient openflow.Client, nodePortAddresses []net.IP, isIPv6, proxyAllEnabled, serviceInternalTrafficPolicyEnabled bool) *proxier {
 	eventBroadcaster := record.NewBroadcaster()
 	recorder := eventBroadcaster.NewRecorder(
 		runtime.NewScheme(),
@@ -113,31 +113,33 @@ func NewFakeProxier(routeClient route.Interface, ofClient openflow.Client, nodeP
 	}
 
 	p := &proxier{
-		endpointsChanges:         newEndpointsChangesTracker(hostname, false, isIPv6),
-		serviceChanges:           newServiceChangesTracker(recorder, ipFamily),
-		serviceMap:               k8sproxy.ServiceMap{},
-		serviceInstalledMap:      k8sproxy.ServiceMap{},
-		endpointsInstalledMap:    types.EndpointsMap{},
-		endpointReferenceCounter: map[string]int{},
-		endpointsMap:             types.EndpointsMap{},
-		groupCounter:             types.NewGroupCounter(isIPv6),
-		ofClient:                 ofClient,
-		routeClient:              routeClient,
-		serviceStringMap:         map[string]k8sproxy.ServicePortName{},
-		isIPv6:                   isIPv6,
-		nodePortAddresses:        nodePortAddresses,
-		proxyAll:                 proxyAllEnabled,
+		endpointsChanges:                newEndpointsChangesTracker(hostname, false, isIPv6),
+		serviceChanges:                  newServiceChangesTracker(recorder, ipFamily),
+		serviceMap:                      k8sproxy.ServiceMap{},
+		serviceInstalledMap:             k8sproxy.ServiceMap{},
+		endpointsInstalledMap:           types.EndpointsMap{},
+		endpointReferenceCounter:        map[string]int{},
+		endpointsMap:                    types.EndpointsMap{},
+		groupCounter:                    types.NewGroupCounter(isIPv6),
+		ofClient:                        ofClient,
+		routeClient:                     routeClient,
+		serviceStringMap:                map[string]k8sproxy.ServicePortName{},
+		isIPv6:                          isIPv6,
+		nodePortAddresses:               nodePortAddresses,
+		proxyAll:                        proxyAllEnabled,
+		svcInternalTrafficPolicyEnabled: serviceInternalTrafficPolicyEnabled,
 	}
 	p.runner = k8sproxy.NewBoundedFrequencyRunner(componentName, p.syncProxyRules, time.Second, 30*time.Second, 2)
 	return p
 }
 
-func testClusterIP(t *testing.T, svcIP net.IP, epIP net.IP, isIPv6 bool) {
+func testClusterIP(t *testing.T, svcIP net.IP, ep1IP, ep2IP net.IP, isIPv6 bool, nodeLocalInternal bool) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	mockOFClient := ofmock.NewMockClient(ctrl)
 	mockRouteClient := routemock.NewMockInterface(ctrl)
-	fp := NewFakeProxier(mockRouteClient, mockOFClient, nil, isIPv6, true)
+
+	fp := NewFakeProxier(mockRouteClient, mockOFClient, nil, isIPv6, true, nodeLocalInternal)
 
 	svcPort := 80
 	svcPortName := k8sproxy.ServicePortName{
@@ -145,6 +147,11 @@ func testClusterIP(t *testing.T, svcIP net.IP, epIP net.IP, isIPv6 bool) {
 		Port:           "80",
 		Protocol:       corev1.ProtocolTCP,
 	}
+	internalTrafficPolicy := corev1.ServiceInternalTrafficPolicyCluster
+	if nodeLocalInternal {
+		internalTrafficPolicy = corev1.ServiceInternalTrafficPolicyLocal
+	}
+
 	makeServiceMap(fp,
 		makeTestService(svcPortName.Namespace, svcPortName.Name, func(svc *corev1.Service) {
 			svc.Spec.ClusterIP = svcIP.String()
@@ -153,25 +160,48 @@ func testClusterIP(t *testing.T, svcIP net.IP, epIP net.IP, isIPv6 bool) {
 				Port:     int32(svcPort),
 				Protocol: corev1.ProtocolTCP,
 			}}
+			svc.Spec.InternalTrafficPolicy = &internalTrafficPolicy
 		}),
 	)
 
-	makeEndpointsMap(fp,
-		makeTestEndpoints(svcPortName.Namespace, svcPortName.Name, func(ept *corev1.Endpoints) {
-			ept.Subsets = []corev1.EndpointSubset{{
-				Addresses: []corev1.EndpointAddress{{
-					IP: epIP.String(),
-				}},
-				Ports: []corev1.EndpointPort{{
-					Name:     svcPortName.Port,
-					Port:     int32(svcPort),
-					Protocol: corev1.ProtocolTCP,
-				}},
-			}}
-		}),
-	)
+	var eps []*corev1.Endpoints
+	epFunc := func(ept *corev1.Endpoints) {
+		ept.Subsets = []corev1.EndpointSubset{{
+			Addresses: []corev1.EndpointAddress{{
+				IP:       ep1IP.String(),
+				NodeName: &hostname,
+			}},
+			Ports: []corev1.EndpointPort{{
+				Name:     svcPortName.Port,
+				Port:     int32(svcPort),
+				Protocol: corev1.ProtocolTCP,
+			}},
+		}}
 
-	groupID, _ := fp.groupCounter.Get(svcPortName, false)
+		if nodeLocalInternal {
+			ept.Subsets = append(ept.Subsets,
+				corev1.EndpointSubset{
+					Addresses: []corev1.EndpointAddress{{
+						IP: ep2IP.String(),
+					}},
+					Ports: []corev1.EndpointPort{{
+						Name:     svcPortName.Port,
+						Port:     int32(svcPort),
+						Protocol: corev1.ProtocolTCP,
+					}},
+				},
+			)
+		}
+	}
+	eps = append(eps, makeTestEndpoints(svcPortName.Namespace, svcPortName.Name, epFunc))
+	makeEndpointsMap(fp, eps...)
+
+	var groupID binding.GroupIDType
+	if nodeLocalInternal {
+		groupID, _ = fp.groupCounter.Get(svcPortName, true)
+	} else {
+		groupID, _ = fp.groupCounter.Get(svcPortName, false)
+	}
 	mockOFClient.EXPECT().InstallServiceGroup(groupID, false, gomock.Any()).Times(1)
 	bindingProtocol := binding.ProtocolTCP
 	if isIPv6 {
@@ -189,7 +219,7 @@ func testLoadBalancer(t *testing.T, nodePortAddresses []net.IP, svcIP, ep1IP, ep
 	defer ctrl.Finish()
 	mockOFClient := ofmock.NewMockClient(ctrl)
 	mockRouteClient := routemock.NewMockInterface(ctrl)
-	fp := NewFakeProxier(mockRouteClient, mockOFClient, nodePortAddresses, isIPv6, true)
+	fp := NewFakeProxier(mockRouteClient, mockOFClient, nodePortAddresses, isIPv6, true, false)
 
 	svcPort := 80
 	svcNodePort := 30008
@@ -225,7 +255,7 @@ func testLoadBalancer(t *testing.T, nodePortAddresses []net.IP, svcIP, ep1IP, ep
 		ept.Subsets = []corev1.EndpointSubset{{
 			Addresses: []corev1.EndpointAddress{{
 				IP:       ep1IP.String(),
-				Hostname: "localhost",
+				NodeName: &hostname,
 			}},
 			Ports: []corev1.EndpointPort{{
 				Name:     svcPortName.Port,
@@ -233,24 +263,21 @@ func testLoadBalancer(t *testing.T, nodePortAddresses []net.IP, svcIP, ep1IP, ep
 				Protocol: corev1.ProtocolTCP,
 			}},
 		}}
+		if nodeLocalExternal {
+			ept.Subsets = append(ept.Subsets,
+				corev1.EndpointSubset{
+					Addresses: []corev1.EndpointAddress{{
+						IP: ep2IP.String(),
+					}},
+					Ports: []corev1.EndpointPort{{
+						Name:     svcPortName.Port,
+						Port:     int32(svcPort),
+						Protocol: corev1.ProtocolTCP,
+					}},
+				})
+		}
 	}
 	eps = append(eps, makeTestEndpoints(svcPortName.Namespace, svcPortName.Name, epFunc))
-	if nodeLocalExternal {
-		epFunc = func(ept *corev1.Endpoints) {
-			ept.Subsets = []corev1.EndpointSubset{{
-				Addresses: []corev1.EndpointAddress{{
-					IP:       ep2IP.String(),
-					Hostname: "remote",
-				}},
-				Ports: []corev1.EndpointPort{{
-					Name:     svcPortName.Port,
-					Port:     int32(svcPort),
-					Protocol: corev1.ProtocolTCP,
-				}},
-			}}
-		}
-		eps = append(eps, makeTestEndpoints(svcPortName.Namespace, svcPortName.Name, epFunc))
-	}
 	makeEndpointsMap(fp, eps...)
 
 	groupID, _ := fp.groupCounter.Get(svcPortName, false)
@@ -280,7 +307,7 @@ func testNodePort(t *testing.T, nodePortAddresses []net.IP, svcIP, ep1IP, ep2IP 
 	defer ctrl.Finish()
 	mockOFClient := ofmock.NewMockClient(ctrl)
 	mockRouteClient := routemock.NewMockInterface(ctrl)
-	fp := NewFakeProxier(mockRouteClient, mockOFClient, nodePortAddresses, isIPv6, true)
+	fp := NewFakeProxier(mockRouteClient, mockOFClient, nodePortAddresses, isIPv6, true, false)
 
 	svcPort := 80
 	svcNodePort := 31000
@@ -313,7 +340,7 @@ func testNodePort(t *testing.T, nodePortAddresses []net.IP, svcIP, ep1IP, ep2IP 
 		ept.Subsets = []corev1.EndpointSubset{{
 			Addresses: []corev1.EndpointAddress{{
 				IP:       ep1IP.String(),
-				Hostname: "localhost",
+				NodeName: &hostname,
 			}},
 			Ports: []corev1.EndpointPort{{
 				Name:     svcPortName.Port,
@@ -321,24 +348,21 @@ func testNodePort(t *testing.T, nodePortAddresses []net.IP, svcIP, ep1IP, ep2IP 
 				Protocol: corev1.ProtocolTCP,
 			}},
 		}}
+		if nodeLocalExternal {
+			ept.Subsets = append(ept.Subsets,
+				corev1.EndpointSubset{
+					Addresses: []corev1.EndpointAddress{{
+						IP: ep2IP.String(),
+					}},
+					Ports: []corev1.EndpointPort{{
+						Name:     svcPortName.Port,
+						Port:     int32(svcPort),
+						Protocol: corev1.ProtocolTCP,
+					}},
+				})
+		}
 	}
 	eps = append(eps, makeTestEndpoints(svcPortName.Namespace, svcPortName.Name, epFunc))
-	if nodeLocalExternal {
-		epFunc = func(ept *corev1.Endpoints) {
-			ept.Subsets = []corev1.EndpointSubset{{
-				Addresses: []corev1.EndpointAddress{{
-					IP:       ep2IP.String(),
-					Hostname: "remote",
-				}},
-				Ports: []corev1.EndpointPort{{
-					Name:     svcPortName.Port,
-					Port:     int32(svcPort),
-					Protocol: corev1.ProtocolTCP,
-				}},
-			}}
-		}
-		eps = append(eps, makeTestEndpoints(svcPortName.Namespace, svcPortName.Name, epFunc))
-	}
 	makeEndpointsMap(fp, eps...)
 
 	groupID, _ := fp.groupCounter.Get(svcPortName, false)
@@ -394,11 +418,19 @@ func TestNodePortIPv6ExternalLocal(t *testing.T) {
 }
 
 func TestClusterIPv4(t *testing.T) {
-	testClusterIP(t, svcIPv4, ep1IPv4, false)
+	testClusterIP(t, svcIPv4, ep1IPv4, nil, false, false)
 }
 
 func TestClusterIPv6(t *testing.T) {
-	testClusterIP(t, svcIPv6, ep1IPv6, true)
+	testClusterIP(t, svcIPv6, ep1IPv6, nil, true, false)
+}
+
+func TestClusterIPv4InternalLocal(t *testing.T) {
+	testClusterIP(t, svcIPv4, ep1IPv4, ep2IPv4, false, true)
+}
+
+func TestClusterIPv6InternalLocal(t *testing.T) {
+	testClusterIP(t, svcIPv6, ep1IPv6, ep2IPv6, true, true)
 }
 
 func TestDualStackService(t *testing.T) {
@@ -406,8 +438,8 @@ func TestDualStackService(t *testing.T) {
 	defer ctrl.Finish()
 	mockOFClient := ofmock.NewMockClient(ctrl)
 	mockRouteClient := routemock.NewMockInterface(ctrl)
-	fpv4 := NewFakeProxier(mockRouteClient, mockOFClient, nil, false, false)
-	fpv6 := NewFakeProxier(mockRouteClient, mockOFClient, nil, true, false)
+	fpv4 := NewFakeProxier(mockRouteClient, mockOFClient, nil, false, false, false)
+	fpv6 := NewFakeProxier(mockRouteClient, mockOFClient, nil, true, false, false)
 	metaProxier := k8sproxy.NewMetaProxier(fpv4, fpv6)
 
 	svcPort := 80
@@ -482,7 +514,7 @@ func testClusterIPRemoval(t *testing.T, svcIP net.IP, epIP net.IP, isIPv6 bool) 
 	defer ctrl.Finish()
 	mockOFClient := ofmock.NewMockClient(ctrl)
 	mockRouteClient := routemock.NewMockInterface(ctrl)
-	fp := NewFakeProxier(mockRouteClient, mockOFClient, nil, isIPv6, true)
+	fp := NewFakeProxier(mockRouteClient, mockOFClient, nil, isIPv6, true, false)
 
 	svcPort := 80
 	svcPortName := k8sproxy.ServicePortName{
@@ -548,7 +580,7 @@ func testClusterIPNoEndpoint(t *testing.T, svcIP net.IP, isIPv6 bool) {
 	defer ctrl.Finish()
 	mockOFClient := ofmock.NewMockClient(ctrl)
 	mockRouteClient := routemock.NewMockInterface(ctrl)
-	fp := NewFakeProxier(mockRouteClient, mockOFClient, nil, isIPv6, false)
+	fp := NewFakeProxier(mockRouteClient, mockOFClient, nil, isIPv6, false, false)
 
 	svcPort := 80
 	svcNodePort := 3001
@@ -586,7 +618,7 @@ func testClusterIPRemoveSamePortEndpoint(t *testing.T, svcIP net.IP, epIP net.IP
 	defer ctrl.Finish()
 	mockOFClient := ofmock.NewMockClient(ctrl)
 	mockRouteClient := routemock.NewMockInterface(ctrl)
-	fp := NewFakeProxier(mockRouteClient, mockOFClient, nil, isIPv6, false)
+	fp := NewFakeProxier(mockRouteClient, mockOFClient, nil, isIPv6, false, false)
 
 	svcPort := 80
 	svcPortName := k8sproxy.ServicePortName{
@@ -678,7 +710,7 @@ func testClusterIPRemoveEndpoints(t *testing.T, svcIP net.IP, epIP net.IP, isIPv
 	defer ctrl.Finish()
 	mockOFClient := ofmock.NewMockClient(ctrl)
 	mockRouteClient := routemock.NewMockInterface(ctrl)
-	fp := NewFakeProxier(mockRouteClient, mockOFClient, nil, isIPv6, false)
+	fp := NewFakeProxier(mockRouteClient, mockOFClient, nil, isIPv6, false, false)
 
 	svcPort := 80
 	svcPortName := k8sproxy.ServicePortName{
@@ -738,7 +770,7 @@ func testSessionAffinityNoEndpoint(t *testing.T, svcExternalIPs net.IP, svcIP ne
 	defer ctrl.Finish()
 	mockOFClient := ofmock.NewMockClient(ctrl)
 	mockRouteClient := routemock.NewMockInterface(ctrl)
-	fp := NewFakeProxier(mockRouteClient, mockOFClient, nil, isIPv6, false)
+	fp := NewFakeProxier(mockRouteClient, mockOFClient, nil, isIPv6, false, false)
 
 	svcPort := 80
 	svcNodePort := 3001
@@ -806,7 +838,7 @@ func testSessionAffinity(t *testing.T, svcExternalIPs net.IP, svcIP net.IP, isIP
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	mockOFClient := ofmock.NewMockClient(ctrl)
-	fp := NewFakeProxier(nil, mockOFClient, nil, isIPv6, false)
+	fp := NewFakeProxier(nil, mockOFClient, nil, isIPv6, false, false)
 
 	svcPort := 80
 	svcNodePort := 3001
@@ -854,7 +886,7 @@ func testPortChange(t *testing.T, svcIP net.IP, epIP net.IP, isIPv6 bool) {
 	defer ctrl.Finish()
 	mockOFClient := ofmock.NewMockClient(ctrl)
 	mockRouteClient := routemock.NewMockInterface(ctrl)
-	fp := NewFakeProxier(mockRouteClient, mockOFClient, nil, isIPv6, false)
+	fp := NewFakeProxier(mockRouteClient, mockOFClient, nil, isIPv6, false, false)
 
 	svcPort1 := 80
 	svcPort2 := 8080
@@ -928,7 +960,7 @@ func TestServicesWithSameEndpoints(t *testing.T) {
 	defer ctrl.Finish()
 	mockOFClient := ofmock.NewMockClient(ctrl)
 	mockRouteClient := routemock.NewMockInterface(ctrl)
-	fp := NewFakeProxier(mockRouteClient, mockOFClient, nil, false, false)
+	fp := NewFakeProxier(mockRouteClient, mockOFClient, nil, false, false, false)
 	epIP := net.ParseIP("10.50.60.71")
 	svcIP1 := net.ParseIP("10.180.30.41")
 	svcIP2 := net.ParseIP("10.180.30.42")
@@ -1027,7 +1059,7 @@ func TestMetrics(t *testing.T) {
 				endpointsInstallMetric = metrics.EndpointsInstalledTotalV6.GaugeMetric
 				servicesInstallMetric = metrics.ServicesInstalledTotalV6.GaugeMetric
 			}
-			testClusterIP(t, net.ParseIP(tc.svcIP), net.ParseIP(tc.epIP), tc.isIPv6)
+			testClusterIP(t, net.ParseIP(tc.svcIP), net.ParseIP(tc.epIP), nil, tc.isIPv6, false)
 			v, err := testutil.GetCounterMetricValue(endpointsUpdateTotalMetric)
 			assert.NoError(t, err)
 			assert.Equal(t, 0, int(v))
