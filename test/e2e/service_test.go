@@ -25,12 +25,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-func TestClusterIPIPv4(t *testing.T) {
+func TestClusterIPv4(t *testing.T) {
 	skipIfNotIPv4Cluster(t)
 	testClusterIP(t, false)
 }
 
-func TestClusterIPIPv6(t *testing.T) {
+func TestClusterIPv6(t *testing.T) {
 	skipIfNotIPv6Cluster(t)
 	testClusterIP(t, true)
 }
@@ -43,10 +43,11 @@ func testClusterIP(t *testing.T, isIPv6 bool) {
 	}
 	defer teardownTest(t, data)
 
-	busyboxes := []string{"busybox-0", "busybox-1"}
 	nodes := []string{nodeName(0), nodeName(1)}
-	for idx, busybox := range busyboxes {
-		createAndWaitForPod(t, data, data.createBusyboxPodOnNode, busybox, nodeName(idx), testNamespace, false)
+	var busyboxes []string
+	for idx, node := range nodes {
+		podName, _, _ := createAndWaitForPod(t, data, data.createBusyboxPodOnNode, fmt.Sprintf("busybox-%d-", idx), node, testNamespace, false)
+		busyboxes = append(busyboxes, podName)
 	}
 
 	nginx := fmt.Sprintf("nginx-%v", isIPv6)
@@ -57,14 +58,14 @@ func testClusterIP(t *testing.T, isIPv6 bool) {
 	createAndWaitForPod(t, data, data.createNginxPodOnNode, nginx, nodeName(0), testNamespace, false)
 	time.Sleep(2 * time.Second)
 	t.Run("Pod CIDR Endpoints", func(t *testing.T) {
-		testClusterIPCases(t, data, url, nodes, pods)
+		testClusterIPCases(t, data, url, nodes, busyboxes)
 	})
 	require.NoError(t, data.deletePod(testNamespace, nginx))
 
 	createAndWaitForPod(t, data, data.createNginxPodOnNode, hostNginx, nodeName(0), testNamespace, true)
 	time.Sleep(2 * time.Second)
 	t.Run("Host Network Endpoints", func(t *testing.T) {
-		testClusterIPCases(t, data, url, nodes, pods)
+		testClusterIPCases(t, data, url, nodes, busyboxes)
 	})
 	require.NoError(t, data.deletePod(testNamespace, hostNginx))
 }
