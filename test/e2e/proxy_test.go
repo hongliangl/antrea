@@ -152,11 +152,11 @@ func testProxyLoadBalancerService(t *testing.T, isIPv6 bool) {
 	busyboxes := []string{"busybox-0", "busybox-1"}
 	var busyboxIPs []string
 	for idx, node := range nodes {
-		podIPv4, podIPv6 := createTestClientPod(t, data, busyboxes[idx], node)
+		_, ips, _ := createAndWaitForPod(t, data, data.createBusyboxPodOnNode, busyboxes[idx], node, testNamespace, false)
 		if !isIPv6 {
-			busyboxIPs = append(busyboxIPs, podIPv4)
+			busyboxIPs = append(busyboxIPs, ips.ipv4.String())
 		} else {
-			busyboxIPs = append(busyboxIPs, podIPv6)
+			busyboxIPs = append(busyboxIPs, ips.ipv6.String())
 		}
 	}
 
@@ -279,11 +279,11 @@ func testProxyNodePortService(t *testing.T, isIPv6 bool) {
 	busyboxes := []string{"busybox-0", "busybox-1"}
 	var busyboxIPs []string
 	for idx, node := range nodes {
-		podIPv4, podIPv6 := createTestClientPod(t, data, busyboxes[idx], node)
+		_, ips, _ := createAndWaitForPod(t, data, data.createBusyboxPodOnNode, busyboxes[idx], node, testNamespace, false)
 		if !isIPv6 {
-			busyboxIPs = append(busyboxIPs, podIPv4)
+			busyboxIPs = append(busyboxIPs, ips.ipv4.String())
 		} else {
-			busyboxIPs = append(busyboxIPs, podIPv6)
+			busyboxIPs = append(busyboxIPs, ips.ipv6.String())
 		}
 	}
 
@@ -359,14 +359,6 @@ func createAgnhostPod(t *testing.T, data *TestData, podName string, node string,
 	_, err := data.podWaitForIPs(defaultTimeout, podName, testNamespace)
 	require.NoError(t, err)
 	require.NoError(t, data.podWaitForRunning(defaultTimeout, podName, testNamespace))
-}
-
-func createTestClientPod(t *testing.T, data *TestData, client string, node string) (string, string) {
-	// Create a busybox Pod on each node which is used as test client.
-	_, clientIPs, cleanupFunc := createAndWaitForPod(t, data, data.createBusyboxPodOnNode, client, node, testNamespace, false)
-	defer cleanupFunc()
-
-	return clientIPs.ipv4.String(), clientIPs.ipv6.String()
 }
 
 func createNodePortServices(t *testing.T, data *TestData, serviceName string, nodeLocalExternal bool, isIPv6 bool) string {
