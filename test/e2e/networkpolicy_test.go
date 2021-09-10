@@ -344,7 +344,7 @@ func (data *TestData) setupDifferentNamedPorts(t *testing.T) (checkFn func(), cl
 // 2. The traffic initiated externally that access the Pod via NodePort service can be dropped (skipped if provider is kind).
 func testDefaultDenyIngressPolicy(t *testing.T, data *TestData) {
 	serverNode := workerNodeName(1)
-	serverNodeIP := workerNodeIPv4(1)
+	serverNodeIP := workerNodeIP(1)
 	serverPort := int32(80)
 	_, serverIPs, cleanupFunc := createAndWaitForPod(t, data, data.createNginxPodOnNode, "test-server-", serverNode, testNamespace, false)
 	defer cleanupFunc()

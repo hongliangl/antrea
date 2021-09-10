@@ -93,6 +93,7 @@ func testClusterIPCases(t *testing.T, data *TestData, url, clientPodCp, clientPo
 	})
 	t.Run("Pod on same Node can access the Service", func(t *testing.T) {
 		t.Parallel()
+		//TODO
 		testClusterIPFromPod(t, data, url, clientPodCp)
 	})
 	t.Run("Pod on different Node can access the Service", func(t *testing.T) {
@@ -102,13 +103,13 @@ func testClusterIPCases(t *testing.T, data *TestData, url, clientPodCp, clientPo
 }
 
 func testClusterIPFromPod(t *testing.T, data *TestData, url, podName string) {
-	errMsg := "Server ClusterIP should be able to be connected from pod"
+	errMsg := "Service ClusterIP should be able to be connected from Pod"
 	_, _, err := data.runCommandFromPod(testNamespace, podName, busyboxContainerName, []string{"wget", "-O", "-", url, "-T", "1"})
 	require.NoError(t, err, errMsg)
 }
 
 func testClusterIPFromNode(t *testing.T, url, nodeName string) {
-	errMsg := "Server ClusterIP should be able to be connected from node on the same k8s node"
+	errMsg := "Service ClusterIP should be able to be connected from node on the same K8s Node"
 	_, _, _, err := RunCommandOnNode(nodeName, strings.Join([]string{"wget", "-O", "-", url, "-T", "1"}, " "))
 	require.NoError(t, err, errMsg)
 }

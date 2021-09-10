@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"net"
 	"strings"
 	"testing"
@@ -89,53 +90,48 @@ func skipIfProxyAllDisabled(t *testing.T, data *TestData) {
 }
 
 func skipIfKubeProxyEnabled(t *testing.T, data *TestData) {
-	daemonSets, err := data.clientset.AppsV1().DaemonSets(antreaNamespace).List(context.TODO(), metav1.ListOptions{})
+	_, err := data.clientset.AppsV1().DaemonSets(kubeNamespace).Get(context.TODO(), "kube-proxy", metav1.GetOptions{})
 	if err != nil {
-		t.Fatalf("Error fetching pods: %v", err)
-	}
-	for _, daemonSet := range daemonSets.Items {
-		if strings.Contains(daemonSet.Name, "kube-proxy") {
+		if errors.IsNotFound(err) {
 			t.Skipf("Skipping test because kube-proxy is running")
+		} else {
+			t.Fatalf("Error fetching pods: %v", err)
 		}
 	}
 }
 
-func probeFromNode(t *testing.T, node string, url string, errMsg string) {
+func probeFromNode(node string, url string) error {
 	_, _, _, err := RunCommandOnNode(node, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", url))
-	require.NoError(t, err, errMsg)
+	return err
 }
 
-func probeHostnameFromNode(t *testing.T, node string, baseUrl string, expectedHostname string, errMsg string) {
+func probeHostnameFromNode(node string, baseUrl string) (string, error) {
 	url := fmt.Sprintf("%s/%s", baseUrl, "hostname")
-	_, output, _, err := RunCommandOnNode(node, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", url))
-	require.NoError(t, err, errMsg)
-	require.Contains(t, output, expectedHostname, fmt.Sprintf("hostname should be %s", expectedHostname))
+	_, hostname, _, err := RunCommandOnNode(node, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", url))
+	return hostname, err
 }
 
-func probeClientIPFromNode(t *testing.T, node string, baseUrl string, expectedClientIP string, errMsg string) {
+func probeClientIPFromNode(node string, baseUrl string) (string, error) {
 	url := fmt.Sprintf("%s/%s", baseUrl, "clientip")
-	_, output, _, err := RunCommandOnNode(node, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", url))
-	require.NoError(t, err, errMsg)
-	require.Contains(t, output, expectedClientIP, fmt.Sprintf("hostname should be %s", expectedClientIP))
+	_, clientIP, _, err := RunCommandOnNode(node, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", url))
+	return strings.Split(clientIP, ":")[0], err
 }
 
-func probeFromPod(t *testing.T, data *TestData, podName string, url string, errMsg string) {
+func probeFromPod(data *TestData, podName string, url string) error {
 	_, _, err := data.runCommandFromPod(testNamespace, podName, busyboxContainerName, []string{"wget", "-O", "-", url, "-T", "1"})
-	require.NoError(t, err, errMsg)
+	return err
 }
 
-func probeHostnameFromPod(t *testing.T, data *TestData, podName string, baseUrl string, expectedHostname string, errMsg string) {
+func probeHostnameFromPod(data *TestData, podName string, baseUrl string) (string, error) {
 	url := fmt.Sprintf("%s/%s", baseUrl, "hostname")
-	output, _, err := data.runCommandFromPod(testNamespace, podName, busyboxContainerName, []string{"wget", "-O", "-", url, "-T", "1"})
-	require.NoError(t, err, errMsg)
-	require.Contains(t, output, expectedHostname, fmt.Sprintf("hostname should be %s", expectedHostname))
+	hostname, _, err := data.runCommandFromPod(testNamespace, podName, busyboxContainerName, []string{"wget", "-O", "-", url, "-T", "1"})
+	return hostname, err
 }
 
-func probeClientIPFromPod(t *testing.T, data *TestData, podName string, baseUrl string, expectedClientIP string, errMsg string) {
+func probeClientIPFromPod(data *TestData, podName string, baseUrl string) (string, error) {
 	url := fmt.Sprintf("%s/%s", baseUrl, "clientip")
-	output, _, err := data.runCommandFromPod(testNamespace, podName, busyboxContainerName, []string{"wget", "-O", "-", url, "-T", "1"})
-	require.NoError(t, err, errMsg)
-	require.Contains(t, output, expectedClientIP, fmt.Sprintf("Client IP should be %s", expectedClientIP))
+	clientIP, _, err := data.runCommandFromPod(testNamespace, podName, busyboxContainerName, []string{"wget", "-O", "-", url, "-T", "1"})
+	return strings.Split(clientIP, ":")[0], err
 }
 
 func TestProxyLoadBalancerServiceIPv4(t *testing.T) {
@@ -159,25 +155,23 @@ func testProxyLoadBalancerService(t *testing.T, isIPv6 bool) {
 	defer teardownTest(t, data)
 	skipIfProxyAllDisabled(t, data)
 
-	agnhost0 := "agnhost-0"
-	agnhost1 := "agnhost-1"
-	hostAgnhost0 := "agnhost-host-0"
-	hostAnghost1 := "agnhost-host-1"
-	busybox0 := "busybox-0"
-	busybox1 := "busybox-1"
-	node0 := nodeName(0)
-	node1 := nodeName(1)
+	nodes := []string{nodeName(0), nodeName(1)}
+	busyboxes := []string{"busybox-0", "busybox-1"}
+	var busyboxIPs []string
+	for idx, node := range nodes {
+		podIPv4, podIPv6 := createTestClientPod(t, data, busyboxes[idx], node)
+		if !isIPv6 {
+			busyboxIPs = append(busyboxIPs, podIPv4)
+		} else {
+			busyboxIPs = append(busyboxIPs, podIPv6)
+		}
+	}
+
 	clusterIngressIP := []string{"169.254.169.1"}
 	localIngressIP := []string{"169.254.169.2"}
-	busybox0Ipv4, busybox0Ipv6 := createTestClientPod(t, data, busybox0, node0)
-	busybox1Ipv4, busybox1Ipv6 := createTestClientPod(t, data, busybox1, node1)
-	busybox0IP := busybox0Ipv4
-	busybox1IP := busybox1Ipv4
 	if isIPv6 {
 		clusterIngressIP = []string{"fd75::aabb:ccdd:ef00"}
 		localIngressIP = []string{"fd75::aabb:ccdd:ef01"}
-		busybox0IP = busybox0Ipv6
-		busybox1IP = busybox1Ipv6
 	}
 	createLoadBalancerService(t, data, "agnhost-cluster", clusterIngressIP, false, isIPv6)
 	createLoadBalancerService(t, data, "agnhost-local", localIngressIP, true, isIPv6)
@@ -185,33 +179,36 @@ func testProxyLoadBalancerService(t *testing.T, isIPv6 bool) {
 	clusterUrl := net.JoinHostPort(clusterIngressIP[0], port)
 	localUrl := net.JoinHostPort(localIngressIP[0], port)
 
-	createAgnhostPod(t, data, agnhost0, node0, false)
-	createAgnhostPod(t, data, agnhost1, node1, false)
+	agnhosts := []string{"agnhost-0", "agnhost-1"}
+	for idx, node := range nodes {
+		createAgnhostPod(t, data, agnhosts[idx], node, false)
+	}
 	t.Run("Pod CIDR Endpoints", func(t *testing.T) {
-		loadBalancerTestCases(t, data, clusterUrl, localUrl, busybox0, busybox1, busybox0IP, busybox1IP, agnhost0, agnhost1)
+		loadBalancerTestCases(t, data, clusterUrl, localUrl, nodes, busyboxes, busyboxIPs, pods)
 	})
-	require.NoError(t, data.deletePod(testNamespace, agnhost0))
-	require.NoError(t, data.deletePod(testNamespace, agnhost1))
 
-	createAgnhostPod(t, data, hostAgnhost0, node0, true)
-	createAgnhostPod(t, data, hostAnghost1, node1, true)
+	hostAgnhosts := []string{"agnhost-host-0", "agnhost-host-1"}
+	for idx, node := range nodes {
+		require.NoError(t, data.deletePod(testNamespace, agnhosts[idx]))
+		createAgnhostPod(t, data, hostAgnhosts[idx], node, true)
+	}
 	t.Run("Host Network Endpoints", func(t *testing.T) {
-		loadBalancerTestCases(t, data, clusterUrl, localUrl, busybox0, busybox1, busybox0IP, busybox1IP, node0, node1)
+		loadBalancerTestCases(t, data, clusterUrl, localUrl, nodes, busyboxes, busyboxIPs, nodes)
 	})
 }
 
-func loadBalancerTestCases(t *testing.T, data *TestData, clusterUrl, localUrl, busybox0, busybox1, busybox0IP, busybox1IP, hostname0, hostname1 string) {
+func loadBalancerTestCases(t *testing.T, data *TestData, clusterUrl, localUrl string, nodes, pods, podIPs, hostnames []string) {
 	t.Run("ExternalTrafficPolicy:Cluster/Client:Node", func(t *testing.T) {
-		testLoadBalancerClusterFromNode(t, data, clusterUrl)
+		testLoadBalancerClusterFromNode(t, data, nodes, clusterUrl)
 	})
 	t.Run("ExternalTrafficPolicy:Cluster/Client:Pod", func(t *testing.T) {
-		testLoadBalancerClusterFromPod(t, data, clusterUrl, busybox0, busybox1)
+		testLoadBalancerClusterFromPod(t, data, pods, clusterUrl)
 	})
 	t.Run("ExternalTrafficPolicy:Local/Client:Node", func(t *testing.T) {
-		testLoadBalancerLocalFromNode(t, data, localUrl, hostname0, hostname1)
+		testLoadBalancerLocalFromNode(t, data, nodes, localUrl, hostnames)
 	})
 	t.Run("ExternalTrafficPolicy:Local/Client:Pod", func(t *testing.T) {
-		testLoadBalancerLocalFromPod(t, data, localUrl, busybox0, busybox1, busybox0IP, busybox1IP, hostname0, hostname1)
+		testLoadBalancerLocalFromPod(t, data, pods, localUrl, podIPs, hostnames)
 	})
 }
 
@@ -224,32 +221,42 @@ func createLoadBalancerService(t *testing.T, data *TestData, serviceName string,
 	require.NoError(t, err)
 }
 
-func testLoadBalancerClusterFromNode(t *testing.T, data *TestData, url string) {
+func testLoadBalancerClusterFromNode(t *testing.T, data *TestData, nodes []string, url string) {
 	skipIfKubeProxyEnabled(t, data)
-	errMsg := "Server LoadBalancer whose externalTrafficPolicy is Cluster should be able to be connected from Node"
-	probeFromNode(t, nodeName(0), url, errMsg)
-	probeFromNode(t, nodeName(1), url, errMsg)
+	errMsg := "Service LoadBalancer whose externalTrafficPolicy is Cluster should be able to be connected from Node"
+	for _, node := range nodes {
+		require.NoError(t, probeFromNode(node, url), errMsg)
+	}
 }
 
-func testLoadBalancerClusterFromPod(t *testing.T, data *TestData, url, client0, client1 string) {
-	errMsg := "Server LoadBalancer whose externalTrafficPolicy is Cluster should be able to be connected from Pod"
-	probeFromPod(t, data, client0, url, errMsg)
-	probeFromPod(t, data, client1, url, errMsg)
+func testLoadBalancerClusterFromPod(t *testing.T, data *TestData, pods []string, url string) {
+	errMsg := "Service LoadBalancer whose externalTrafficPolicy is Cluster should be able to be connected from Pod"
+	for _, pod := range pods {
+		require.NoError(t, probeFromPod(data, pod, url), errMsg)
+	}
 }
 
-func testLoadBalancerLocalFromNode(t *testing.T, data *TestData, url, hostname0, hostname1 string) {
+func testLoadBalancerLocalFromNode(t *testing.T, data *TestData, nodes []string, url string, expectedHostname []string) {
 	skipIfKubeProxyEnabled(t, data)
-	errMsg := "Server LoadBalancer whose externalTrafficPolicy is Local should be able to be connected from Node"
-	probeHostnameFromNode(t, nodeName(0), url, hostname0, errMsg)
-	probeHostnameFromNode(t, nodeName(1), url, hostname1, errMsg)
+	errMsg := "TService LoadBalancer whose externalTrafficPolicy is Local should be able to be connected from Node"
+	for idx, node := range nodes {
+		hostname, err := probeHostnameFromNode(node, url)
+		require.NoError(t, err, errMsg)
+		require.Equal(t, hostname, expectedHostname[idx])
+	}
 }
 
-func testLoadBalancerLocalFromPod(t *testing.T, data *TestData, url, client0, client1, client0IP, client1IP, hostname0, hostname1 string) {
-	errMsg := "Server NodePort whose externalTrafficPolicy is Local should be able to be connected from Pod "
-	probeHostnameFromPod(t, data, client0, url, hostname0, errMsg)
-	probeHostnameFromPod(t, data, client1, url, hostname1, errMsg)
-	probeClientIPFromPod(t, data, client0, url, client0IP, errMsg)
-	probeClientIPFromPod(t, data, client1, url, client1IP, errMsg)
+func testLoadBalancerLocalFromPod(t *testing.T, data *TestData, pods []string, url string, expectedClientIPs, expectedHostnames []string) {
+	errMsg := "Service NodePort whose externalTrafficPolicy is Local should be able to be connected from Pod"
+	for idx, pod := range pods {
+		hostname, err := probeHostnameFromPod(data, pod, url)
+		require.NoError(t, err, errMsg)
+		require.Equal(t, hostname, expectedHostnames[idx])
+
+		clientIP, err := probeClientIPFromPod(data, pod, url)
+		require.NoError(t, err, errMsg)
+		require.Equal(t, clientIP, expectedClientIPs[idx])
+	}
 }
 
 func TestProxyNodePortServiceIPv4(t *testing.T) {
@@ -273,72 +280,71 @@ func testProxyNodePortService(t *testing.T, isIPv6 bool) {
 	defer teardownTest(t, data)
 	skipIfProxyAllDisabled(t, data)
 
-	agnhost0 := "agnhost-0"
-	agnhost1 := "agnhost-1"
-	hostAgnhost0 := "agnhost-host-0"
-	hostAnghost1 := "agnhost-host-1"
-	busybox0 := "busybox-0"
-	busybox1 := "busybox-1"
-	node0 := nodeName(0)
-	node1 := nodeName(1)
-	localhostIP := "127.0.0.1"
-	busybox0Ipv4, busybox0Ipv6 := createTestClientPod(t, data, busybox0, node0)
-	busybox1Ipv4, busybox1Ipv6 := createTestClientPod(t, data, busybox1, node1)
-	busybox0IP := busybox0Ipv4
-	busybox1IP := busybox1Ipv4
-	node0IP := controlPlaneNodeIPv4()
-	node1IP := workerNodeIPv4(1)
+	nodes := []string{nodeName(0), nodeName(1)}
+	nodeIPs := []string{controlPlaneNodeIPv4(), workerNodeIPv4(1)}
 	if isIPv6 {
-		busybox0IP = busybox0Ipv6
-		busybox1IP = busybox1Ipv6
-		node0IP = controlPlaneNodeIPv6()
-		node1IP = workerNodeIPv6(1)
+		nodeIPs = []string{controlPlaneNodeIPv6(), workerNodeIPv6(1)}
 	}
+
+	busyboxes := []string{"busybox-0", "busybox-1"}
+	var busyboxIPs []string
+	for idx, node := range nodes {
+		podIPv4, podIPv6 := createTestClientPod(t, data, busyboxes[idx], node)
+		if !isIPv6 {
+			busyboxIPs = append(busyboxIPs, podIPv4)
+		} else {
+			busyboxIPs = append(busyboxIPs, podIPv6)
+		}
+	}
+
 	portStrCluster := createNodePortServices(t, data, "agnhost-cluster", false, isIPv6)
 	portStrLocal := createNodePortServices(t, data, "agnhost-local", true, isIPv6)
-	createAgnhostPod(t, data, agnhost0, node0, false)
-	createAgnhostPod(t, data, agnhost1, node1, false)
+
+	agnhosts := []string{"agnhost-0", "agnhost-1"}
+	for idx, node := range nodes {
+		createAgnhostPod(t, data, agnhosts[idx], node, false)
+	}
 	t.Run("Pod CIDR Endpoints", func(t *testing.T) {
-		nodePortTestCases(t, data, portStrCluster, portStrLocal, node0IP, node1IP, localhostIP, busybox0, busybox1, busybox0IP, busybox1IP, agnhost0, agnhost1, false)
+		nodePortTestCases(t, data, portStrCluster, portStrLocal, nodes, nodeIPs, busyboxes, busyboxIPs, busyboxes, false)
 	})
 
-	require.NoError(t, data.deletePod(testNamespace, agnhost0))
-	require.NoError(t, data.deletePod(testNamespace, agnhost1))
-	createAgnhostPod(t, data, hostAgnhost0, node0, true)
-	createAgnhostPod(t, data, hostAnghost1, node1, true)
+	hostAgnhosts := []string{"agnhost-host-0", "agnhost-host-1"}
+	for idx, node := range nodes {
+		require.NoError(t, data.deletePod(testNamespace, agnhosts[idx]))
+		createAgnhostPod(t, data, hostAgnhosts[idx], node, true)
+	}
 	t.Run("Host Network Endpoints", func(t *testing.T) {
-		nodePortTestCases(t, data, portStrCluster, portStrLocal, node0IP, node1IP, localhostIP, busybox0, busybox1, busybox0IP, busybox1IP, node0, node1, true)
+		nodePortTestCases(t, data, portStrCluster, portStrLocal, nodes, nodeIPs, busyboxes, busyboxIPs, nodes, true)
 	})
 }
 
-func nodePortTestCases(t *testing.T, data *TestData, portStrCluster, portStrLocal, node0IP, node1IP, localhostIP, busybox0, busybox1, busybox0IP, busybox1IP, hostname0, hostname1 string, hostNetwork bool) {
-	clusterUrl0 := net.JoinHostPort(node0IP, portStrCluster)
-	clusterUrl1 := net.JoinHostPort(node1IP, portStrCluster)
-	clusterUrlLo := net.JoinHostPort(localhostIP, portStrCluster)
-	localUrl0 := net.JoinHostPort(node0IP, portStrLocal)
-	localUrl1 := net.JoinHostPort(node1IP, portStrLocal)
-	localUrlLo := net.JoinHostPort(localhostIP, portStrLocal)
+func nodePortTestCases(t *testing.T, data *TestData, portStrCluster, portStrLocal string, nodes, nodeIPs, pods, podIPs, hostnames []string, hostNetwork bool) {
+	var clusterUrls, localUrls []string
+	for _, nodeIP := range nodeIPs {
+		clusterUrls = append(clusterUrls, net.JoinHostPort(nodeIP, portStrCluster))
+		localUrls = append(localUrls, net.JoinHostPort(nodeIP, portStrLocal))
+	}
 
 	t.Run("ExternalTrafficPolicy:Cluster/Client:Remote", func(t *testing.T) {
-		testNodePortClusterFromRemote(t, data, clusterUrl0, clusterUrl0)
+		testNodePortClusterFromRemote(t, data, nodes, clusterUrls)
 	})
 	t.Run("ExternalTrafficPolicy:Cluster/Client:Node", func(t *testing.T) {
-		testNodePortClusterFromNode(t, data, clusterUrl0, clusterUrl1, clusterUrlLo)
+		testNodePortClusterFromNode(t, data, nodes, clusterUrls)
 	})
 	t.Run("ExternalTrafficPolicy:Cluster/Client:Pod", func(t *testing.T) {
-		testNodePortClusterFromPod(t, data, clusterUrl0, clusterUrl0, busybox0, busybox1)
+		testNodePortClusterFromPod(t, data, pods, clusterUrls)
 	})
 	t.Run("ExternalTrafficPolicy:Local/Client:Remote", func(t *testing.T) {
 		if hostNetwork {
 			t.Skipf("Skip this test as Endpoint is on host network")
 		}
-		testNodePortLocalFromRemote(t, data, localUrl0, localUrl1, node0IP, node1IP, hostname0, hostname1)
+		testNodePortLocalFromRemote(t, data, nodes, localUrls, nodeIPs, []string{hostnames[1], hostnames[0]})
 	})
 	t.Run("ExternalTrafficPolicy:Local/Client:Node", func(t *testing.T) {
-		testNodePortLocalFromNode(t, data, localUrl0, localUrl1, localUrlLo, hostname0, hostname1)
+		testNodePortLocalFromNode(t, data, pods, localUrls, hostnames)
 	})
 	t.Run("ExternalTrafficPolicy:Local/Client:Pod", func(t *testing.T) {
-		testNodePortLocalFromPod(t, data, localUrl0, localUrl1, busybox0, busybox1, busybox0IP, busybox1IP, hostname0, hostname1)
+		testNodePortLocalFromPod(t, data, pods, localUrls, podIPs, hostnames)
 	})
 }
 
@@ -397,56 +403,66 @@ func createNodePortServices(t *testing.T, data *TestData, serviceName string, no
 	return portStr
 }
 
-func testNodePortClusterFromRemote(t *testing.T, data *TestData, url0, url1 string) {
+func testNodePortClusterFromRemote(t *testing.T, data *TestData, nodes, urls []string) {
 	skipIfKubeProxyEnabled(t, data)
-	errMsg := "Server NodePort whose externalTrafficPolicy is Cluster should be able to be connected from remote Node"
-	probeFromNode(t, nodeName(0), url1, errMsg)
-	probeFromNode(t, nodeName(1), url0, errMsg)
+	errMsg := "Service NodePort whose externalTrafficPolicy is Cluster should be able to be connected from remote Node"
+	for idx, node := range nodes {
+		require.NoError(t, probeFromNode(node, urls[idx]), errMsg)
+	}
 }
 
-func testNodePortClusterFromNode(t *testing.T, data *TestData, url0, url1, urlLo string) {
+func testNodePortClusterFromNode(t *testing.T, data *TestData, nodes, urls []string) {
 	skipIfKubeProxyEnabled(t, data)
-	errMsg := "Server NodePort whose externalTrafficPolicy is Cluster should be able to be connected from Node"
-	probeFromNode(t, nodeName(0), url0, errMsg)
-	probeFromNode(t, nodeName(1), url1, errMsg)
-	//TODO: add tests of NodePort from 127.0.0.1:port or [::1]:port.
-	// probeFromNode(t, nodeName(0), urlLo, errMsg)
-	// probeFromNode(t, nodeName(1), urlLo, errMsg)
+	errMsg := "TService NodePort whose externalTrafficPolicy is Cluster should be able to be connected from Node"
+	for idx, node := range nodes {
+		require.NoError(t, probeFromNode(node, urls[idx]), errMsg)
+	}
 }
 
-func testNodePortClusterFromPod(t *testing.T, data *TestData, url0, url1, client0, client1 string) {
-	errMsg := "Server NodePort whose externalTrafficPolicy is Cluster should be able to be connected from Pod"
-	probeFromPod(t, data, client0, url0, errMsg)
-	probeFromPod(t, data, client0, url1, errMsg)
-	probeFromPod(t, data, client1, url0, errMsg)
-	probeFromPod(t, data, client1, url1, errMsg)
+func testNodePortClusterFromPod(t *testing.T, data *TestData, pods, urls []string) {
+	errMsg := "Service NodePort whose externalTrafficPolicy is Cluster should be able to be connected from Pod"
+	for _, url := range urls {
+		for _, pod := range pods {
+			require.NoError(t, probeFromPod(data, pod, url), errMsg)
+		}
+	}
 }
 
-func testNodePortLocalFromRemote(t *testing.T, data *TestData, url0, url1, client0IP, client1IP, hostname0, hostname1 string) {
+func testNodePortLocalFromRemote(t *testing.T, data *TestData, nodes, urls, expectedClientIPs, expectedHostnames []string) {
 	skipIfKubeProxyEnabled(t, data)
-	errMsg := "Server NodePort whose externalTrafficPolicy is Local should be able to be connected from remote Node"
-	probeHostnameFromNode(t, nodeName(0), url1, hostname1, errMsg)
-	probeHostnameFromNode(t, nodeName(1), url0, hostname0, errMsg)
-	probeClientIPFromNode(t, nodeName(0), url1, client0IP, errMsg)
-	probeClientIPFromNode(t, nodeName(1), url0, client1IP, errMsg)
+	errMsg := "Service NodePort whose externalTrafficPolicy is Local should be able to be connected from remote Node"
+	for idx, node := range nodes {
+		hostname, err := probeHostnameFromNode(node, urls[idx])
+		require.NoError(t, err, errMsg)
+		require.Equal(t, hostname, expectedHostnames[idx])
+
+		clientIP, err := probeClientIPFromNode(node, urls[idx])
+		require.NoError(t, err, errMsg)
+		require.Equal(t, clientIP, expectedClientIPs[idx])
+	}
 }
 
-func testNodePortLocalFromNode(t *testing.T, data *TestData, url0, url1, urlLo, hostname0, hostname1 string) {
+func testNodePortLocalFromNode(t *testing.T, data *TestData, nodes, urls, expectedHostnames []string) {
 	skipIfKubeProxyEnabled(t, data)
-	errMsg := "Server NodePort whose externalTrafficPolicy is Local should be able to be connected from Node"
-	probeHostnameFromNode(t, nodeName(0), url0, hostname0, errMsg)
-	probeHostnameFromNode(t, nodeName(1), url1, hostname1, errMsg)
-	//TODO: add tests of NodePort from 127.0.0.1:port or [::1]:port.
-	// probeHostnameFromNode(t, nodeName(0), urlLo, hostname0, errMsg)
-	// probeHostnameFromNode(t, nodeName(1), urlLo, hostname1, errMsg)
+	errMsg := "There should be no errors when accessing to Service NodePort whose externalTrafficPolicy is Local from Node"
+	for idx, node := range nodes {
+		hostname, err := probeHostnameFromNode(node, urls[idx])
+		require.NoError(t, err, errMsg)
+		require.Equal(t, hostname, expectedHostnames[idx])
+	}
 }
 
-func testNodePortLocalFromPod(t *testing.T, data *TestData, url0, url1, client0, client1, client0IP, client1IP, hostname0, hostname1 string) {
-	errMsg := "Server NodePort whose externalTrafficPolicy is Local should be able to be connected from Pod"
-	probeHostnameFromPod(t, data, client0, url0, hostname0, errMsg)
-	probeHostnameFromPod(t, data, client1, url1, hostname1, errMsg)
-	probeClientIPFromPod(t, data, client0, url0, client0IP, errMsg)
-	probeClientIPFromPod(t, data, client1, url1, client1IP, errMsg)
+func testNodePortLocalFromPod(t *testing.T, data *TestData, pods, urls, expectedClientIPs, expectedHostnames []string) {
+	errMsg := "There should be no errors when accessing to Service NodePort whose externalTrafficPolicy is Local from Pod"
+	for idx, pod := range pods {
+		hostname, err := probeHostnameFromPod(data, pod, urls[idx])
+		require.NoError(t, err, errMsg)
+		require.Equal(t, hostname, expectedHostnames[idx])
+
+		clientIP, err := probeClientIPFromPod(data, pod, urls[idx])
+		require.NoError(t, err, errMsg)
+		require.Equal(t, clientIP, expectedClientIPs[idx])
+	}
 }
 
 func TestProxyServiceSessionAffinity(t *testing.T) {

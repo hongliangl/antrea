@@ -276,8 +276,6 @@ func workerNodeName(idx int) string {
 	return node.name
 }
 
-// workerNodeIPv4 returns an empty string if there is no worker Node with the provided idx
-// (including if idx is 0, which is reserved for the control-plane Node)
 func workerNodeIPv4(idx int) string {
 	if idx == 0 { // control-plane Node
 		return ""
@@ -298,6 +296,19 @@ func workerNodeIPv6(idx int) string {
 		return ""
 	}
 	return node.ipv6Addr
+}
+
+// workerNodeIP returns an empty string if there is no worker Node with the provided idx
+// (including if idx is 0, which is reserved for the control-plane Node)
+func workerNodeIP(idx int) string {
+	if idx == 0 { // control-plane Node
+		return ""
+	}
+	node, ok := clusterInfo.nodes[idx]
+	if !ok {
+		return ""
+	}
+	return node.ip()
 }
 
 // nodeGatewayIPs returns the Antrea gateway's IPv4 address and IPv6 address for the provided Node
