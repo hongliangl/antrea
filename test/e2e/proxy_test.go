@@ -23,10 +23,11 @@ import (
 	"testing"
 	"time"
 
-	"antrea.io/antrea/pkg/features"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"antrea.io/antrea/pkg/features"
 )
 
 type expectTableFlows struct {
@@ -123,8 +124,12 @@ func probeHostnameFromPod(data *TestData, podName string, baseUrl string) (strin
 
 func probeClientIPFromPod(data *TestData, podName string, baseUrl string) (string, error) {
 	url := fmt.Sprintf("%s/%s", baseUrl, "clientip")
-	clientIP, _, err := data.runCommandFromPod(testNamespace, podName, busyboxContainerName, []string{"wget", "-O", "-", url, "-T", "1"})
-	return strings.Split(clientIP, ":")[0], err
+	hostAndPort, _, err := data.runCommandFromPod(testNamespace, podName, busyboxContainerName, []string{"wget", "-O", "-", url, "-T", "1"})
+	if err != nil {
+		return "", err
+	}
+	clientIP, _, err := net.SplitHostPort(hostAndPort)
+	return clientIP, err
 }
 
 func TestProxyLoadBalancerServiceIPv4(t *testing.T) {
