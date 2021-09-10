@@ -92,10 +92,10 @@ func skipIfProxyAllDisabled(t *testing.T, data *TestData) {
 func skipIfKubeProxyEnabled(t *testing.T, data *TestData) {
 	_, err := data.clientset.AppsV1().DaemonSets(kubeNamespace).Get(context.TODO(), "kube-proxy", metav1.GetOptions{})
 	if err != nil {
-		if errors.IsNotFound(err) {
-			t.Skipf("Skipping test because kube-proxy is running")
-		} else {
+		if !errors.IsNotFound(err) {
 			t.Fatalf("Error fetching pods: %v", err)
+		} else {
+			t.Skipf("Skipping test because kube-proxy is running")
 		}
 	}
 }
@@ -184,7 +184,7 @@ func testProxyLoadBalancerService(t *testing.T, isIPv6 bool) {
 		createAgnhostPod(t, data, agnhosts[idx], node, false)
 	}
 	t.Run("Pod CIDR Endpoints", func(t *testing.T) {
-		loadBalancerTestCases(t, data, clusterUrl, localUrl, nodes, busyboxes, busyboxIPs, pods)
+		loadBalancerTestCases(t, data, clusterUrl, localUrl, nodes, busyboxes, busyboxIPs, busyboxes)
 	})
 
 	hostAgnhosts := []string{"agnhost-host-0", "agnhost-host-1"}
