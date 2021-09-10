@@ -300,7 +300,7 @@ func testProxyNodePortService(t *testing.T, isIPv6 bool) {
 		createAgnhostPod(t, data, agnhosts[idx], node, false)
 	}
 	t.Run("Pod CIDR Endpoints", func(t *testing.T) {
-		nodePortTestCases(t, data, portStrCluster, portStrLocal, nodes, nodeIPs, busyboxes, busyboxIPs, busyboxes, false)
+		nodePortTestCases(t, data, portStrCluster, portStrLocal, nodes, nodeIPs, busyboxes, busyboxIPs, agnhosts, false)
 	})
 
 	hostAgnhosts := []string{"agnhost-host-0", "agnhost-host-1"}
@@ -336,7 +336,7 @@ func nodePortTestCases(t *testing.T, data *TestData, portStrCluster, portStrLoca
 		testNodePortLocalFromRemote(t, data, nodes, localUrls, nodeIPs, []string{hostnames[1], hostnames[0]})
 	})
 	t.Run("ExternalTrafficPolicy:Local/Client:Node", func(t *testing.T) {
-		testNodePortLocalFromNode(t, data, pods, localUrls, hostnames)
+		testNodePortLocalFromNode(t, data, nodes, localUrls, hostnames)
 	})
 	t.Run("ExternalTrafficPolicy:Local/Client:Pod", func(t *testing.T) {
 		testNodePortLocalFromPod(t, data, pods, localUrls, podIPs, hostnames)
