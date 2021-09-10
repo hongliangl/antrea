@@ -107,8 +107,12 @@ func probeHostnameFromNode(node string, baseUrl string) (string, error) {
 
 func probeClientIPFromNode(node string, baseUrl string) (string, error) {
 	url := fmt.Sprintf("%s/%s", baseUrl, "clientip")
-	_, clientIP, _, err := RunCommandOnNode(node, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", url))
-	return strings.Split(clientIP, ":")[0], err
+	_, hostAndPort, _, err := RunCommandOnNode(node, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused %s", url))
+	if err != nil {
+		return "", err
+	}
+	clientIP, _, err := net.SplitHostPort(hostAndPort)
+	return clientIP, err
 }
 
 func probeFromPod(data *TestData, podName string, url string) error {
@@ -156,7 +160,7 @@ func testProxyLoadBalancerService(t *testing.T, isIPv6 bool) {
 	nodes := []string{nodeName(0), nodeName(1)}
 	var busyboxes, busyboxIPs []string
 	for idx, node := range nodes {
-		podName, ips, _ := createAndWaitForPod(t, data, data.createBusyboxPodOnNode, fmt.Sprintf("busybox-%d", idx), node, testNamespace, false)
+		podName, ips, _ := createAndWaitForPod(t, data, data.createBusyboxPodOnNode, fmt.Sprintf("busybox-%d-", idx), node, testNamespace, false)
 		busyboxes = append(busyboxes, podName)
 		if !isIPv6 {
 			busyboxIPs = append(busyboxIPs, ips.ipv4.String())
@@ -283,7 +287,7 @@ func testProxyNodePortService(t *testing.T, isIPv6 bool) {
 
 	var busyboxes, busyboxIPs []string
 	for idx, node := range nodes {
-		podName, ips, _ := createAndWaitForPod(t, data, data.createBusyboxPodOnNode, fmt.Sprintf("busybox-%d", idx), node, testNamespace, false)
+		podName, ips, _ := createAndWaitForPod(t, data, data.createBusyboxPodOnNode, fmt.Sprintf("busybox-%d-", idx), node, testNamespace, false)
 		busyboxes = append(busyboxes, podName)
 		if !isIPv6 {
 			busyboxIPs = append(busyboxIPs, ips.ipv4.String())
