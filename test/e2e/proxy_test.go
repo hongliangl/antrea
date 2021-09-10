@@ -23,12 +23,10 @@ import (
 	"testing"
 	"time"
 
+	"antrea.io/antrea/pkg/features"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	utilnet "k8s.io/utils/net"
-
-	"antrea.io/antrea/pkg/features"
 )
 
 type expectTableFlows struct {
@@ -218,25 +216,22 @@ func createLoadBalancerService(t *testing.T, data *TestData, serviceName string,
 
 func testLoadBalancerClusterFromNode(t *testing.T, data *TestData, nodes []string, url string) {
 	skipIfKubeProxyEnabled(t, data)
-	errMsg := "Service LoadBalancer whose externalTrafficPolicy is Cluster should be able to be connected from Node"
 	for _, node := range nodes {
-		require.NoError(t, probeFromNode(node, url), errMsg)
+		require.NoError(t, probeFromNode(node, url), "Service LoadBalancer whose externalTrafficPolicy is Cluster should be able to be connected from Node")
 	}
 }
 
 func testLoadBalancerClusterFromPod(t *testing.T, data *TestData, pods []string, url string) {
-	errMsg := "Service LoadBalancer whose externalTrafficPolicy is Cluster should be able to be connected from Pod"
 	for _, pod := range pods {
-		require.NoError(t, probeFromPod(data, pod, url), errMsg)
+		require.NoError(t, probeFromPod(data, pod, url), "Service LoadBalancer whose externalTrafficPolicy is Cluster should be able to be connected from Pod")
 	}
 }
 
 func testLoadBalancerLocalFromNode(t *testing.T, data *TestData, nodes []string, url string, expectedHostname []string) {
 	skipIfKubeProxyEnabled(t, data)
-	errMsg := "TService LoadBalancer whose externalTrafficPolicy is Local should be able to be connected from Node"
 	for idx, node := range nodes {
 		hostname, err := probeHostnameFromNode(node, url)
-		require.NoError(t, err, errMsg)
+		require.NoError(t, err, "Service LoadBalancer whose externalTrafficPolicy is Local should be able to be connected from Node")
 		require.Equal(t, hostname, expectedHostname[idx])
 	}
 }
@@ -359,6 +354,7 @@ func createAgnhostPod(t *testing.T, data *TestData, podName string, node string,
 			Protocol:      corev1.ProtocolTCP,
 		},
 	}
+
 	require.NoError(t, data.createPodOnNode(podName, testNamespace, node, agnhostImage, []string{}, args, nil, ports, hostNetwork, nil))
 	_, err := data.podWaitForIPs(defaultTimeout, podName, testNamespace)
 	require.NoError(t, err)
@@ -367,24 +363,10 @@ func createAgnhostPod(t *testing.T, data *TestData, podName string, node string,
 
 func createTestClientPod(t *testing.T, data *TestData, client string, node string) (string, string) {
 	// Create a busybox Pod on each node which is used as test client.
-	require.NoError(t, data.createBusyboxPodOnNode(client, testNamespace, node, false))
-	require.NoError(t, data.podWaitForRunning(defaultTimeout, client, testNamespace))
-	busybox, err := data.podWaitFor(defaultTimeout, client, testNamespace, func(pod *corev1.Pod) (bool, error) {
-		return pod.Status.Phase == corev1.PodRunning, nil
-	})
-	require.NoError(t, err)
-	require.NotNil(t, busybox.Status)
+	_, clientIPs, cleanupFunc := createAndWaitForPod(t, data, data.createBusyboxPodOnNode, client, node, testNamespace, false)
+	defer cleanupFunc()
 
-	ipv4 := busybox.Status.PodIP
-	var ipv6 string
-	for _, ip := range busybox.Status.PodIPs {
-		if utilnet.IsIPv6String(ip.IP) {
-			ipv6 = ip.IP
-			break
-		}
-	}
-
-	return ipv4, ipv6
+	return clientIPs.ipv4.String(), clientIPs.ipv6.String()
 }
 
 func createNodePortServices(t *testing.T, data *TestData, serviceName string, nodeLocalExternal bool, isIPv6 bool) string {
@@ -407,25 +389,22 @@ func createNodePortServices(t *testing.T, data *TestData, serviceName string, no
 
 func testNodePortClusterFromRemote(t *testing.T, data *TestData, nodes, urls []string) {
 	skipIfKubeProxyEnabled(t, data)
-	errMsg := "Service NodePort whose externalTrafficPolicy is Cluster should be able to be connected from remote Node"
 	for idx, node := range nodes {
-		require.NoError(t, probeFromNode(node, urls[idx]), errMsg)
+		require.NoError(t, probeFromNode(node, urls[idx]), "Service NodePort whose externalTrafficPolicy is Cluster should be able to be connected from remote Node")
 	}
 }
 
 func testNodePortClusterFromNode(t *testing.T, data *TestData, nodes, urls []string) {
 	skipIfKubeProxyEnabled(t, data)
-	errMsg := "TService NodePort whose externalTrafficPolicy is Cluster should be able to be connected from Node"
 	for idx, node := range nodes {
-		require.NoError(t, probeFromNode(node, urls[idx]), errMsg)
+		require.NoError(t, probeFromNode(node, urls[idx]), "TService NodePort whose externalTrafficPolicy is Cluster should be able to be connected from Node")
 	}
 }
 
 func testNodePortClusterFromPod(t *testing.T, data *TestData, pods, urls []string) {
-	errMsg := "Service NodePort whose externalTrafficPolicy is Cluster should be able to be connected from Pod"
 	for _, url := range urls {
 		for _, pod := range pods {
-			require.NoError(t, probeFromPod(data, pod, url), errMsg)
+			require.NoError(t, probeFromPod(data, pod, url), "Service NodePort whose externalTrafficPolicy is Cluster should be able to be connected from Pod")
 		}
 	}
 }
@@ -446,10 +425,9 @@ func testNodePortLocalFromRemote(t *testing.T, data *TestData, nodes, urls, expe
 
 func testNodePortLocalFromNode(t *testing.T, data *TestData, nodes, urls, expectedHostnames []string) {
 	skipIfKubeProxyEnabled(t, data)
-	errMsg := "There should be no errors when accessing to Service NodePort whose externalTrafficPolicy is Local from Node"
 	for idx, node := range nodes {
 		hostname, err := probeHostnameFromNode(node, urls[idx])
-		require.NoError(t, err, errMsg)
+		require.NoError(t, err, "Service NodePort whose externalTrafficPolicy is Local should be able to be connected rom Node")
 		require.Equal(t, hostname, expectedHostnames[idx])
 	}
 }

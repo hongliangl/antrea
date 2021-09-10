@@ -1034,13 +1034,6 @@ func (data *TestData) createBusyboxPodOnNode(name string, ns string, nodeName st
 	return data.createPodOnNode(name, ns, nodeName, busyboxImage, []string{"sleep", strconv.Itoa(sleepDuration)}, nil, nil, nil, hostNetowrk, nil)
 }
 
-// createHostNetworkBusyboxPodOnNode creates a host network Pod in the test namespace with a single busybox container.
-// The Pod will be scheduled on the specified Node (if nodeName is not empty).
-func (data *TestData) createHostNetworkBusyboxPodOnNode(name string, ns string, nodeName string) error {
-	sleepDuration := 3600 // seconds
-	return data.createPodOnNode(name, ns, nodeName, busyboxImage, []string{"sleep", strconv.Itoa(sleepDuration)}, nil, nil, nil, true, nil)
-}
-
 // createNginxPodOnNode creates a Pod in the test namespace with a single nginx container. The
 // Pod will be scheduled on the specified Node (if nodeName is not empty).
 func (data *TestData) createNginxPodOnNode(name string, ns string, nodeName string, hostNetwork bool) error {
