@@ -319,9 +319,16 @@ func nodePortTestCases(t *testing.T, data *TestData, portStrCluster, portStrLoca
 		clusterUrls = append(clusterUrls, net.JoinHostPort(nodeIP, portStrCluster))
 		localUrls = append(localUrls, net.JoinHostPort(nodeIP, portStrLocal))
 	}
+	reverseStrs := func(strs []string) []string {
+		var res []string
+		for i := len(strs) - 1; i >= 0; i-- {
+			res = append(res, strs[i])
+		}
+		return res
+	}
 
 	t.Run("ExternalTrafficPolicy:Cluster/Client:Remote", func(t *testing.T) {
-		testNodePortClusterFromRemote(t, data, nodes, clusterUrls)
+		testNodePortClusterFromRemote(t, data, nodes, reverseStrs(clusterUrls))
 	})
 	t.Run("ExternalTrafficPolicy:Cluster/Client:Node", func(t *testing.T) {
 		testNodePortClusterFromNode(t, data, nodes, clusterUrls)
@@ -333,7 +340,7 @@ func nodePortTestCases(t *testing.T, data *TestData, portStrCluster, portStrLoca
 		if hostNetwork {
 			t.Skipf("Skip this test as Endpoint is on host network")
 		}
-		testNodePortLocalFromRemote(t, data, nodes, localUrls, nodeIPs, []string{hostnames[1], hostnames[0]})
+		testNodePortLocalFromRemote(t, data, nodes, reverseStrs(localUrls), nodeIPs, reverseStrs(hostnames))
 	})
 	t.Run("ExternalTrafficPolicy:Local/Client:Node", func(t *testing.T) {
 		testNodePortLocalFromNode(t, data, nodes, localUrls, hostnames)
