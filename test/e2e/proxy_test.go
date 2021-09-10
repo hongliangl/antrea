@@ -154,10 +154,10 @@ func testProxyLoadBalancerService(t *testing.T, isIPv6 bool) {
 	skipIfProxyAllDisabled(t, data)
 
 	nodes := []string{nodeName(0), nodeName(1)}
-	busyboxes := []string{"busybox-0", "busybox-1"}
-	var busyboxIPs []string
+	var busyboxes, busyboxIPs []string
 	for idx, node := range nodes {
-		_, ips, _ := createAndWaitForPod(t, data, data.createBusyboxPodOnNode, busyboxes[idx], node, testNamespace, false)
+		podName, ips, _ := createAndWaitForPod(t, data, data.createBusyboxPodOnNode, fmt.Sprintf("busybox-%d", idx), node, testNamespace, false)
+		busyboxes = append(busyboxes, podName)
 		if !isIPv6 {
 			busyboxIPs = append(busyboxIPs, ips.ipv4.String())
 		} else {
@@ -281,10 +281,10 @@ func testProxyNodePortService(t *testing.T, isIPv6 bool) {
 		nodeIPs = []string{controlPlaneNodeIPv6(), workerNodeIPv6(1)}
 	}
 
-	busyboxes := []string{"busybox-0", "busybox-1"}
-	var busyboxIPs []string
+	var busyboxes, busyboxIPs []string
 	for idx, node := range nodes {
-		_, ips, _ := createAndWaitForPod(t, data, data.createBusyboxPodOnNode, busyboxes[idx], node, testNamespace, false)
+		podName, ips, _ := createAndWaitForPod(t, data, data.createBusyboxPodOnNode, fmt.Sprintf("busybox-%d", idx), node, testNamespace, false)
+		busyboxes = append(busyboxes, podName)
 		if !isIPv6 {
 			busyboxIPs = append(busyboxIPs, ips.ipv4.String())
 		} else {
