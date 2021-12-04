@@ -721,40 +721,17 @@ func (c *client) InstallDefaultTunnelFlows() error {
 }
 
 func (c *client) initialize() error {
-	if err := c.ofEntryOperations.AddAll(c.defaultFlows()); err != nil {
+	if err := c.ofEntryOperations.AddAll(c.defaultFlows(cookie.Default)); err != nil {
 		return fmt.Errorf("failed to install default flows: %v", err)
 	}
-	if err := c.ofEntryOperations.AddAll(c.arpResponderLocalFlows(cookie.Default)); err != nil {
-		return fmt.Errorf("failed to install arp responder local flows: %v", err)
+	if err := c.ofEntryOperations.AddAll(c.featurePodConnectivity.initialize(cookie.Default)); err != nil {
+		return fmt.Errorf("failed to install feature PodConnectivity initial flows: %v", err)
 	}
-	if err := c.ofEntryOperations.Add(c.arpNormalFlow(cookie.Default)); err != nil {
-		return fmt.Errorf("failed to install arp normal flow: %v", err)
+	if err := c.ofEntryOperations.AddAll(c.featureService.initialize(cookie.Default)); err != nil {
+		return fmt.Errorf("failed to install feature Service initial flows: %v", err)
 	}
-	if err := c.ofEntryOperations.AddAll(c.ipv6Flows(cookie.Default)); err != nil {
-		return fmt.Errorf("failed to install ipv6 flows: %v", err)
-	}
-	if err := c.ofEntryOperations.AddAll(c.decTTLFlows(cookie.Default)); err != nil {
-		return fmt.Errorf("failed to install dec TTL flow on source Node: %v", err)
-	}
-	if err := c.ofEntryOperations.AddAll(c.l2ForwardOutputFlows(cookie.Default)); err != nil {
-		return fmt.Errorf("failed to install L2 forward output flows: %v", err)
-	}
-	if err := c.ofEntryOperations.AddAll(c.connectionTrackFlows(cookie.Default)); err != nil {
-		return fmt.Errorf("failed to install connection track flows: %v", err)
-	}
-	if err := c.ofEntryOperations.AddAll(c.establishedConnectionFlows(cookie.Default)); err != nil {
-		return fmt.Errorf("failed to install flows to skip established connections: %v", err)
-	}
-	if err := c.ofEntryOperations.AddAll(c.relatedConnectionFlows(cookie.Default)); err != nil {
-		return fmt.Errorf("failed to install flows to skip related connections: %v", err)
-	}
-	if err := c.ofEntryOperations.AddAll(c.rejectBypassNetworkpolicyFlows(cookie.Default)); err != nil {
-		return fmt.Errorf("failed to install flows to skip generated reject responses: %v", err)
-	}
-	if c.networkConfig.TrafficEncapMode.IsNetworkPolicyOnly() {
-		if err := c.setupPolicyOnlyFlows(); err != nil {
-			return fmt.Errorf("failed to setup policy only flows: %w", err)
-		}
+	if err := c.ofEntryOperations.AddAll(c.featureNetworkPolicy.initialize(cookie.Default, c.networkConfig.TrafficEncapMode.IsNetworkPolicyOnly())); err != nil {
+		return fmt.Errorf("failed to install feature NetworkPolicy initial flows: %v", err)
 	}
 	if c.ovsMetersAreSupported {
 		if err := c.genPacketInMeter(PacketInMeterIDNP, PacketInMeterRateNP).Add(); err != nil {
@@ -777,6 +754,14 @@ func (c *client) Initialize(roundInfo types.RoundInfo, nodeConfig *config.NodeCo
 	if config.IsIPv6Enabled(nodeConfig, c.networkConfig.TrafficEncapMode) {
 		c.ipProtocols = append(c.ipProtocols, binding.ProtocolIPv6)
 	}
+	c.roundInfo = roundInfo
+	c.cookieAllocator = cookie.NewAllocator(roundInfo.RoundNum)
+
+	templatesList := c.initializeFeatures(c.IsIPv4Enabled())
+	for p, templates := range templatesList {
+		c.pipelines[p] = generatePipeline(templates)
+	}
+	createPipelineOnBridge(c.bridge, c.pipelines)
 
 	// Initiate connections to target OFswitch, and create tables on the switch.
 	connCh := make(chan struct{})
@@ -786,9 +771,6 @@ func (c *client) Initialize(roundInfo types.RoundInfo, nodeConfig *config.NodeCo
 
 	// Ignore first notification, it is not a "reconnection".
 	<-connCh
-
-	c.roundInfo = roundInfo
-	c.cookieAllocator = cookie.NewAllocator(roundInfo.RoundNum)
 
 	// In the normal case, there should be no existing flows with the current round number. This
 	// is needed in case the agent was restarted before we had a chance to increment the round
@@ -810,6 +792,65 @@ func (c *client) Initialize(roundInfo types.RoundInfo, nodeConfig *config.NodeCo
 	}
 
 	return connCh, c.initialize()
+}
+
+func (c *client) initializeFeatures(isIPv4Enabled bool) map[ofProtocol][]*pipelineTemplate {
+	var features []feature
+	podConnectivityIP := newFeaturePodConnectivity(c.cookieAllocator,
+		c.ipProtocols,
+		c.nodeConfig,
+		c.networkConfig,
+		c.connectUplinkToBridge)
+	c.featurePodConnectivity = podConnectivityIP.(*featurePodConnectivity)
+	features = append(features, podConnectivityIP)
+
+	networkPolicy := newFeatureNetworkPolicy(c.cookieAllocator,
+		c.ipProtocols,
+		c.bridge,
+		c.nodeConfig,
+		c.proxyAll,
+		c.ovsMetersAreSupported,
+		c.enableDenyTracking,
+		c.enableAntreaPolicy)
+	c.featureNetworkPolicy = networkPolicy.(*featureNetworkPolicy)
+	features = append(features, networkPolicy)
+
+	service := newFeatureService(c.cookieAllocator,
+		c.ipProtocols,
+		c.nodeConfig,
+		c.bridge,
+		c.enableProxy,
+		c.proxyAll)
+	c.featureService = service.(*featureService)
+	features = append(features, service)
+
+	if c.enableEgress {
+		egress := newFeatureEgress(c.cookieAllocator, c.ipProtocols, c.nodeConfig.GatewayConfig.MAC)
+		c.featureEgress = egress.(*featureEgress)
+		features = append(features, egress)
+	}
+
+	traceflow := newFeatureTraceflow(c.cookieAllocator,
+		c.ipProtocols,
+		c.ovsDatapathType,
+		c.nodeConfig,
+		c.enableProxy,
+		c.enableAntreaPolicy,
+		c.networkConfig.TrafficEncapMode.SupportsEncap())
+	c.featureTraceflow = traceflow.(*featureTraceflow)
+
+	templatesMap := make(map[ofProtocol][]*pipelineTemplate)
+	for _, f := range features {
+		templatesMap[ofProtocolIP] = append(templatesMap[ofProtocolIP], f.getTemplate(ofProtocolIP))
+
+		if isIPv4Enabled {
+			template := f.getTemplate(ofProtocolARP)
+			if template != nil {
+				templatesMap[ofProtocolARP] = append(templatesMap[ofProtocolARP], template)
+			}
+		}
+	}
+	return templatesMap
 }
 
 func (c *client) InstallExternalFlows(exceptCIDRs []net.IPNet) error {
