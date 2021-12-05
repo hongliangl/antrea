@@ -87,5 +87,21 @@ func newFeaturePodConnectivity(
 
 func (c *featurePodConnectivity) initialize(category cookie.Category) []binding.Flow {
 	var flows []binding.Flow
+
+	for _, ipProtocol := range c.ipProtocols {
+		if ipProtocol == binding.ProtocolIPv6 {
+			flows = append(flows, c.ipv6Flows(category)...)
+		} else if ipProtocol == binding.ProtocolIP {
+			flows = append(flows, c.arpNormalFlow(category))
+			flows = append(flows, c.arpResponderFlow(category, c.nodeConfig.GatewayConfig.IPv4, c.nodeConfig.GatewayConfig.MAC))
+		}
+	}
+	flows = append(flows, c.defaultDropFlows(category)...)
+	flows = append(flows, c.l3FwdFlowToLocalCIDR(category)...)
+	flows = append(flows, c.l3FwdFlowToNode(category)...)
+	flows = append(flows, c.l3FwdFlowToExternal(category))
+	flows = append(flows, c.decTTLFlows(category)...)
+	flows = append(flows, c.conntrackFlows(category)...)
+	flows = append(flows, c.l2ForwardOutputFlow(category))
 	return flows
 }

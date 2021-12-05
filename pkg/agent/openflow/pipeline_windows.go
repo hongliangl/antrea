@@ -47,6 +47,7 @@ var (
 	snatCTMark = binding.NewCTMark(0x40, 0, 31)
 )
 
+// TODO: refactor
 func (c *client) snatMarkFlows(snatIP net.IP, mark uint32) []binding.Flow {
 	snatIPRange := &binding.IPRange{StartIP: snatIP, EndIP: snatIP}
 	nextTable := ConntrackCommitTable.GetNext()
@@ -77,64 +78,86 @@ func (c *client) snatMarkFlows(snatIP net.IP, mark uint32) []binding.Flow {
 	return flows
 }
 
-// hostBridgeUplinkFlows generates the flows that forward traffic between the
-// bridge local port and the uplink port to support the host traffic with
-// outside.
-func (c *client) hostBridgeUplinkFlows(localSubnet net.IPNet, category cookie.Category) (flows []binding.Flow) {
+// Feature: PodConnectivity
+// Stage: ClassifierStage
+// Tables: ClassifierTable
+// Refactored from:
+//   - `func (c *client) hostBridgeUplinkFlows(localSubnet net.IPNet, category cookie.Category) (flows []binding.Flow)`
+// hostBridgeUplinkFlows generates the flows that forward traffic between the bridge local port and the uplink port to
+// support the host traffic with outside.
+func (c *featurePodConnectivity) hostBridgeUplinkFlows(category cookie.Category, localSubnet net.IPNet) (flows []binding.Flow) {
 	flows = []binding.Flow{
-		ClassifierTable.BuildFlow(priorityNormal).
+		ClassifierTable.ofTable.BuildFlow(priorityNormal).
+			Cookie(c.cookieAllocator.Request(category).Raw()).
 			MatchInPort(config.UplinkOFPort).
 			Action().Output(config.BridgeOFPort).
-			Cookie(c.cookieAllocator.Request(category).Raw()).
 			Done(),
-		ClassifierTable.BuildFlow(priorityNormal).
+		ClassifierTable.ofTable.BuildFlow(priorityNormal).
+			Cookie(c.cookieAllocator.Request(category).Raw()).
 			MatchInPort(config.BridgeOFPort).
 			Action().Output(config.UplinkOFPort).
-			Cookie(c.cookieAllocator.Request(category).Raw()).
 			Done(),
 	}
+
 	if c.networkConfig.TrafficEncapMode.SupportsNoEncap() {
 		// If NoEncap is enabled, the reply packets from remote Pod can be forwarded to local Pod directly.
 		// by explicitly resubmitting them to ServiceHairpinTable and marking "macRewriteMark" at same time.
-		flows = append(flows, ClassifierTable.BuildFlow(priorityHigh).MatchProtocol(binding.ProtocolIP).
+		flows = append(flows, ClassifierTable.ofTable.BuildFlow(priorityHigh).
+			Cookie(c.cookieAllocator.Request(category).Raw()).
+			MatchProtocol(binding.ProtocolIP).
 			MatchInPort(config.UplinkOFPort).
 			MatchDstIPNet(localSubnet).
 			Action().LoadRegMark(FromUplinkRegMark).
 			Action().LoadRegMark(RewriteMACRegMark).
-			Action().GotoTable(ServiceHairpinTable.GetID()).
-			Cookie(c.cookieAllocator.Request(category).Raw()).
+			Action().GotoStage(binding.ConntrackStateStage).
 			Done())
 	}
 	return flows
 }
 
-func (c *client) l3FwdFlowToRemoteViaRouting(localGatewayMAC net.HardwareAddr, remoteGatewayMAC net.HardwareAddr,
-	category cookie.Category, peerIP net.IP, peerPodCIDR *net.IPNet) []binding.Flow {
+// Feature: PodConnectivity
+// Stage: RoutingStage
+// Tables: L3ForwardingTable
+// Stage: SwitchingStage
+// Tables: L3ForwardingTable, L2ForwardingCalcTable
+// Refactored from:
+//   - `func (c *client) l3FwdFlowToRemoteViaRouting(localGatewayMAC net.HardwareAddr, remoteGatewayMAC net.HardwareAddr,
+//	    category cookie.Category, peerIP net.IP, peerPodCIDR *net.IPNet) []binding.Flow`
+func (c *featurePodConnectivity) l3FwdFlowToRemoteViaRouting(
+	category cookie.Category,
+	localGatewayMAC net.HardwareAddr,
+	remoteGatewayMAC net.HardwareAddr,
+	peerIP net.IP,
+	peerPodCIDR *net.IPNet) []binding.Flow {
+	flows := []binding.Flow{c.l3FwdFlowToRemoteViaGW(category, localGatewayMAC, *peerPodCIDR, false)}
+
 	if c.networkConfig.NeedsDirectRoutingToPeer(peerIP, c.nodeConfig.NodeTransportIPv4Addr) && remoteGatewayMAC != nil {
-		ipProto := getIPProtocol(peerIP)
+		ipProtocol := getIPProtocol(peerIP)
 		// It enhances Windows Noencap mode performance by bypassing host network.
-		flows := []binding.Flow{L2ForwardingCalcTable.BuildFlow(priorityNormal).
-			MatchDstMAC(remoteGatewayMAC).
-			Action().LoadToRegField(TargetOFPortField, config.UplinkOFPort).
-			Action().LoadRegMark(OFPortFoundRegMark).
-			Action().GotoTable(ConntrackCommitTable.GetID()).
-			Cookie(c.cookieAllocator.Request(category).Raw()).
-			Done(),
+		flows = append(flows,
 			// Output the reply packet to the uplink interface if the destination is another Node's IP.
 			// This is for the scenario that another Node directly accesses Pods on this Node. Since the request
 			// packet enters OVS from the uplink interface, the reply should go back in the same path. Otherwise,
 			// Windows host will perform stateless SNAT on the reply, and the packets are possibly dropped on peer
 			// Node because of the wrong source address.
-			L3ForwardingTable.BuildFlow(priorityNormal).MatchProtocol(ipProto).
-				MatchDstIP(peerIP).
-				MatchCTStateRpl(true).MatchCTStateTrk(true).
-				Action().SetDstMAC(remoteGatewayMAC).
-				Action().GotoTable(L3ForwardingTable.GetNext()).
+			L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
 				Cookie(c.cookieAllocator.Request(category).Raw()).
+				MatchProtocol(ipProtocol).
+				MatchDstIP(peerIP).
+				MatchCTStateRpl(true).
+				MatchCTStateTrk(true).
+				Action().SetDstMAC(remoteGatewayMAC).
+				Action().LoadRegMark(ToUplinkRegMark).
+				Action().NextTable().
 				Done(),
-		}
-		flows = append(flows, c.l3FwdFlowToRemoteViaGW(remoteGatewayMAC, *peerPodCIDR, category, false))
-		return flows
+			L2ForwardingCalcTable.ofTable.BuildFlow(priorityNormal).
+				Cookie(c.cookieAllocator.Request(category).Raw()).
+				MatchDstMAC(remoteGatewayMAC).
+				Action().LoadToRegField(TargetOFPortField, config.UplinkOFPort).
+				Action().LoadRegMark(OFPortFoundRegMark).
+				Action().GotoStage(binding.ConntrackStage).
+				Done(),
+		)
 	}
-	return []binding.Flow{c.l3FwdFlowToRemoteViaGW(localGatewayMAC, *peerPodCIDR, category, false)}
+	return flows
 }

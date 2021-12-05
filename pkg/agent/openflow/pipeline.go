@@ -487,64 +487,161 @@ func (c *client) defaultFlows(category cookie.Category) []binding.Flow {
 	return flows
 }
 
+// Feature: PodConnectivity
+// Stage: ClassifierStage
+// Tables: ClassifierTable
+// Refactored from:
+//   - func (c *client) tunnelClassifierFlow(tunnelOFPort uint32, category cookie.Category) binding.Flow
 // tunnelClassifierFlow generates the flow to mark traffic comes from the tunnelOFPort.
-func (c *client) tunnelClassifierFlow(tunnelOFPort uint32, category cookie.Category) binding.Flow {
-	nextTable := ConntrackTable
-	if c.proxyAll {
-		nextTable = ServiceConntrackTable
-	}
-	return ClassifierTable.BuildFlow(priorityNormal).
+func (c *featurePodConnectivity) tunnelClassifierFlow(category cookie.Category, tunnelOFPort uint32) binding.Flow {
+	return ClassifierTable.ofTable.BuildFlow(priorityNormal).
+		Cookie(c.cookieAllocator.Request(category).Raw()).
 		MatchInPort(tunnelOFPort).
 		Action().LoadRegMark(FromTunnelRegMark).
 		Action().LoadRegMark(RewriteMACRegMark).
-		Action().GotoTable(nextTable.GetID()).
-		Cookie(c.cookieAllocator.Request(category).Raw()).
+		Action().GotoStage(binding.ConntrackStateStage).
 		Done()
 }
 
+// Feature: PodConnectivity
+// Stage: ClassifierStage
+// Tables: ClassifierTable
+// Refactored from:
+//   - func (c *client) gatewayClassifierFlow(category cookie.Category) binding.Flow
 // gatewayClassifierFlow generates the flow to mark traffic comes from the gatewayOFPort.
-func (c *client) gatewayClassifierFlow(category cookie.Category) binding.Flow {
-	return ClassifierTable.BuildFlow(priorityNormal).
+func (c *featurePodConnectivity) gatewayClassifierFlow(category cookie.Category) binding.Flow {
+	return ClassifierTable.ofTable.BuildFlow(priorityNormal).
+		Cookie(c.cookieAllocator.Request(category).Raw()).
 		MatchInPort(config.HostGatewayOFPort).
 		Action().LoadRegMark(FromGatewayRegMark).
-		Action().GotoTable(ClassifierTable.GetNext()).
-		Cookie(c.cookieAllocator.Request(category).Raw()).
+		Action().GotoStage(binding.ValidationStage).
 		Done()
 }
 
+// Feature: PodConnectivity
+// Stage: ClassifierStage
+// Tables: ClassifierTable
+// Refactored from:
+//   - func (c *client) podClassifierFlow(podOFPort uint32, category cookie.Category, isAntreaFlexibleIPAM bool) binding.Flow
 // podClassifierFlow generates the flow to mark traffic comes from the podOFPort.
-func (c *client) podClassifierFlow(podOFPort uint32, category cookie.Category, isAntreaFlexibleIPAM bool) binding.Flow {
-	flowBuilder := ClassifierTable.BuildFlow(priorityLow).
+func (c *featurePodConnectivity) podClassifierFlow(category cookie.Category, podOFPort uint32, isAntreaFlexibleIPAM bool) binding.Flow {
+	flowBuilder := ClassifierTable.ofTable.BuildFlow(priorityLow).
+		Cookie(c.cookieAllocator.Request(category).Raw()).
 		MatchInPort(podOFPort).
 		Action().LoadRegMark(FromLocalRegMark).
-		Action().GotoTable(ClassifierTable.GetNext())
+		Action().GotoStage(binding.ValidationStage)
 	if isAntreaFlexibleIPAM {
 		// mark traffic from local AntreaFlexibleIPAM Pod
 		flowBuilder = flowBuilder.Action().LoadRegMark(AntreaFlexibleIPAMRegMark)
 	}
-	return flowBuilder.Cookie(c.cookieAllocator.Request(category).Raw()).Done()
+	return flowBuilder.Done()
 }
 
-// podUplinkClassifierFlow generates the flows to mark traffic from uplink and bridge ports, which are needed when
+// Feature: PodConnectivity
+// Stage: ClassifierStage
+// Tables: ClassifierTable
+// Refactored from:
+//   - func (c *client) podUplinkClassifierFlows(dstMAC net.HardwareAddr, category cookie.Category) (flows []binding.Flow)
+// podUplinkClassifierFlows generates the flows to mark traffic from uplink and bridge ports, which are needed when
 // uplink is connected to OVS bridge when AntreaFlexibleIPAM is configured.
-func (c *client) podUplinkClassifierFlows(dstMAC net.HardwareAddr, category cookie.Category) (flows []binding.Flow) {
-	flows = append(flows, ClassifierTable.BuildFlow(priorityHigh).
-		MatchInPort(config.UplinkOFPort).
-		MatchDstMAC(dstMAC).
-		Action().LoadRegMark(FromUplinkRegMark).
-		Action().GotoTable(ServiceHairpinTable.GetID()).
-		Cookie(c.cookieAllocator.Request(category).Raw()).
-		Done())
-	flows = append(flows, ClassifierTable.BuildFlow(priorityHigh).
-		MatchInPort(config.BridgeOFPort).
-		MatchDstMAC(dstMAC).
-		Action().LoadRegMark(FromBridgeRegMark).
-		Action().GotoTable(ServiceHairpinTable.GetID()).
-		Cookie(c.cookieAllocator.Request(category).Raw()).
-		Done())
-	return
+func (c *featurePodConnectivity) podUplinkClassifierFlows(category cookie.Category, dstMAC net.HardwareAddr) []binding.Flow {
+	return []binding.Flow{
+		ClassifierTable.ofTable.BuildFlow(priorityHigh).
+			Cookie(c.cookieAllocator.Request(category).Raw()).
+			MatchInPort(config.UplinkOFPort).
+			MatchDstMAC(dstMAC).
+			Action().LoadRegMark(FromUplinkRegMark).
+			Action().GotoStage(binding.ConntrackStateStage).
+			Done(),
+		ClassifierTable.ofTable.BuildFlow(priorityHigh).
+			Cookie(c.cookieAllocator.Request(category).Raw()).
+			MatchInPort(config.BridgeOFPort).
+			MatchDstMAC(dstMAC).
+			Action().LoadRegMark(FromBridgeRegMark).
+			Action().GotoStage(binding.ConntrackStateStage).
+			Done(),
+	}
 }
 
+// Feature: PodConnectivity
+// Stage: ConntrackStateStage
+// Tables: ConntrackTable, ConntrackStateTable
+// Stage: ConntrackStage
+// Tables: ConntrackCommitTable
+// Refactored from:
+//   - func (c *client) connectionTrackFlows(category cookie.Category) []binding.Flow
+//   - func (c *client) conntrackBasicFlows(category cookie.Category) []binding.Flow
+// Modifications:
+//   - Remove the flows related with Service since they are for feature Service.
+// conntrackFlows generates the flows that are related to conntrack.
+func (c *featurePodConnectivity) conntrackFlows(category cookie.Category) []binding.Flow {
+	var flows []binding.Flow
+	for _, ipProtocol := range c.ipProtocols {
+		flows = append(flows,
+			// In ConntrackTable, this flow is used to maintain conntrack.
+			ConntrackTable.ofTable.BuildFlow(priorityNormal).
+				Cookie(c.cookieAllocator.Request(category).Raw()).
+				MatchProtocol(ipProtocol).
+				Action().CT(false, ConntrackTable.ofTable.GetNext(), c.ctZones[ipProtocol]).
+				NAT().
+				CTDone().
+				Done(),
+			// In ConntrackStateTable, this flow is used to send tracked non-Service connections to go to EgressSecurity
+			// Stage directly to bypass PreRouting Stage. The first packet of non-Service connections will pass through
+			// PreRouting Stage, and the subsequent packets should go to EgressSecurity directly.
+			ConntrackStateTable.ofTable.BuildFlow(priorityLow).
+				Cookie(c.cookieAllocator.Request(category).Raw()).
+				MatchProtocol(ipProtocol).
+				MatchCTStateNew(false).
+				MatchCTStateTrk(true).
+				Action().GotoStage(binding.EgressSecurityStage).
+				Done(),
+			// In ConntrackStateTable, this flow is used to drop invalid packet.
+			ConntrackStateTable.ofTable.BuildFlow(priorityLow).
+				Cookie(c.cookieAllocator.Request(category).Raw()).
+				MatchProtocol(ipProtocol).
+				MatchCTStateInv(true).
+				MatchCTStateTrk(true).
+				Action().Drop().
+				Done(),
+			// In ConntrackCommitTable, this flow is used to commit non-Service connections by matching the first packet.
+			ConntrackCommitTable.ofTable.BuildFlow(priorityLow).
+				Cookie(c.cookieAllocator.Request(category).Raw()).
+				MatchProtocol(ipProtocol).
+				MatchCTStateNew(true).
+				MatchCTStateTrk(true).
+				Action().CT(true, ConntrackCommitTable.ofTable.GetNext(), c.ctZones[ipProtocol]).
+				CTDone().
+				Done(),
+			// Connections initiated through the gateway are marked with FromGatewayCTMark.
+			ConntrackCommitTable.ofTable.BuildFlow(priorityNormal).
+				Cookie(c.cookieAllocator.Request(category).Raw()).
+				MatchProtocol(ipProtocol).
+				MatchRegMark(FromGatewayRegMark).
+				MatchCTStateNew(true).
+				MatchCTStateTrk(true).
+				Action().CT(true, ConntrackCommitTable.ofTable.GetNext(), c.ctZones[ipProtocol]).
+				LoadToCtMark(FromGatewayCTMark).
+				CTDone().
+				Done(),
+			// Connections initiated through the bridge port are marked with FromBridgeCTMark.
+			ConntrackCommitTable.ofTable.BuildFlow(priorityNormal).
+				Cookie(c.cookieAllocator.Request(category).Raw()).
+				MatchProtocol(ipProtocol).
+				MatchRegMark(FromBridgeRegMark).
+				MatchCTStateNew(true).
+				MatchCTStateTrk(true).
+				Action().CT(true, ConntrackCommitTable.ofTable.GetNext(), c.ctZones[ipProtocol]).
+				LoadToCtMark(FromBridgeCTMark).
+				CTDone().
+				Done(),
+		)
+	}
+
+	return flows
+}
+
+//TODO: remove it
 // connectionTrackFlows generates flows that redirect traffic to ct_zone and handle traffic according to ct_state:
 // 1) commit new connections to ct_zone(0xfff0) in the ConntrackCommitTable.
 // 2) Add ct_mark on the packet if it is sent to the switch from the host gateway.
@@ -1011,22 +1108,22 @@ func (c *client) serviceLBBypassFlows(ipProtocol binding.Protocol) []binding.Flo
 	return flows
 }
 
+// Feature: PodConnectivity
+// Stage: SwitchingStage
+// Tables: L2ForwardingCalcTable
+// Refactored from:
+//   - func (c *client) l2ForwardCalcFlow(dstMAC net.HardwareAddr, ofPort uint32, skipIngressRules bool, category cookie.Category) binding.Flow
 // l2ForwardCalcFlow generates the flow that matches dst MAC and loads ofPort to reg.
-func (c *client) l2ForwardCalcFlow(dstMAC net.HardwareAddr, ofPort uint32, skipIngressRules bool, category cookie.Category) binding.Flow {
-	nextTable := L2ForwardingCalcTable.GetNext()
-	if !skipIngressRules {
-		// Go to ingress NetworkPolicy tables for traffic to local Pods.
-		nextTable = c.ingressEntryTable
-	}
-	return L2ForwardingCalcTable.BuildFlow(priorityNormal).
+func (c *featurePodConnectivity) l2ForwardCalcFlow(category cookie.Category,
+	dstMAC net.HardwareAddr,
+	ofPort uint32) binding.Flow {
+	return L2ForwardingCalcTable.ofTable.BuildFlow(priorityNormal).
+		Cookie(c.cookieAllocator.Request(category).Raw()).
 		MatchDstMAC(dstMAC).
 		Action().LoadToRegField(TargetOFPortField, ofPort).
 		Action().LoadRegMark(OFPortFoundRegMark).
-		Action().GotoTable(nextTable).
-		Cookie(c.cookieAllocator.Request(category).Raw()).
+		Action().NextTable().
 		Done()
-	// Broadcast, multicast, and unknown unicast packets will be dropped by
-	// the default flow of L2ForwardingOutTable.
 }
 
 // Feature: Traceflow
@@ -1172,62 +1269,76 @@ func (c *client) l2ForwardOutputServiceHairpinFlow() binding.Flow {
 		Done()
 }
 
-// l2ForwardOutputFlows generates the flows that output packets to OVS port after L2 forwarding calculation.
-func (c *client) l2ForwardOutputFlows(category cookie.Category) []binding.Flow {
-	var flows []binding.Flow
-	flows = append(flows,
-		L2ForwardingOutTable.BuildFlow(priorityNormal).MatchProtocol(binding.ProtocolIP).
-			MatchRegMark(OFPortFoundRegMark).
-			Action().OutputToRegField(TargetOFPortField).
-			Cookie(c.cookieAllocator.Request(category).Raw()).
-			Done(),
-		L2ForwardingOutTable.BuildFlow(priorityNormal).MatchProtocol(binding.ProtocolIPv6).
-			MatchRegMark(OFPortFoundRegMark).
-			Action().OutputToRegField(TargetOFPortField).
-			Cookie(c.cookieAllocator.Request(category).Raw()).
-			Done(),
-	)
-	return flows
+// Feature: PodConnectivity
+// Stage: OutputStage
+// Tables: l2ForwardOutputFlow
+// Refactored from:
+//   - func (c *client) l2ForwardOutputFlows(category cookie.Category) []binding.Flow
+// Modifications:
+//   - Remove hairpin related flow since it is moved to Feature Service.
+// l2ForwardOutputFlow generates the flow that output packets to OVS port after L2 forwarding calculation.
+func (c *featurePodConnectivity) l2ForwardOutputFlow(category cookie.Category) binding.Flow {
+	return L2ForwardingOutTable.ofTable.BuildFlow(priorityNormal).
+		Cookie(c.cookieAllocator.Request(category).Raw()).
+		MatchRegMark(OFPortFoundRegMark).
+		Action().OutputToRegField(TargetOFPortField).
+		Done()
 }
 
-// l3FwdFlowToPod generates the L3 forward flows for traffic from tunnel to a
-// local Pod. It rewrites the destination MAC (should be GlobalVirtualMAC) to
-// the Pod interface MAC, and rewrites the source MAC to the gateway interface
-// MAC.
-func (c *client) l3FwdFlowToPod(localGatewayMAC net.HardwareAddr, podInterfaceIPs []net.IP, podInterfaceMAC net.HardwareAddr, category cookie.Category) []binding.Flow {
+// Feature: PodConnectivity
+// Stage: RoutingStage
+// Tables: L3ForwardingTable
+// Refactored from:
+//   - func (c *client) l3FwdFlowToPod(localGatewayMAC net.HardwareAddr, podInterfaceIPs []net.IP, podInterfaceMAC net.HardwareAddr, category cookie.Category) []binding.Flow
+// l3FwdFlowToPod generates the L3 forward flows for traffic from tunnel to a local Pod. It rewrites the destination MAC
+// (should be GlobalVirtualMAC) to the Pod interface MAC, and rewrites the source MAC to the gateway interface MAC.
+func (c *featurePodConnectivity) l3FwdFlowToPod(category cookie.Category,
+	localGatewayMAC net.HardwareAddr,
+	podInterfaceIPs []net.IP,
+	podInterfaceMAC net.HardwareAddr) []binding.Flow {
 	var flows []binding.Flow
 	for _, ip := range podInterfaceIPs {
 		ipProtocol := getIPProtocol(ip)
-		flowBuilder := L3ForwardingTable.BuildFlow(priorityNormal).MatchProtocol(ipProtocol)
+		flowBuilder := L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
+			Cookie(c.cookieAllocator.Request(category).Raw()).
+			MatchProtocol(ipProtocol)
 		if !c.connectUplinkToBridge {
-			// dstMAC will be overwritten always for AntreaFlexibleIPAM
+			// dstMAC will always be overwritten for AntreaFlexibleIPAM
 			flowBuilder = flowBuilder.MatchRegMark(RewriteMACRegMark)
 		}
-		flow := flowBuilder.MatchDstIP(ip).
-			Action().SetSrcMAC(localGatewayMAC).
-			// Rewrite src MAC to local gateway MAC, and rewrite dst MAC to pod MAC
-			Action().SetDstMAC(podInterfaceMAC).
-			Action().GotoTable(L3DecTTLTable.GetID()).
-			Cookie(c.cookieAllocator.Request(category).Raw()).
-			Done()
-		flows = append(flows, flow)
+		flows = append(flows, flowBuilder.
+			MatchDstIP(ip).
+			Action().SetSrcMAC(localGatewayMAC). // Rewrite src MAC to local gateway MAC.
+			Action().SetDstMAC(podInterfaceMAC). // Rewrite dst MAC to pod MAC.
+			Action().LoadRegMark(ToLocalRegMark).
+			Action().NextTable().
+			Done())
 	}
 	return flows
 }
 
-// l3FwdFlowRouteToPod generates the flows to route the traffic to a Pod based on
-// the destination IP. It rewrites the destination MAC of the packets to the Pod
-// interface MAC. The flow is used in the networkPolicyOnly mode for the traffic
-// from the gateway to a local Pod.
-func (c *client) l3FwdFlowRouteToPod(podInterfaceIPs []net.IP, podInterfaceMAC net.HardwareAddr, category cookie.Category) []binding.Flow {
+// Feature: PodConnectivity
+// Stage: RoutingStage
+// Tables: L3ForwardingTable
+// Requirements: networkPolicyOnly mode
+// Refactored from:
+//   - func (c *client) l3FwdFlowRouteToPod(podInterfaceIPs []net.IP, podInterfaceMAC net.HardwareAddr, category cookie.Category) []binding.Flow
+// l3FwdFlowRouteToPod generates the flows to route the traffic to a Pod based on the destination IP. It rewrites the
+// destination MAC of the packets to the Pod interface MAC. The flow is used in the networkPolicyOnly mode for the
+// traffic from the gateway to a local Pod.
+func (c *featurePodConnectivity) l3FwdFlowRouteToPod(category cookie.Category,
+	podInterfaceIPs []net.IP,
+	podInterfaceMAC net.HardwareAddr) []binding.Flow {
 	var flows []binding.Flow
 	for _, ip := range podInterfaceIPs {
 		ipProtocol := getIPProtocol(ip)
-		flows = append(flows, L3ForwardingTable.BuildFlow(priorityNormal).MatchProtocol(ipProtocol).
+		flows = append(flows, L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
+			Cookie(c.cookieAllocator.Request(category).Raw()).
+			MatchProtocol(ipProtocol).
 			MatchDstIP(ip).
 			Action().SetDstMAC(podInterfaceMAC).
-			Action().GotoTable(L3DecTTLTable.GetID()).
-			Cookie(c.cookieAllocator.Request(category).Raw()).
+			Action().LoadRegMark(ToLocalRegMark).
+			Action().NextTable().
 			Done())
 	}
 	return flows
@@ -1256,19 +1367,41 @@ func (c *featureNetworkPolicy) l3FwdFlowRouteToGW(category cookie.Category) []bi
 	return flows
 }
 
-// l3FwdFlowToGateway generates the L3 forward flows to rewrite the destination MAC of the packets to the gateway interface
-// MAC if the destination IP is the gateway IP or the connection was initiated through the gateway interface.
-func (c *client) l3FwdFlowToGateway(localGatewayIPs []net.IP, localGatewayMAC net.HardwareAddr, category cookie.Category) []binding.Flow {
+// Feature: PodConnectivity
+// Stage: RoutingStage
+// Tables: L3ForwardingTable
+// Refactored from:
+//   - func (c *client) l3FwdFlowToGateway(localGatewayIPs []net.IP, localGatewayMAC net.HardwareAddr, category cookie.Category) []binding.Flow`
+// l3FwdFlowToGateway generates the L3 forward flows to rewrite the destination MAC of the packets to the gateway
+// interface MAC if the destination IP is the gateway IP or the connection was initiated through the gateway interface.
+func (c *featurePodConnectivity) l3FwdFlowToGateway(category cookie.Category) []binding.Flow {
 	var flows []binding.Flow
-	for _, ip := range localGatewayIPs {
-		ipProtocol := getIPProtocol(ip)
-		flows = append(flows, L3ForwardingTable.BuildFlow(priorityNormal).MatchProtocol(ipProtocol).
-			MatchRegMark(RewriteMACRegMark).
-			MatchDstIP(ip).
-			Action().SetDstMAC(localGatewayMAC).
-			Action().GotoTable(L3ForwardingTable.GetNext()).
-			Cookie(c.cookieAllocator.Request(category).Raw()).
-			Done())
+	for ipProtocol, gatewayIP := range c.gatewayIPs {
+		flows = append(flows,
+			// This flow is used to match the following cases:
+			//   - reply packets of Service connection (from local Pod, to gateway)
+			//   - reply packets of Service connection (from tunnel, to gateway)
+			//   - request/reply packets of non-Service connection (from tunnel, to gateway)
+			L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
+				Cookie(c.cookieAllocator.Request(category).Raw()).
+				MatchProtocol(ipProtocol).
+				MatchRegMark(RewriteMACRegMark).
+				MatchDstIP(gatewayIP).
+				Action().SetDstMAC(c.nodeConfig.GatewayConfig.MAC).
+				Action().LoadRegMark(ToGatewayRegMark).
+				Action().GotoStage(binding.SwitchingStage).
+				Done(),
+			// This flow is used to match the following cases:
+			//   - request/reply packets of non-Service connection (from local Pod, to gateway)
+			L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
+				Cookie(c.cookieAllocator.Request(category).Raw()).
+				MatchProtocol(ipProtocol).
+				MatchRegMark(NotRewriteMACRegMark).
+				MatchDstIP(gatewayIP).
+				Action().LoadRegMark(ToGatewayRegMark).
+				Action().GotoStage(binding.SwitchingStage).
+				Done(),
+		)
 	}
 	// Rewrite the destination MAC address with the local host gateway MAC if the packet is in the reply direction and
 	// is marked with FromGatewayCTMark. This is for connections which were initiated through the gateway, to ensure that
@@ -1282,88 +1415,101 @@ func (c *client) l3FwdFlowToGateway(localGatewayIPs []net.IP, localGatewayMAC ne
 	//  applies regardless of whether AntreaProxy is enabled or not, and thus also applies to Windows Nodes (for which
 	//  AntreaProxy is enabled by default). One example is a Pod accessing a NodePort Service for which
 	//  externalTrafficPolicy is set to Local, using the local Node's IP address.
-	for _, proto := range c.ipProtocols {
-		// The following two OpenFlow entries are a workaround for issue: https://github.com/antrea-io/antrea/issues/2981.
-		// The issue is a Windows OVS bug, which identifies a reply packet as "new" in conntrack, and mark the connection
-		// with "FromGatewayCTMark". The OVS datapath might drop the packet if the reply packet is actually form
-		// antrea-gw0 because the input_port and output port number are the same. This workaround doesn't write the
-		// dst MAC if the reply packet of a connection marked with "FromGatewayCTMark" but it enters OVS from antrea-gw0.
-		flows = append(flows, L3ForwardingTable.BuildFlow(priorityHigh).MatchProtocol(proto).
+	for _, ipProtocol := range c.ipProtocols {
+		flows = append(flows, L3ForwardingTable.ofTable.BuildFlow(priorityHigh).
+			Cookie(c.cookieAllocator.Request(category).Raw()).
+			MatchProtocol(ipProtocol).
 			MatchRegMark(FromLocalRegMark).
 			MatchCTMark(FromGatewayCTMark).
-			MatchCTStateRpl(true).MatchCTStateTrk(true).
-			Action().SetDstMAC(localGatewayMAC).
-			Action().GotoTable(L3ForwardingTable.GetNext()).
-			Cookie(c.cookieAllocator.Request(category).Raw()).
-			Done(),
-		)
+			MatchCTStateRpl(true).
+			MatchCTStateTrk(true).
+			Action().SetDstMAC(c.nodeConfig.GatewayConfig.MAC).
+			Action().LoadRegMark(ToGatewayRegMark).
+			Action().GotoStage(binding.SwitchingStage).
+			Done())
 
 		if c.networkConfig.TrafficEncapMode.SupportsEncap() {
-			flows = append(flows, L3ForwardingTable.BuildFlow(priorityHigh).MatchProtocol(proto).
+			flows = append(flows, L3ForwardingTable.ofTable.BuildFlow(priorityHigh).
+				Cookie(c.cookieAllocator.Request(category).Raw()).
+				MatchProtocol(ipProtocol).
 				MatchRegMark(FromTunnelRegMark).
 				MatchCTMark(FromGatewayCTMark).
-				MatchCTStateRpl(true).MatchCTStateTrk(true).
-				Action().SetDstMAC(localGatewayMAC).
-				Action().GotoTable(L3ForwardingTable.GetNext()).
-				Cookie(c.cookieAllocator.Request(category).Raw()).
+				MatchCTStateRpl(true).
+				MatchCTStateTrk(true).
+				Action().SetDstMAC(c.nodeConfig.GatewayConfig.MAC).
+				Action().LoadRegMark(ToGatewayRegMark).
+				Action().GotoStage(binding.SwitchingStage).
 				Done())
 		}
 
 		if c.connectUplinkToBridge {
-			flows = append(flows, L3ForwardingTable.BuildFlow(priorityHigh).MatchProtocol(proto).
-				MatchCTMark(FromBridgeCTMark).
-				MatchCTStateRpl(true).MatchCTStateTrk(true).
-				Action().SetDstMAC(c.nodeConfig.UplinkNetConfig.MAC).
-				Action().GotoTable(L3ForwardingTable.GetNext()).
+			flows = append(flows, L3ForwardingTable.ofTable.BuildFlow(priorityHigh).
 				Cookie(c.cookieAllocator.Request(category).Raw()).
+				MatchProtocol(ipProtocol).
+				MatchCTMark(FromBridgeCTMark).
+				MatchCTStateRpl(true).
+				MatchCTStateTrk(true).
+				Action().SetDstMAC(c.nodeConfig.UplinkNetConfig.MAC).
+				Action().LoadRegMark(ToUplinkRegMark).
+				Action().GotoStage(binding.SwitchingStage).
 				Done())
 		}
 	}
 	return flows
 }
 
-// l3FwdFlowToRemote generates the L3 forward flow for traffic to a remote Node
-// (Pods or gateway) through the tunnel.
-func (c *client) l3FwdFlowToRemote(
+// Feature: PodConnectivity
+// Stage: RoutingStage
+// Tables: L3ForwardingTable
+// Refactored from:
+//   - func (c *client) l3FwdFlowToRemote(localGatewayMAC net.HardwareAddr, peerSubnet net.IPNet, tunnelPeer net.IP, category cookie.Category) binding.Flow
+// l3FwdFlowToRemote generates the L3 forward flow for traffic to a remote Node (Pods or gateway) through the tunnel.
+func (c *featurePodConnectivity) l3FwdFlowToRemote(category cookie.Category,
 	localGatewayMAC net.HardwareAddr,
 	peerSubnet net.IPNet,
-	tunnelPeer net.IP,
-	category cookie.Category) binding.Flow {
-	ipProto := getIPProtocol(peerSubnet.IP)
-	return L3ForwardingTable.BuildFlow(priorityNormal).MatchProtocol(ipProto).
-		MatchDstIPNet(peerSubnet).
-		// Rewrite src MAC to local gateway MAC and rewrite dst MAC to virtual MAC.
-		Action().SetSrcMAC(localGatewayMAC).
-		Action().SetDstMAC(GlobalVirtualMAC).
-		// Flow based tunnel. Set tunnel destination.
-		Action().SetTunnelDst(tunnelPeer).
-		Action().GotoTable(L3DecTTLTable.GetID()).
+	tunnelPeer net.IP) binding.Flow {
+	ipProtocol := getIPProtocol(peerSubnet.IP)
+	return L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
 		Cookie(c.cookieAllocator.Request(category).Raw()).
+		MatchProtocol(ipProtocol).
+		MatchDstIPNet(peerSubnet).
+		Action().SetSrcMAC(localGatewayMAC).  // Rewrite src MAC to local gateway MAC.
+		Action().SetDstMAC(GlobalVirtualMAC). // Rewrite dst MAC to virtual MAC.
+		Action().SetTunnelDst(tunnelPeer).    // Flow based tunnel. Set tunnel destination.
+		Action().LoadRegMark(ToTunnelRegMark).
+		Action().GotoTable(L3DecTTLTable.GetID()).
 		Done()
 }
 
-// l3FwdFlowToRemoteViaGW generates the L3 forward flow to support traffic to
-// remote via gateway. It is used when the cross-Node traffic does not require
-// encapsulation (in noEncap, networkPolicyOnly, or hybrid mode).
-func (c *client) l3FwdFlowToRemoteViaGW(
+// Feature: PodConnectivity
+// Stage: RoutingStage
+// Tables: L3ForwardingTable
+// Requirements: noEncap, networkPolicyOnly, traffic encryption with WireGuard or hybrid mode
+// Refactored from:
+//   - func (c *client) l3FwdFlowToRemoteViaGW(localGatewayMAC net.HardwareAddr, peerSubnet net.IPNet, category cookie.Category, isAntreaFlexibleIPAM bool) binding.Flow
+// l3FwdFlowToRemoteViaGW generates the L3 forward flow to support traffic to remote via gateway. It is used when the
+// cross-Node traffic does not require encapsulation (in noEncap, networkPolicyOnly, or hybrid mode).
+func (c *featurePodConnectivity) l3FwdFlowToRemoteViaGW(category cookie.Category,
 	localGatewayMAC net.HardwareAddr,
 	peerSubnet net.IPNet,
-	category cookie.Category,
 	isAntreaFlexibleIPAM bool) binding.Flow {
-	ipProto := getIPProtocol(peerSubnet.IP)
+	ipProtocol := getIPProtocol(peerSubnet.IP)
 	priority := priorityNormal
 	// AntreaFlexibleIPAM Pod -> Per-Node IPAM Pod traffic will be sent to remote Gw directly.
 	if isAntreaFlexibleIPAM {
 		priority = priorityHigh
 	}
-	flowBuilder := L3ForwardingTable.BuildFlow(priority).MatchProtocol(ipProto).
+	flowBuilder := L3ForwardingTable.ofTable.BuildFlow(priority).
+		Cookie(c.cookieAllocator.Request(category).Raw()).
+		MatchProtocol(ipProtocol).
 		MatchDstIPNet(peerSubnet)
 	if isAntreaFlexibleIPAM {
 		flowBuilder = flowBuilder.MatchRegMark(AntreaFlexibleIPAMRegMark)
 	}
-	return flowBuilder.Action().SetDstMAC(localGatewayMAC).
-		Action().GotoTable(L3ForwardingTable.GetNext()).
-		Cookie(c.cookieAllocator.Request(category).Raw()).
+	return flowBuilder.
+		Action().SetDstMAC(localGatewayMAC).
+		Action().LoadRegMark(ToExternalRegMark).
+		Action().NextTable().
 		Done()
 }
 
@@ -1394,21 +1540,28 @@ func (c *client) l3FwdServiceDefaultFlowsViaGW(ipProto binding.Protocol, categor
 	return flows
 }
 
-// arpResponderFlow generates the ARP responder flow entry that replies request comes from local gateway for peer
-// gateway MAC.
-func (c *client) arpResponderFlow(peerGatewayIP net.IP, category cookie.Category) binding.Flow {
-	return arpResponderTable.BuildFlow(priorityNormal).MatchProtocol(binding.ProtocolARP).
+// Feature: PodConnectivity
+// Stage: OutputStage
+// Tables: ARPResponderTable
+// Refactored from:
+//   - func (c *client) arpResponderFlow(peerGatewayIP net.IP, category cookie.Category) binding.Flow
+// Modification:
+//  - Response arp request with specific MAC address.
+// arpResponderFlow generates the flow to response arp request with specific MAC address for specific IP address.
+func (c *featurePodConnectivity) arpResponderFlow(category cookie.Category, ipAddr net.IP, macAddr net.HardwareAddr) binding.Flow {
+	return ARPResponderTable.ofTable.BuildFlow(priorityNormal).
+		Cookie(c.cookieAllocator.Request(category).Raw()).
+		MatchProtocol(binding.ProtocolARP).
 		MatchARPOp(arpOpRequest).
-		MatchARPTpa(peerGatewayIP).
+		MatchARPTpa(ipAddr).
 		Action().Move(binding.NxmFieldSrcMAC, binding.NxmFieldDstMAC).
-		Action().SetSrcMAC(GlobalVirtualMAC).
+		Action().SetSrcMAC(macAddr).
 		Action().LoadARPOperation(arpOpReply).
 		Action().Move(binding.NxmFieldARPSha, binding.NxmFieldARPTha).
-		Action().SetARPSha(GlobalVirtualMAC).
+		Action().SetARPSha(macAddr).
 		Action().Move(binding.NxmFieldARPSpa, binding.NxmFieldARPTpa).
-		Action().SetARPSpa(peerGatewayIP).
+		Action().SetARPSpa(ipAddr).
 		Action().OutputInPort().
-		Cookie(c.cookieAllocator.Request(category).Raw()).
 		Done()
 }
 
@@ -1437,29 +1590,30 @@ func (c *featureNetworkPolicy) arpResponderStaticFlow(category cookie.Category) 
 		Done()
 }
 
-// podIPSpoofGuardFlow generates the flow to check IP traffic sent out from local pod. Traffic from host gateway interface
-// will not be checked, since it might be pod to service traffic or host namespace traffic.
-func (c *client) podIPSpoofGuardFlow(ifIPs []net.IP, ifMAC net.HardwareAddr, ifOFPort uint32, category cookie.Category) []binding.Flow {
+// Feature: PodConnectivity
+// Stage: ValidationStage
+// Tables: SpoofGuardTable
+// Refactored from:
+//   - func (c *client) podIPSpoofGuardFlow(ifIPs []net.IP, ifMAC net.HardwareAddr, ifOFPort uint32, category cookie.Category) []binding.Flow
+// podIPSpoofGuardFlow generates the flow to check IP traffic sent out from local pod. Traffic from host gateway
+// interface will not be checked, since it might be pod to service traffic or host namespace traffic.
+func (c *featurePodConnectivity) podIPSpoofGuardFlow(category cookie.Category, ifIPs []net.IP, ifMAC net.HardwareAddr, ifOFPort uint32) []binding.Flow {
 	var flows []binding.Flow
 	for _, ifIP := range ifIPs {
 		ipProtocol := getIPProtocol(ifIP)
-		if ipProtocol == binding.ProtocolIP {
-			flows = append(flows, SpoofGuardTable.BuildFlow(priorityNormal).MatchProtocol(ipProtocol).
-				MatchInPort(ifOFPort).
-				MatchSrcMAC(ifMAC).
-				MatchSrcIP(ifIP).
-				Action().GotoTable(SpoofGuardTable.GetNext()).
-				Cookie(c.cookieAllocator.Request(category).Raw()).
-				Done())
-		} else if ipProtocol == binding.ProtocolIPv6 {
-			flows = append(flows, SpoofGuardTable.BuildFlow(priorityNormal).MatchProtocol(ipProtocol).
-				MatchInPort(ifOFPort).
-				MatchSrcMAC(ifMAC).
-				MatchSrcIP(ifIP).
-				Action().GotoTable(IPv6Table.GetID()).
-				Cookie(c.cookieAllocator.Request(category).Raw()).
-				Done())
+		nextTable := SpoofGuardTable.ofTable.GetNext()
+		if ipProtocol == binding.ProtocolIPv6 {
+			nextTable = IPv6Table.ofTable.GetID()
 		}
+		flows = append(flows,
+			SpoofGuardTable.ofTable.BuildFlow(priorityNormal).
+				Cookie(c.cookieAllocator.Request(category).Raw()).
+				MatchProtocol(ipProtocol).
+				MatchInPort(ifOFPort).
+				MatchSrcMAC(ifMAC).
+				MatchSrcIP(ifIP).
+				Action().GotoTable(nextTable).
+				Done())
 	}
 	return flows
 }
@@ -1530,14 +1684,23 @@ func (c *client) gatewayARPSpoofGuardFlows(gatewayIP net.IP, gatewayMAC net.Hard
 	return
 }
 
-// arpSpoofGuardFlow generates the flow to check ARP traffic sent out from local pods interfaces.
-func (c *client) arpSpoofGuardFlow(ifIP net.IP, ifMAC net.HardwareAddr, ifOFPort uint32, category cookie.Category) binding.Flow {
-	return SpoofGuardTable.BuildFlow(priorityNormal).MatchProtocol(binding.ProtocolARP).
+// Feature: PodConnectivity
+// Stage: ValidationStage
+// Tables: ARPSpoofGuardTable
+// Refactored from:
+//  - func (c *client) arpSpoofGuardFlow(ifIP net.IP, ifMAC net.HardwareAddr, ifOFPort uint32, category cookie.Category) binding.Flow
+//  - func (c *client) gatewayARPSpoofGuardFlows(gatewayIP net.IP, gatewayMAC net.HardwareAddr, category cookie.Category) (flows []binding.Flow)
+// Modification:
+// - Removed function `gatewayARPSpoofGuardFlows`.
+// arpSpoofGuardFlow generates the flow to check ARP traffic sent out from local pods interfaces or Antrea gateway.
+func (c *featurePodConnectivity) arpSpoofGuardFlow(category cookie.Category, ifIP net.IP, ifMAC net.HardwareAddr, ifOFPort uint32) binding.Flow {
+	return ARPSpoofGuardTable.ofTable.BuildFlow(priorityNormal).
+		Cookie(c.cookieAllocator.Request(category).Raw()).
+		MatchProtocol(binding.ProtocolARP).
 		MatchInPort(ifOFPort).
 		MatchARPSha(ifMAC).
 		MatchARPSpa(ifIP).
-		Action().GotoTable(arpResponderTable.GetID()).
-		Cookie(c.cookieAllocator.Request(category).Raw()).
+		Action().NextTable().
 		Done()
 }
 
@@ -1554,19 +1717,25 @@ func (c *client) sessionAffinityReselectFlow() binding.Flow {
 		Done()
 }
 
-// gatewayIPSpoofGuardFlow generates the flow to skip spoof guard checking for traffic sent from gateway interface.
-func (c *client) gatewayIPSpoofGuardFlows(category cookie.Category) []binding.Flow {
+// Feature: PodConnectivity
+// Stage: ValidationStage
+// Tables: SpoofGuardTable
+// Refactored from:
+//   - func (c *client) gatewayIPSpoofGuardFlows(category cookie.Category) []binding.Flow
+// gatewayIPSpoofGuardFlows generates the flow to skip spoof guard checking for traffic sent from gateway interface.
+func (c *featurePodConnectivity) gatewayIPSpoofGuardFlows(category cookie.Category) []binding.Flow {
 	var flows []binding.Flow
-	for _, proto := range c.ipProtocols {
-		nextTable := SpoofGuardTable.GetNext()
-		if proto == binding.ProtocolIPv6 {
-			nextTable = IPv6Table.GetID()
+	for _, ipProtocol := range c.ipProtocols {
+		nextTable := SpoofGuardTable.ofTable.GetNext()
+		if ipProtocol == binding.ProtocolIPv6 {
+			nextTable = IPv6Table.ofTable.GetID()
 		}
 		flows = append(flows,
-			SpoofGuardTable.BuildFlow(priorityNormal).MatchProtocol(proto).
+			SpoofGuardTable.ofTable.BuildFlow(priorityNormal).
+				Cookie(c.cookieAllocator.Request(category).Raw()).
+				MatchProtocol(ipProtocol).
 				MatchInPort(config.HostGatewayOFPort).
 				Action().GotoTable(nextTable).
-				Cookie(c.cookieAllocator.Request(category).Raw()).
 				Done(),
 		)
 	}
@@ -1622,11 +1791,17 @@ func (c *client) arpResponderLocalFlows(category cookie.Category) (flows []bindi
 	return
 }
 
-// arpNormalFlow generates the flow to response arp in normal way if no flow in arpResponderTable is matched.
-func (c *client) arpNormalFlow(category cookie.Category) binding.Flow {
-	return arpResponderTable.BuildFlow(priorityLow).MatchProtocol(binding.ProtocolARP).
-		Action().Normal().
+// Feature: PodConnectivity
+// Stage: OutputStage
+// Tables: ARPResponderTable
+// Refactored from:
+//   - func (c *client) arpNormalFlow(category cookie.Category) binding.Flow
+// arpNormalFlow generates the flow to response arp in normal way if no flow in ARPResponderTable is matched.
+func (c *featurePodConnectivity) arpNormalFlow(category cookie.Category) binding.Flow {
+	return ARPResponderTable.ofTable.BuildFlow(priorityLow).
 		Cookie(c.cookieAllocator.Request(category).Raw()).
+		MatchProtocol(binding.ProtocolARP).
+		Action().Normal().
 		Done()
 }
 
@@ -1684,40 +1859,50 @@ func (c *featureNetworkPolicy) denyRuleMetricFlow(conjunctionID uint32, ingress 
 		Done()
 }
 
-// ipv6Flows generates the flows to allow IPv6 packets from link-local addresses and
-// handle multicast packets, Neighbor Solicitation and ND Advertisement packets properly.
-func (c *client) ipv6Flows(category cookie.Category) []binding.Flow {
+// Feature: PodConnectivity
+// Stage: ValidationStage
+// Tables: SpoofGuardTable, IPv6Table
+// Refactored from:
+//   - func (c *client) ipv6Flows(category cookie.Category) []binding.Flow
+// ipv6Flows generates the flows to allow IPv6 packets from link-local addresses and handle multicast packets, Neighbor
+// Solicitation and ND Advertisement packets properly.
+func (c *featurePodConnectivity) ipv6Flows(category cookie.Category) []binding.Flow {
 	var flows []binding.Flow
 
 	_, ipv6LinkLocalIpnet, _ := net.ParseCIDR(ipv6LinkLocalAddr)
 	_, ipv6MulticastIpnet, _ := net.ParseCIDR(ipv6MulticastAddr)
 	flows = append(flows,
-		// Allow IPv6 packets (e.g. Multicast Listener Report Message V2) which are sent from link-local addresses in SpoofGuardTable,
-		// so that these packets will not be dropped.
-		SpoofGuardTable.BuildFlow(priorityNormal).MatchProtocol(binding.ProtocolIPv6).
-			MatchSrcIPNet(*ipv6LinkLocalIpnet).
-			Action().GotoTable(IPv6Table.GetID()).
+		// Allow IPv6 packets (e.g. Multicast Listener Report Message V2) which are sent from link-local addresses in
+		// SpoofGuardTable, so that these packets will not be dropped.
+		SpoofGuardTable.ofTable.BuildFlow(priorityNormal).
 			Cookie(c.cookieAllocator.Request(category).Raw()).
+			MatchProtocol(binding.ProtocolIPv6).
+			MatchSrcIPNet(*ipv6LinkLocalIpnet).
+			Action().ResubmitToTables(IPv6Table.ofTable.GetID()).
 			Done(),
 		// Handle IPv6 Neighbor Solicitation and Neighbor Advertisement as a regular L2 learning Switch by using normal.
-		IPv6Table.BuildFlow(priorityNormal).MatchProtocol(binding.ProtocolICMPv6).
+		IPv6Table.ofTable.BuildFlow(priorityNormal).
+			Cookie(c.cookieAllocator.Request(category).Raw()).
+			MatchProtocol(binding.ProtocolICMPv6).
 			MatchICMPv6Type(135).
 			MatchICMPv6Code(0).
 			Action().Normal().
-			Cookie(c.cookieAllocator.Request(category).Raw()).
 			Done(),
-		IPv6Table.BuildFlow(priorityNormal).MatchProtocol(binding.ProtocolICMPv6).
+		IPv6Table.ofTable.BuildFlow(priorityNormal).
+			Cookie(c.cookieAllocator.Request(category).Raw()).
+			MatchProtocol(binding.ProtocolICMPv6).
 			MatchICMPv6Type(136).
 			MatchICMPv6Code(0).
 			Action().Normal().
-			Cookie(c.cookieAllocator.Request(category).Raw()).
 			Done(),
 		// Handle IPv6 multicast packets as a regular L2 learning Switch by using normal.
-		// It is used to ensure that all kinds of IPv6 multicast packets are properly handled (e.g. Multicast Listener Report Message V2).
-		IPv6Table.BuildFlow(priorityNormal).MatchProtocol(binding.ProtocolIPv6).
+		// It is used to ensure that all kinds of IPv6 multicast packets are properly handled (e.g. Multicast Listener
+		// Report Message V2).
+		IPv6Table.ofTable.BuildFlow(priorityNormal).
+			Cookie(c.cookieAllocator.Request(category).Raw()).
+			MatchProtocol(binding.ProtocolIPv6).
 			MatchDstIPNet(*ipv6MulticastIpnet).
 			Action().Normal().
-			Cookie(c.cookieAllocator.Request(category).Raw()).
 			Done(),
 	)
 	return flows
@@ -2611,26 +2796,30 @@ func (c *client) serviceEndpointGroup(groupID binding.GroupIDType, withSessionAf
 	return group
 }
 
-// decTTLFlows decrements TTL by one for the packets forwarded across Nodes.
-// The TTL decrement should be skipped for the packets which enter OVS pipeline
-// from the gateway interface, as the host IP stack should have decremented the
-// TTL already for such packets.
-func (c *client) decTTLFlows(category cookie.Category) []binding.Flow {
+// Feature: PodConnectivity
+// Stage: RoutingStage
+// Tables: L3ForwardingTable
+// Refactored from:
+//   - func (c *client) decTTLFlows(category cookie.Category) []binding.Flow
+// decTTLFlows decrements TTL by one for the packets forwarded across Nodes. The TTL decrement should be skipped for the
+// packets which enter OVS pipeline from the gateway interface, as the host IP stack should have decremented the TTL
+// already for such packets.
+func (c *featurePodConnectivity) decTTLFlows(category cookie.Category) []binding.Flow {
 	var flows []binding.Flow
-	for _, proto := range c.ipProtocols {
+	for _, ipProtocol := range c.ipProtocols {
 		flows = append(flows,
 			// Skip packets from the gateway interface.
-			L3DecTTLTable.BuildFlow(priorityHigh).
+			L3DecTTLTable.ofTable.BuildFlow(priorityHigh).
 				Cookie(c.cookieAllocator.Request(category).Raw()).
-				MatchProtocol(proto).
+				MatchProtocol(ipProtocol).
 				MatchRegMark(FromGatewayRegMark).
-				Action().GotoTable(L3DecTTLTable.GetNext()).
+				Action().NextTable().
 				Done(),
-			L3DecTTLTable.BuildFlow(priorityNormal).
+			L3DecTTLTable.ofTable.BuildFlow(priorityNormal).
 				Cookie(c.cookieAllocator.Request(category).Raw()).
-				MatchProtocol(proto).
+				MatchProtocol(ipProtocol).
 				Action().DecTTL().
-				Action().GotoTable(L3DecTTLTable.GetNext()).
+				Action().NextTable().
 				Done(),
 		)
 	}
@@ -2803,4 +2992,92 @@ func addTableToCache(ft *FeatureTable) {
 	if !exists {
 		tableCache.Add(ft)
 	}
+}
+
+// Feature: PodConnectivity
+// Stage: ValidationStage
+// Tables: Classification, SpoofGuardTable
+// New added
+// defaultDropFlows set the action of default flow with drop.
+func (c *featurePodConnectivity) defaultDropFlows(category cookie.Category) []binding.Flow {
+	return []binding.Flow{
+		ClassifierTable.ofTable.BuildFlow(priorityMiss).
+			Cookie(c.cookieAllocator.Request(category).Raw()).
+			Action().Drop().
+			Done(),
+		SpoofGuardTable.ofTable.BuildFlow(priorityMiss).
+			Cookie(c.cookieAllocator.Request(category).Raw()).
+			Action().Drop().
+			Done(),
+	}
+}
+
+// Feature: PodConnectivity
+// Stage: RoutingStage
+// Tables: L3ForwardingTable
+// New added
+// l3FwdFlowToLocalCIDR generates the flow to match the traffic to local Pods.
+func (c *featurePodConnectivity) l3FwdFlowToLocalCIDR(category cookie.Category) []binding.Flow {
+	var flows []binding.Flow
+	for ipProtocol, cidr := range c.localCIDRs {
+		flows = append(flows, L3ForwardingTable.ofTable.BuildFlow(priorityLow).
+			Cookie(c.cookieAllocator.Request(category).Raw()).
+			MatchProtocol(ipProtocol).
+			MatchDstIPNet(cidr).
+			MatchRegMark(NotRewriteMACRegMark).
+			Action().LoadRegMark(ToLocalRegMark).
+			Action().GotoStage(binding.SwitchingStage).
+			Done())
+	}
+	return flows
+}
+
+// Feature: PodConnectivity
+// Stage: RoutingStage
+// Tables: L3ForwardingTable
+// New added
+// l3FwdFlowToNode generates the flows to match the traffic to current Node.
+func (c *featurePodConnectivity) l3FwdFlowToNode(category cookie.Category) []binding.Flow {
+	var flows []binding.Flow
+	for ipProtocol, nodeIP := range c.nodeIPs {
+		flows = append(flows,
+			// This flow is used to match the following cases:
+			//   - request packets of Service connection (from local Pod, to Node)
+			//   - request packets of Service connection (from gateway, to Node, hairpin)
+			//   - request packets of Service connection (from external, to Node, hairpin)
+			L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
+				Cookie(c.cookieAllocator.Request(category).Raw()).
+				MatchProtocol(ipProtocol).
+				MatchDstIP(nodeIP).
+				MatchRegMark(RewriteMACRegMark).
+				Action().LoadRegMark(ToNodeRegMark).
+				Action().SetDstMAC(c.nodeConfig.GatewayConfig.MAC).
+				Action().NextTable().
+				Done(),
+			// This flow is used to match the following case:
+			//   - request/reply of non-Service connection (from local Pod, to Node)
+			L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
+				Cookie(c.cookieAllocator.Request(category).Raw()).
+				MatchProtocol(ipProtocol).
+				MatchDstIP(nodeIP).
+				MatchRegMark(NotRewriteMACRegMark).
+				Action().LoadRegMark(ToNodeRegMark).
+				Action().GotoStage(binding.SwitchingStage).
+				Done(),
+		)
+	}
+	return flows
+}
+
+// Feature: PodConnectivity
+// Stage: RoutingStage
+// Tables: L3ForwardingTable
+// New added
+// l3FwdFlowToExternal generates the flow to forward non-Service or Egress packets to Switching Stage directly.
+func (c *featurePodConnectivity) l3FwdFlowToExternal(category cookie.Category) binding.Flow {
+	return L3ForwardingTable.ofTable.BuildFlow(priorityMiss).
+		Cookie(c.cookieAllocator.Request(category).Raw()).
+		Action().LoadRegMark(ToExternalRegMark).
+		Action().GotoStage(binding.SwitchingStage).
+		Done()
 }
