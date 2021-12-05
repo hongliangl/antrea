@@ -1786,5 +1786,15 @@ func (c *featureNetworkPolicy) initialize(category cookie.Category, isNetworkPol
 	}
 
 	var flows []binding.Flow
+	flows = append(flows, c.establishedConnectionFlows(category)...)
+	flows = append(flows, c.relatedConnectionFlows(category)...)
+	flows = append(flows, c.rejectBypassNetworkpolicyFlows(category)...)
+	flows = append(flows, c.ingressClassifierFlows(category)...)
+	if isNetworkPolicyOnly {
+		flows = append(flows, c.l3FwdFlowRouteToGW(category)...)
+		// If IPv6 is enabled, this flow will never get hit.
+		// Replies any ARP request with the same global virtual MAC.
+		flows = append(flows, c.arpResponderStaticFlow(category))
+	}
 	return flows
 }
