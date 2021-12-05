@@ -434,40 +434,40 @@ func (c *client) InstallNodeFlows(hostname string,
 			// only work for IPv4 addresses.
 			// arpResponderFlow() adds a flow to resolve peer gateway IPs to GlobalVirtualMAC.
 			// This flow replies to ARP requests sent from the local gateway asking for the MAC address of a remote peer gateway. It ensures that the local Node can reach any remote Pod.
-			flows = append(flows, c.arpResponderFlow(peerGatewayIP, cookie.Node))
+			flows = append(flows, c.featurePodConnectivity.arpResponderFlow(cookie.Node, peerGatewayIP, GlobalVirtualMAC))
 		}
 		// tunnelPeerIP is the Node Internal Address. In a dual-stack setup, one Node has 2 Node Internal
 		// Addresses (IPv4 and IPv6) .
 		if (!isIPv6 && c.networkConfig.NeedsTunnelToPeer(tunnelPeerIPs.IPv4, c.nodeConfig.NodeTransportIPv4Addr)) ||
 			(isIPv6 && c.networkConfig.NeedsTunnelToPeer(tunnelPeerIPs.IPv6, c.nodeConfig.NodeTransportIPv6Addr)) {
-			flows = append(flows, c.l3FwdFlowToRemote(localGatewayMAC, *peerPodCIDR, tunnelPeerIP, cookie.Node))
+			flows = append(flows, c.featurePodConnectivity.l3FwdFlowToRemote(cookie.Node, localGatewayMAC, *peerPodCIDR, tunnelPeerIP))
 		} else {
-			flows = append(flows, c.l3FwdFlowToRemoteViaRouting(localGatewayMAC, remoteGatewayMAC, cookie.Node, tunnelPeerIP, peerPodCIDR)...)
+			flows = append(flows, c.featurePodConnectivity.l3FwdFlowToRemoteViaRouting(cookie.Node, localGatewayMAC, remoteGatewayMAC, tunnelPeerIP, peerPodCIDR)...)
 		}
 		if c.enableEgress {
 			flows = append(flows, c.snatSkipNodeFlow(tunnelPeerIP, cookie.Node))
 		}
 		if c.connectUplinkToBridge {
 			// flow to catch traffic from AntreaFlexibleIPAM Pod to remote Per-Node IPAM Pod
-			flows = append(flows, c.l3FwdFlowToRemoteViaGW(remoteGatewayMAC, *peerPodCIDR, cookie.Node, true))
+			flows = append(flows, c.featurePodConnectivity.l3FwdFlowToRemoteViaGW(cookie.Node, remoteGatewayMAC, *peerPodCIDR, true))
 		}
 	}
 	if ipsecTunOFPort != 0 {
 		// When IPSec tunnel is enabled, packets received from the remote Node are
 		// input from the Node's IPSec tunnel port, not the default tunnel port. So,
 		// add a separate tunnelClassifierFlow for the IPSec tunnel port.
-		flows = append(flows, c.tunnelClassifierFlow(ipsecTunOFPort, cookie.Node))
+		flows = append(flows, c.featurePodConnectivity.tunnelClassifierFlow(cookie.Node, ipsecTunOFPort))
 	}
 
 	// For Windows Noencap Mode, the OVS flows for Node need be be exactly same as the provided 'flows' slice because
 	// the Node flows may be processed more than once if the MAC annotation is updated.
-	return c.modifyFlows(c.nodeFlowCache, hostname, flows)
+	return c.modifyFlows(c.featurePodConnectivity.nodeFlowCache, hostname, flows)
 }
 
 func (c *client) UninstallNodeFlows(hostname string) error {
 	c.replayMutex.RLock()
 	defer c.replayMutex.RUnlock()
-	return c.deleteFlows(c.nodeFlowCache, hostname)
+	return c.deleteFlows(c.featurePodConnectivity.nodeFlowCache, hostname)
 }
 
 func (c *client) InstallPodFlows(interfaceName string, podInterfaceIPs []net.IP, podInterfaceMAC net.HardwareAddr, ofPort uint32) error {
@@ -480,38 +480,38 @@ func (c *client) InstallPodFlows(interfaceName string, podInterfaceIPs []net.IP,
 
 	localGatewayMAC := c.nodeConfig.GatewayConfig.MAC
 	flows := []binding.Flow{
-		c.podClassifierFlow(ofPort, cookie.Pod, isAntreaFlexibleIPAM),
-		c.l2ForwardCalcFlow(podInterfaceMAC, ofPort, false, cookie.Pod),
+		c.featurePodConnectivity.podClassifierFlow(cookie.Pod, ofPort, isAntreaFlexibleIPAM),
+		c.featurePodConnectivity.l2ForwardCalcFlow(cookie.Pod, podInterfaceMAC, ofPort),
 	}
 
 	// Add support for IPv4 ARP responder.
 	if podInterfaceIPv4 != nil {
-		flows = append(flows, c.arpSpoofGuardFlow(podInterfaceIPv4, podInterfaceMAC, ofPort, cookie.Pod))
+		flows = append(flows, c.featurePodConnectivity.arpSpoofGuardFlow(cookie.Pod, podInterfaceIPv4, podInterfaceMAC, ofPort))
 	}
 	// Add IP SpoofGuard flows for all validate IPs.
-	flows = append(flows, c.podIPSpoofGuardFlow(podInterfaceIPs, podInterfaceMAC, ofPort, cookie.Pod)...)
+	flows = append(flows, c.featurePodConnectivity.podIPSpoofGuardFlow(cookie.Pod, podInterfaceIPs, podInterfaceMAC, ofPort)...)
 	// Add L3 Routing flows to rewrite Pod's dst MAC for all validate IPs.
-	flows = append(flows, c.l3FwdFlowToPod(localGatewayMAC, podInterfaceIPs, podInterfaceMAC, cookie.Pod)...)
+	flows = append(flows, c.featurePodConnectivity.l3FwdFlowToPod(cookie.Pod, localGatewayMAC, podInterfaceIPs, podInterfaceMAC)...)
 
 	if c.networkConfig.TrafficEncapMode.IsNetworkPolicyOnly() {
 		// In policy-only mode, traffic to local Pod is routed based on destination IP.
 		flows = append(flows,
-			c.l3FwdFlowRouteToPod(podInterfaceIPs, podInterfaceMAC, cookie.Pod)...,
+			c.featurePodConnectivity.l3FwdFlowRouteToPod(cookie.Pod, podInterfaceIPs, podInterfaceMAC)...,
 		)
 	}
 
 	if isAntreaFlexibleIPAM {
 		// Add Pod uplink classifier flows for AntreaFlexibleIPAM Pods.
-		flows = append(flows, c.podUplinkClassifierFlows(podInterfaceMAC, cookie.Pod)...)
+		flows = append(flows, c.featurePodConnectivity.podUplinkClassifierFlows(podInterfaceMAC, cookie.Pod)...)
 	}
 
-	return c.addFlows(c.podFlowCache, interfaceName, flows)
+	return c.addFlows(c.featurePodConnectivity.podFlowCache, interfaceName, flows)
 }
 
 func (c *client) UninstallPodFlows(interfaceName string) error {
 	c.replayMutex.RLock()
 	defer c.replayMutex.RUnlock()
-	return c.deleteFlows(c.podFlowCache, interfaceName)
+	return c.deleteFlows(c.featurePodConnectivity.podFlowCache, interfaceName)
 }
 
 func (c *client) getFlowKeysFromCache(cache *flowCategoryCache, cacheKey string) []string {
@@ -534,7 +534,7 @@ func (c *client) getFlowKeysFromCache(cache *flowCategoryCache, cacheKey string)
 }
 
 func (c *client) GetPodFlowKeys(interfaceName string) []string {
-	return c.getFlowKeysFromCache(c.podFlowCache, interfaceName)
+	return c.getFlowKeysFromCache(c.featurePodConnectivity.podFlowCache, interfaceName)
 }
 
 func (c *client) InstallServiceGroup(groupID binding.GroupIDType, withSessionAffinity bool, endpoints []proxy.Endpoint) error {
@@ -680,21 +680,19 @@ func (c *client) InstallClusterServiceCIDRFlows(serviceNets []*net.IPNet) error 
 
 func (c *client) InstallGatewayFlows() error {
 	gatewayConfig := c.nodeConfig.GatewayConfig
-	gatewayIPs := []net.IP{}
 
 	flows := []binding.Flow{
-		c.gatewayClassifierFlow(cookie.Default),
-		c.l2ForwardCalcFlow(gatewayConfig.MAC, config.HostGatewayOFPort, true, cookie.Default),
+		c.featurePodConnectivity.gatewayClassifierFlow(cookie.Default),
+		c.featurePodConnectivity.l2ForwardCalcFlow(cookie.Default, gatewayConfig.MAC, config.HostGatewayOFPort),
 	}
-	flows = append(flows, c.gatewayIPSpoofGuardFlows(cookie.Default)...)
+	flows = append(flows, c.featurePodConnectivity.gatewayIPSpoofGuardFlows(cookie.Default)...)
 
 	// Add ARP SpoofGuard flow for local gateway interface.
 	if gatewayConfig.IPv4 != nil {
-		gatewayIPs = append(gatewayIPs, gatewayConfig.IPv4)
-		flows = append(flows, c.gatewayARPSpoofGuardFlows(gatewayConfig.IPv4, gatewayConfig.MAC, cookie.Default)...)
-	}
-	if gatewayConfig.IPv6 != nil {
-		gatewayIPs = append(gatewayIPs, gatewayConfig.IPv6)
+		flows = append(flows, c.featurePodConnectivity.arpSpoofGuardFlow(cookie.Default, gatewayConfig.IPv4, gatewayConfig.MAC, config.HostGatewayOFPort))
+		if c.connectUplinkToBridge {
+			flows = append(flows, c.featurePodConnectivity.arpSpoofGuardFlow(cookie.Default, c.nodeConfig.NodeIPv4Addr.IP, gatewayConfig.MAC, config.HostGatewayOFPort))
+		}
 	}
 
 	// Add flow to ensure the liveness check packet could be forwarded correctly.
@@ -704,19 +702,19 @@ func (c *client) InstallGatewayFlows() error {
 	if err := c.ofEntryOperations.AddAll(flows); err != nil {
 		return err
 	}
-	c.gatewayFlows = flows
+	c.featurePodConnectivity.gatewayFlows = flows
 	return nil
 }
 
 func (c *client) InstallDefaultTunnelFlows() error {
 	flows := []binding.Flow{
-		c.tunnelClassifierFlow(config.DefaultTunOFPort, cookie.Default),
-		c.l2ForwardCalcFlow(GlobalVirtualMAC, config.DefaultTunOFPort, true, cookie.Default),
+		c.featurePodConnectivity.tunnelClassifierFlow(cookie.Default, config.DefaultTunOFPort),
+		c.featurePodConnectivity.l2ForwardCalcFlow(cookie.Default, GlobalVirtualMAC, config.DefaultTunOFPort),
 	}
 	if err := c.ofEntryOperations.AddAll(flows); err != nil {
 		return err
 	}
-	c.defaultTunnelFlows = flows
+	c.featurePodConnectivity.defaultTunnelFlows = flows
 	return nil
 }
 
@@ -924,12 +922,11 @@ func (c *client) ReplayFlows() {
 		if err := c.ofEntryOperations.AddAll(flows); err != nil {
 			klog.Errorf("Error when replaying fixed flows: %v", err)
 		}
-
 	}
 
-	addFixedFlows(c.gatewayFlows)
+	addFixedFlows(c.featurePodConnectivity.gatewayFlows)
 	addFixedFlows(c.defaultServiceFlows)
-	addFixedFlows(c.defaultTunnelFlows)
+	addFixedFlows(c.featurePodConnectivity.defaultTunnelFlows)
 	// hostNetworkingFlows is used only on Windows. Replay the flows only when there are flows in this cache.
 	if len(c.hostNetworkingFlows) > 0 {
 		addFixedFlows(c.hostNetworkingFlows)
@@ -958,8 +955,8 @@ func (c *client) ReplayFlows() {
 		}
 		return true
 	})
-	c.nodeFlowCache.Range(installCachedFlows)
-	c.podFlowCache.Range(installCachedFlows)
+	c.featurePodConnectivity.nodeFlowCache.Range(installCachedFlows)
+	c.featurePodConnectivity.podFlowCache.Range(installCachedFlows)
 	c.serviceFlowCache.Range(installCachedFlows)
 
 	if err := c.ofEntryOperations.AddAll(c.featureNetworkPolicy.replayPolicyFlows()); err != nil {
