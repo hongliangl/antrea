@@ -17,7 +17,6 @@ package openflow
 import (
 	"encoding/binary"
 	"fmt"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"math"
 	"net"
 	"sort"
@@ -27,6 +26,7 @@ import (
 	"antrea.io/libOpenflow/protocol"
 	"antrea.io/ofnet/ofctrl"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 
@@ -250,8 +250,6 @@ var (
 	snatPktMarkRange = &binding.Range{0, 7}
 
 	GlobalVirtualMAC, _ = net.ParseMAC("aa:bb:cc:dd:ee:ff")
-	hairpinIP           = net.ParseIP("169.254.169.252").To4()
-	hairpinIPv6         = net.ParseIP("fc00::aabb:ccdd:eeff").To16()
 )
 
 type OFEntryOperations interface {
