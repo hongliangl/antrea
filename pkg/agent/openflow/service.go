@@ -89,5 +89,12 @@ func newFeatureService(
 
 func (c *featureService) initialize(category cookie.Category) []binding.Flow {
 	var flows []binding.Flow
+	if c.enableProxy {
+		flows = append(flows, c.conntrackFlows(category)...)
+		flows = append(flows, c.snatConntrackFlows(category)...)
+		flows = append(flows, c.l3FwdFlowToExternal(category))
+		flows = append(flows, c.hairpinBypassFlows(category)...)
+		flows = append(flows, c.gatewayHairpinFlows(category)...)
+	}
 	return flows
 }
