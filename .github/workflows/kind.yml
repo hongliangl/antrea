@@ -13,23 +13,8 @@ env:
   KIND_VERSION: v0.11.1
 
 jobs:
-  check-changes:
-    name: Check whether tests need to be run based on diff
-    runs-on: [ubuntu-latest]
-    steps:
-    - uses: actions/checkout@v2
-      with:
-        fetch-depth: 0
-    - uses: antrea-io/antrea/ci/gh-actions/has-changes@main
-      id: check_diff
-      with:
-        args: docs/* ci/jenkins/* *.md hack/.notableofcontents
-    outputs:
-      has_changes: ${{ steps.check_diff.outputs.has_changes }}
-
   build-antrea-coverage-image:
     name: Build Antrea image to be used for Kind e2e tests
-
     runs-on: [ubuntu-latest]
     steps:
     - uses: actions/checkout@v2
@@ -47,7 +32,7 @@ jobs:
 
   test-e2e-noencap:
     name: E2e tests on a Kind cluster on Linux (noEncap)
-    needs: [build-antrea-coverage-image
+    needs: [build-antrea-coverage-image]
     runs-on: [ubuntu-latest]
     steps:
     - name: Free disk space
