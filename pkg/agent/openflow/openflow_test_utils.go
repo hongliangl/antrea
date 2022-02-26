@@ -19,7 +19,7 @@ import (
 )
 
 // InitMockTables is used to init mock tables.
-func InitMockTables(tableMap map[*FeatureTable]uint8) {
+func InitMockTables(tableMap map[*Table]uint8) {
 	for ft, id := range tableMap {
 		ft.ofTable = binding.NewOFTable(id, ft.name, 0, 0)
 	}

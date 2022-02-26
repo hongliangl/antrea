@@ -42,6 +42,7 @@ var (
 	bridgeMgmtAddr = binding.GetMgmtAddress(ovsconfig.DefaultOVSRunDir, bridgeName)
 	gwMAC, _       = net.ParseMAC("AA:BB:CC:DD:EE:EE")
 	gwIP, ipNet, _ = net.ParseCIDR("10.0.1.1/24")
+	_, nodeIP, _   = net.ParseCIDR("192.168.77.100/24")
 	gwIPv6, _, _   = net.ParseCIDR("f00d::b00:0:0:0/80")
 	gatewayConfig  = &config.GatewayConfig{
 		IPv4: gwIP,
@@ -51,6 +52,8 @@ var (
 	nodeConfig = &config.NodeConfig{
 		GatewayConfig:   gatewayConfig,
 		WireGuardConfig: &config.WireGuardConfig{},
+		PodIPv4CIDR:     ipNet,
+		NodeIPv4Addr:    nodeIP,
 	}
 	networkConfig = &config.NetworkConfig{IPv4Enabled: true}
 )
@@ -108,10 +111,8 @@ func TestIdempotentFlowInstallation(t *testing.T) {
 			client.ofEntryOperations = m
 			client.nodeConfig = nodeConfig
 			client.networkConfig = networkConfig
-			templatesList := client.initializeFeatures()
-			for _, templates := range templatesList {
-				generatePipeline(templates)
-			}
+			client.ipProtocols = []binding.Protocol{binding.ProtocolIP}
+			client.generatePipelines()
 
 			m.EXPECT().AddAll(gomock.Any()).Return(nil).Times(1)
 			// Installing the flows should succeed, and all the flows should be added into the cache.
@@ -141,10 +142,8 @@ func TestIdempotentFlowInstallation(t *testing.T) {
 			client.ofEntryOperations = m
 			client.nodeConfig = nodeConfig
 			client.networkConfig = networkConfig
-			templatesList := client.initializeFeatures()
-			for _, templates := range templatesList {
-				generatePipeline(templates)
-			}
+			client.ipProtocols = []binding.Protocol{binding.ProtocolIP}
+			client.generatePipelines()
 
 			errorCall := m.EXPECT().AddAll(gomock.Any()).Return(errors.New("Bundle error")).Times(1)
 			m.EXPECT().AddAll(gomock.Any()).Return(nil).After(errorCall)
@@ -187,10 +186,8 @@ func TestFlowInstallationFailed(t *testing.T) {
 			client.ofEntryOperations = m
 			client.nodeConfig = nodeConfig
 			client.networkConfig = networkConfig
-			templatesList := client.initializeFeatures()
-			for _, templates := range templatesList {
-				generatePipeline(templates)
-			}
+			client.ipProtocols = []binding.Protocol{binding.ProtocolIP}
+			client.generatePipelines()
 
 			// We generate an error for AddAll call.
 			m.EXPECT().AddAll(gomock.Any()).Return(errors.New("Bundle error"))
@@ -226,10 +223,8 @@ func TestConcurrentFlowInstallation(t *testing.T) {
 			client.ofEntryOperations = m
 			client.nodeConfig = nodeConfig
 			client.networkConfig = networkConfig
-			templatesList := client.initializeFeatures()
-			for _, templates := range templatesList {
-				generatePipeline(templates)
-			}
+			client.ipProtocols = []binding.Protocol{binding.ProtocolIP}
+			client.generatePipelines()
 
 			var concurrentCalls atomic.Value // set to true if we observe concurrent calls
 			timeoutCh := make(chan struct{})
@@ -420,10 +415,8 @@ func prepareTraceflowFlow(ctrl *gomock.Controller) *client {
 	c.ofEntryOperations = m
 	c.nodeConfig = nodeConfig
 	c.networkConfig = networkConfig
-	templatesList := c.initializeFeatures()
-	for _, templates := range templatesList {
-		generatePipeline(templates)
-	}
+	c.ipProtocols = []binding.Protocol{binding.ProtocolIP}
+	c.generatePipelines()
 
 	m.EXPECT().AddAll(gomock.Any()).Return(nil).Times(1)
 	c.bridge = ovsoftest.NewMockBridge(ctrl)

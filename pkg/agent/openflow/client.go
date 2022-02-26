@@ -742,16 +742,11 @@ func (c *client) Initialize(roundInfo types.RoundInfo, nodeConfig *config.NodeCo
 	c.roundInfo = roundInfo
 	c.cookieAllocator = cookie.NewAllocator(roundInfo.RoundNum)
 
-	// Initialize all pipeline templates.
-	pipelineTemplates := c.initializeFeatures()
-	// Generate a pipeline for every pipeline template.
-	for p := pipelineFirst; p <= pipelineLast; p++ {
-		if _, ok := pipelineTemplates[p]; ok {
-			c.pipelines[p] = generatePipeline(pipelineTemplates[p])
-		}
-	}
+	// Generate pipelines.
+	c.generatePipelines()
+
 	// Set nextID and missing action for every flow table and create it on bridge.
-	createPipelinesOnBridge(c.bridge, c.pipelines)
+	c.createPipelinesOnBridge()
 
 	// Initiate connections to target OFswitch, and create tables on the switch.
 	connCh := make(chan struct{})
@@ -784,7 +779,7 @@ func (c *client) Initialize(roundInfo types.RoundInfo, nodeConfig *config.NodeCo
 	return connCh, c.initialize()
 }
 
-func (c *client) initializeFeatures() map[pipeline][]*featureTemplate {
+func (c *client) generatePipelines() {
 	c.featurePodConnectivity = newFeaturePodConnectivity(c.cookieAllocator,
 		c.ipProtocols,
 		c.nodeConfig,
@@ -792,7 +787,7 @@ func (c *client) initializeFeatures() map[pipeline][]*featureTemplate {
 		c.connectUplinkToBridge,
 		c.enableMulticast)
 	c.activeFeatures = append(c.activeFeatures, c.featurePodConnectivity)
-	c.tracedFeatures = append(c.tracedFeatures, c.featurePodConnectivity)
+	c.traceableFeatures = append(c.traceableFeatures, c.featurePodConnectivity)
 
 	c.featureNetworkPolicy = newFeatureNetworkPolicy(c.cookieAllocator,
 		c.ipProtocols,
@@ -801,7 +796,7 @@ func (c *client) initializeFeatures() map[pipeline][]*featureTemplate {
 		c.enableDenyTracking,
 		c.enableAntreaPolicy)
 	c.activeFeatures = append(c.activeFeatures, c.featureNetworkPolicy)
-	c.tracedFeatures = append(c.tracedFeatures, c.featureNetworkPolicy)
+	c.traceableFeatures = append(c.traceableFeatures, c.featureNetworkPolicy)
 
 	c.featureService = newFeatureService(c.cookieAllocator,
 		c.ipProtocols,
@@ -811,7 +806,7 @@ func (c *client) initializeFeatures() map[pipeline][]*featureTemplate {
 		c.proxyAll,
 		c.connectUplinkToBridge)
 	c.activeFeatures = append(c.activeFeatures, c.featureService)
-	c.tracedFeatures = append(c.tracedFeatures, c.featureService)
+	c.traceableFeatures = append(c.traceableFeatures, c.featureService)
 
 	if c.enableEgress {
 		c.featureEgress = newFeatureEgress(c.cookieAllocator, c.ipProtocols, c.nodeConfig.GatewayConfig.MAC)
@@ -825,23 +820,44 @@ func (c *client) initializeFeatures() map[pipeline][]*featureTemplate {
 	}
 	c.featureTraceflow = newFeatureTraceflow()
 
-	templatesMap := make(map[pipeline][]*featureTemplate)
-	for _, f := range c.activeFeatures {
-		if template := f.getTemplate(pipelineIP); template != nil {
-			templatesMap[pipelineIP] = append(templatesMap[pipelineIP], template)
-		}
-		if c.networkConfig.IPv4Enabled {
-			if template := f.getTemplate(pipelineARP); template != nil {
-				templatesMap[pipelineARP] = append(templatesMap[pipelineARP], template)
-			}
-		}
+	// Pipelines to generate.
+	pipelineIDs := []binding.PipelineID{binding.PipelineIP}
+	if c.networkConfig.IPv4Enabled {
+		pipelineIDs = append(pipelineIDs, binding.PipelineARP)
 		if c.enableMulticast {
-			if template := f.getTemplate(pipelineMulticast); template != nil {
-				templatesMap[pipelineMulticast] = append(templatesMap[pipelineMulticast], template)
+			pipelineIDs = append(pipelineIDs, binding.PipelineMulticast)
+		}
+	}
+
+	// For every pipeline, get required tables from every active feature and store the required tables in a map to avoid
+	// duplication.
+	pipelineRequiredTablesMap := make(map[binding.PipelineID]map[*Table]struct{})
+	for _, pipelineID := range pipelineIDs {
+		pipelineRequiredTablesMap[pipelineID] = make(map[*Table]struct{})
+	}
+	for _, f := range c.activeFeatures {
+		for _, t := range f.getRequiredTables() {
+			if _, ok := pipelineRequiredTablesMap[t.pipeline]; ok {
+				pipelineRequiredTablesMap[t.pipeline][t] = struct{}{}
 			}
 		}
 	}
-	return templatesMap
+
+	for _, pipelineID := range pipelineIDs {
+		var requiredTables []*Table
+		// Iterate the table order cache to generate required table list.
+		for _, table := range tableOrderCache[pipelineID] {
+			if _, ok := pipelineRequiredTablesMap[pipelineID][table]; ok {
+				requiredTables = append(requiredTables, table)
+			}
+		}
+		if len(requiredTables) == 0 {
+			klog.Warning("There is no required table for pipeline ID %d, skip generate pipeline for it", pipelineID)
+			continue
+		}
+		// generate a pipeline from the required table list.
+		c.pipelines[pipelineID] = generatePipeline(pipelineID, requiredTables)
+	}
 }
 
 func (c *client) InstallExternalFlows(exceptCIDRs []net.IPNet) error {
@@ -985,7 +1001,7 @@ func (c *client) SendTraceflowPacket(dataplaneTag uint8, packet *binding.Packet,
 func (c *client) InstallTraceflowFlows(dataplaneTag uint8, liveTraffic, droppedOnly, receiverOnly bool, packet *binding.Packet, ofPort uint32, timeoutSeconds uint16) error {
 	cacheKey := fmt.Sprintf("%x", dataplaneTag)
 	var flows []binding.Flow
-	for _, f := range c.tracedFeatures {
+	for _, f := range c.traceableFeatures {
 		flows = append(flows, f.flowsToTrace(dataplaneTag,
 			c.ovsMetersAreSupported,
 			liveTraffic,

@@ -40,7 +40,7 @@ func TestBuildPipeline(t *testing.T) {
 	for _, tc := range []struct {
 		ipStack        ipStack
 		features       []feature
-		expectedTables map[pipeline][]*FeatureTable
+		expectedTables map[binding.PipelineID][]*Table
 	}{
 		{
 			ipStack: dualStack,
@@ -50,8 +50,8 @@ func TestBuildPipeline(t *testing.T) {
 				&featureService{enableProxy: true, proxyAll: true},
 				&featureEgress{},
 			},
-			expectedTables: map[pipeline][]*FeatureTable{
-				pipelineIP: {
+			expectedTables: map[binding.PipelineID][]*Table{
+				binding.PipelineIP: {
 					ClassifierTable,
 					SpoofGuardTable,
 					IPv6Table,
@@ -80,7 +80,7 @@ func TestBuildPipeline(t *testing.T) {
 					ConntrackCommitTable,
 					L2ForwardingOutTable,
 				},
-				pipelineARP: {
+				binding.PipelineARP: {
 					ARPSpoofGuardTable,
 					ARPResponderTable,
 				},
@@ -94,8 +94,8 @@ func TestBuildPipeline(t *testing.T) {
 				&featureService{enableProxy: true, proxyAll: true},
 				&featureEgress{},
 			},
-			expectedTables: map[pipeline][]*FeatureTable{
-				pipelineIP: {
+			expectedTables: map[binding.PipelineID][]*Table{
+				binding.PipelineIP: {
 					ClassifierTable,
 					SpoofGuardTable,
 					IPv6Table,
@@ -134,8 +134,8 @@ func TestBuildPipeline(t *testing.T) {
 				&featureService{enableProxy: false},
 				&featureEgress{},
 			},
-			expectedTables: map[pipeline][]*FeatureTable{
-				pipelineIP: {
+			expectedTables: map[binding.PipelineID][]*Table{
+				binding.PipelineIP: {
 					ClassifierTable,
 					SpoofGuardTable,
 					ConntrackTable,
@@ -156,7 +156,7 @@ func TestBuildPipeline(t *testing.T) {
 					ConntrackCommitTable,
 					L2ForwardingOutTable,
 				},
-				pipelineARP: {
+				binding.PipelineARP: {
 					ARPSpoofGuardTable,
 					ARPResponderTable,
 				},
@@ -170,8 +170,8 @@ func TestBuildPipeline(t *testing.T) {
 				&featureService{enableProxy: true, proxyAll: false},
 				&featureEgress{},
 			},
-			expectedTables: map[pipeline][]*FeatureTable{
-				pipelineIP: {
+			expectedTables: map[binding.PipelineID][]*Table{
+				binding.PipelineIP: {
 					ClassifierTable,
 					SpoofGuardTable,
 					SNATConntrackTable,
@@ -198,40 +198,51 @@ func TestBuildPipeline(t *testing.T) {
 					ConntrackCommitTable,
 					L2ForwardingOutTable,
 				},
-				pipelineARP: {
+				binding.PipelineARP: {
 					ARPSpoofGuardTable,
 					ARPResponderTable,
 				},
 			},
 		},
 	} {
-		templatesMap := make(map[pipeline][]*featureTemplate)
+		pipelineIDs := []binding.PipelineID{binding.PipelineIP}
+		if tc.ipStack != ipv6Only {
+			pipelineIDs = append(pipelineIDs, binding.PipelineARP)
+		}
+		pipelineRequiredTablesMap := make(map[binding.PipelineID]map[*Table]struct{})
+		for _, pipelineID := range pipelineIDs {
+			pipelineRequiredTablesMap[pipelineID] = make(map[*Table]struct{})
+		}
+
 		for _, f := range tc.features {
-			templatesMap[pipelineIP] = append(templatesMap[pipelineIP], f.getTemplate(pipelineIP))
-			if tc.ipStack != ipv6Only {
-				template := f.getTemplate(pipelineARP)
-				if template != nil {
-					templatesMap[pipelineARP] = append(templatesMap[pipelineARP], template)
+			for _, table := range f.getRequiredTables() {
+				if _, ok := pipelineRequiredTablesMap[table.pipeline]; ok {
+					pipelineRequiredTablesMap[table.pipeline][table] = struct{}{}
 				}
 			}
 		}
 
-		for proto, templates := range templatesMap {
-			generatePipeline(templates)
-			tables := tc.expectedTables[proto]
+		for _, id := range pipelineIDs {
+			var requiredTables []*Table
+			for _, table := range tableOrderCache[id] {
+				if _, ok := pipelineRequiredTablesMap[id][table]; ok {
+					requiredTables = append(requiredTables, table)
+				}
+			}
+			generatePipeline(id, requiredTables)
 
+			tables := tc.expectedTables[id]
 			for i := 0; i < len(tables)-1; i++ {
 				require.NotNil(t, tables[i].ofTable, "table %q should be initialized", tables[i].name)
 				require.Less(t, tables[i].GetID(), tables[i+1].GetID(), fmt.Sprintf("id of table %q should less than that of table %q", tables[i].GetName(), tables[i+1].GetName()))
 			}
 			require.NotNil(t, tables[len(tables)-1].ofTable, "table %q should be initialized", tables[len(tables)-1].name)
-
 			reset(tables)
 		}
 	}
 }
 
-func reset(tables []*FeatureTable) {
+func reset(tables []*Table) {
 	PipelineClassifierTable.ofTable = nil
 	for _, table := range tables {
 		table.ofTable = nil

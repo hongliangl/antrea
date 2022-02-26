@@ -72,7 +72,8 @@ var (
 
 	mockFeaturePodConnectivity = featurePodConnectivity{}
 	mockFeatureNetworkPolicy   = featureNetworkPolicy{enableAntreaPolicy: true}
-	pipelineMap                = map[pipeline]binding.Pipeline{}
+	activeFeatures             = []feature{&mockFeaturePodConnectivity, &mockFeatureNetworkPolicy}
+	pipelineMap                = map[binding.PipelineID]binding.Pipeline{}
 )
 
 type expectConjunctionTimes struct {
@@ -163,6 +164,7 @@ func TestInstallPolicyRuleFlows(t *testing.T) {
 	c = prepareClient(ctrl, false)
 	c.nodeConfig = &config.NodeConfig{PodIPv4CIDR: podIPv4CIDR, PodIPv6CIDR: nil}
 	c.networkConfig = &config.NetworkConfig{}
+	c.pipelines = pipelineMap
 	defaultAction := crdv1alpha1.RuleActionAllow
 	// Create a policyRuleConjunction for the dns response interception flows
 	// to ensure nil NetworkPolicyReference is handled correctly by GetNetworkPolicyFlowKeys.
@@ -537,7 +539,9 @@ func TestBatchInstallPolicyRuleFlows(t *testing.T) {
 
 			bridge := mocks.NewMockBridge(ctrl)
 			bridge.EXPECT().CreateTable(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
-			createPipelinesOnBridge(bridge, pipelineMap)
+			c.bridge = bridge
+			c.pipelines = pipelineMap
+			c.createPipelinesOnBridge()
 
 			expectedFlows := tt.expectedFlowsFn(c)
 			// For better readability when debugging failure.
@@ -961,9 +965,22 @@ func parseAddresses(addrs []string) []types.Address {
 }
 
 func preparePipelines() {
-	templates := []*featureTemplate{mockFeaturePodConnectivity.getTemplate(pipelineIP), mockFeatureNetworkPolicy.getTemplate(pipelineIP)}
+	pipelineID := binding.PipelineIP
+	requiredTablesMap := make(map[*Table]struct{})
+	for _, f := range activeFeatures {
+		for _, t := range f.getRequiredTables() {
+			requiredTablesMap[t] = struct{}{}
+		}
+	}
 
-	pipelineMap[pipelineIP] = generatePipeline(templates)
+	var requiredTables []*Table
+	for _, table := range tableOrderCache[pipelineID] {
+		if _, ok := requiredTablesMap[table]; ok {
+			requiredTables = append(requiredTables, table)
+		}
+	}
+	pipelineMap[pipelineID] = generatePipeline(pipelineID, requiredTables)
+
 	mockFeatureNetworkPolicy.egressTables = map[uint8]struct{}{EgressRuleTable.GetID(): {}, EgressDefaultTable.GetID(): {}}
 	if mockFeatureNetworkPolicy.enableAntreaPolicy {
 		mockFeatureNetworkPolicy.egressTables[AntreaPolicyEgressRuleTable.GetID()] = struct{}{}
@@ -999,9 +1016,10 @@ func prepareClient(ctrl *gomock.Controller, dualStack bool) *client {
 	c.featureNetworkPolicy.deterministic = true
 	c.featureNetworkPolicy.policyCache = cache.NewIndexer(policyConjKeyFunc, cache.Indexers{priorityIndex: priorityIndexFunc})
 	c.featureNetworkPolicy.globalConjMatchFlowCache = map[string]*conjMatchFlowContext{}
+	c.pipelines = pipelineMap
 
 	setMockOFTables(ctrl,
-		map[*FeatureTable]**mocks.MockTable{
+		map[*Table]**mocks.MockTable{
 			AntreaPolicyEgressRuleTable: &mockAntreaPolicyEgressRuleTable,
 			EgressRuleTable:             &mockEgressRuleTable,
 			EgressDefaultTable:          &mockEgressDefaultTable,
@@ -1228,7 +1246,7 @@ func TestGetMatchFlowUpdates(t *testing.T) {
 }
 
 // setMockOFTables is used to generate mock OF tables.
-func setMockOFTables(ctrl *gomock.Controller, tableMap map[*FeatureTable]**mocks.MockTable) {
+func setMockOFTables(ctrl *gomock.Controller, tableMap map[*Table]**mocks.MockTable) {
 	for ft, mockTable := range tableMap {
 		table := mocks.NewMockTable(ctrl)
 		table.EXPECT().GetID().Return(ft.GetID()).AnyTimes()

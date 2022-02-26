@@ -33,8 +33,8 @@ type featureEgress struct {
 	category cookie.Category
 }
 
-func (f *featureEgress) getFeatureName() featureName {
-	return Egress
+func (f *featureEgress) getFeatureName() string {
+	return "Egress"
 }
 
 func newFeatureEgress(cookieAllocator cookie.Allocator,

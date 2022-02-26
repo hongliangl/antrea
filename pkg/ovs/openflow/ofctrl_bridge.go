@@ -44,7 +44,7 @@ type ofTable struct {
 	flowCount  uint
 	updateTime time.Time
 	stage      StageID
-	pipelineID uint8
+	pipelineID PipelineID
 
 	*ofctrl.Table
 }
@@ -89,7 +89,7 @@ func (t *ofTable) GetStageID() StageID {
 	return t.stage
 }
 
-func (t *ofTable) GetPipelineID() uint8 {
+func (t *ofTable) GetPipelineID() PipelineID {
 	return t.pipelineID
 }
 
@@ -151,7 +151,7 @@ func (t *ofTable) DumpFlows(cookieID, cookieMask uint64) (map[uint64]*FlowStates
 	return flowStats, nil
 }
 
-func NewOFTable(id uint8, name string, stage StageID, pipelineID uint8) Table {
+func NewOFTable(id uint8, name string, stage StageID, pipelineID PipelineID) Table {
 	return &ofTable{
 		id:         id,
 		name:       name,

@@ -171,14 +171,21 @@ const (
 )
 
 type Pipeline interface {
-	GetNextStage(id StageID) StageID
 	GetFirstTableInStage(id StageID) Table
 	ListTablesInStage(id StageID) []Table
 	GetFirstTable() Table
-	GetLastTable() Table
 	ListAllTables() []Table
 	IsLastTable(t Table) bool
 }
+
+type PipelineID uint8
+
+const (
+	PipelineARP PipelineID = iota
+	PipelineIP
+	PipelineMulticast
+	PipelineAll PipelineID = 255
+)
 
 type EntryType string
 

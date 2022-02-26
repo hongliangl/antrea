@@ -30,7 +30,7 @@ import (
 
 func prepareMockTables() {
 	openflow.InitMockTables(
-		map[*openflow.FeatureTable]uint8{
+		map[*openflow.Table]uint8{
 			openflow.AntreaPolicyEgressRuleTable:  uint8(5),
 			openflow.EgressRuleTable:              uint8(6),
 			openflow.EgressDefaultTable:           uint8(7),

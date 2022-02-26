@@ -47,8 +47,8 @@ type featureService struct {
 	category cookie.Category
 }
 
-func (f *featureService) getFeatureName() featureName {
-	return Service
+func (f *featureService) getFeatureName() string {
+	return "Service"
 }
 
 func newFeatureService(

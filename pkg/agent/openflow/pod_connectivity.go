@@ -43,8 +43,8 @@ type featurePodConnectivity struct {
 	category cookie.Category
 }
 
-func (f *featurePodConnectivity) getFeatureName() featureName {
-	return PodConnectivity
+func (f *featurePodConnectivity) getFeatureName() string {
+	return "PodConnectivity"
 }
 
 func newFeaturePodConnectivity(

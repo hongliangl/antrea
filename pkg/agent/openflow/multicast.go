@@ -32,8 +32,8 @@ type featureMulticast struct {
 	category cookie.Category
 }
 
-func (f *featureMulticast) getFeatureName() featureName {
-	return Multicast
+func (f *featureMulticast) getFeatureName() string {
+	return "Multicast"
 }
 
 func newFeatureMulticast(cookieAllocator cookie.Allocator, ipProtocols []binding.Protocol) *featureMulticast {

@@ -1460,8 +1460,8 @@ func prepareDefaultFlows(config *testConfig) []expectTableFlows {
 			},
 		)
 	}
-	return []expectTableFlows{
-		tableARPResponderFlows,
+
+	tableFlows := []expectTableFlows{
 		tableConntrackZoneFlows,
 		tableConntrackStateFlows,
 		tableConntrackCommitFlows,
@@ -1521,6 +1521,10 @@ func prepareDefaultFlows(config *testConfig) []expectTableFlows {
 			},
 		},
 	}
+	if config.enableIPv4 {
+		tableFlows = append(tableFlows, tableARPResponderFlows)
+	}
+	return tableFlows
 }
 
 func prepareIPAddresses(addresses []string) []types.Address {

@@ -42,73 +42,73 @@ import (
 
 var (
 	// PipelineClassifierTable is table 0. Packets are forwarded to different pipelines in this table.
-	PipelineClassifierTable = newFeatureTable("PipelineClassifier", 0xff, 0)
+	PipelineClassifierTable = newTable("PipelineClassifier", 0, binding.PipelineAll)
 
 	// OVS pipeline for ARP is used to process ARP packets.
 	// Tables in ValidationStage:
-	ARPSpoofGuardTable = newFeatureTable("ARPSpoofGuard", 0x7f, binding.ValidationStage)
+	ARPSpoofGuardTable = newTable("ARPSpoofGuard", binding.ValidationStage, binding.PipelineARP)
 
 	// Tables in OutputStage:
-	ARPResponderTable = newFeatureTable("ARPResponder", 0x7f, binding.OutputStage)
+	ARPResponderTable = newTable("ARPResponder", binding.OutputStage, binding.PipelineARP)
 
 	// OVS pipeline for IP is used to process IPv4/IPv6 packets.
 	// Tables in ClassifierStage:
-	ClassifierTable = newFeatureTable("Classifier", 0x7f, binding.ClassifierStage)
+	ClassifierTable = newTable("Classifier", binding.ClassifierStage, binding.PipelineIP)
 
 	// Tables in ValidationStage:
-	SpoofGuardTable   = newFeatureTable("SpoofGuard", 0x7f, binding.ValidationStage)
-	IPv6Table         = newFeatureTable("IPv6", 0x6f, binding.ValidationStage)
-	IPClassifierTable = newFeatureTable("IPClassifier", 0x5f, binding.ValidationStage)
+	SpoofGuardTable   = newTable("SpoofGuard", binding.ValidationStage, binding.PipelineIP)
+	IPv6Table         = newTable("IPv6", binding.ValidationStage, binding.PipelineIP)
+	IPClassifierTable = newTable("IPClassifier", binding.ValidationStage, binding.PipelineIP)
 
 	// Tables in ConntrackStateStage:
-	SNATConntrackTable  = newFeatureTable("SNATConntrackZone", 0x7f, binding.ConntrackStateStage)
-	ConntrackTable      = newFeatureTable("ConntrackZone", 0x6f, binding.ConntrackStateStage)
-	ConntrackStateTable = newFeatureTable("ConntrackState", 0x5f, binding.ConntrackStateStage)
+	SNATConntrackTable  = newTable("SNATConntrackZone", binding.ConntrackStateStage, binding.PipelineIP)
+	ConntrackTable      = newTable("ConntrackZone", binding.ConntrackStateStage, binding.PipelineIP)
+	ConntrackStateTable = newTable("ConntrackState", binding.ConntrackStateStage, binding.PipelineIP)
 
 	// Tables in PreRoutingStage:
 	// When proxy is enabled.
-	PreRoutingClassifierTable = newFeatureTable("PreRoutingClassifier", 0x8f, binding.PreRoutingStage)
-	NodePortMarkTable         = newFeatureTable("NodePortMark", 0x7f, binding.PreRoutingStage)
-	SessionAffinityTable      = newFeatureTable("SessionAffinity", 0x6f, binding.PreRoutingStage)
-	ServiceLBTable            = newFeatureTable("ServiceLB", 0x5f, binding.PreRoutingStage)
-	EndpointDNATTable         = newFeatureTable("EndpointDNAT", 0x4f, binding.PreRoutingStage)
+	PreRoutingClassifierTable = newTable("PreRoutingClassifier", binding.PreRoutingStage, binding.PipelineIP)
+	NodePortMarkTable         = newTable("NodePortMark", binding.PreRoutingStage, binding.PipelineIP)
+	SessionAffinityTable      = newTable("SessionAffinity", binding.PreRoutingStage, binding.PipelineIP)
+	ServiceLBTable            = newTable("ServiceLB", binding.PreRoutingStage, binding.PipelineIP)
+	EndpointDNATTable         = newTable("EndpointDNAT", binding.PreRoutingStage, binding.PipelineIP)
 	// When proxy is disabled.
-	DNATTable = newFeatureTable("DNAT", 0x7f, binding.PreRoutingStage)
+	DNATTable = newTable("DNAT", binding.PreRoutingStage, binding.PipelineIP)
 
 	// Tables in EgressSecurityStage:
-	AntreaPolicyEgressRuleTable = newFeatureTable("AntreaPolicyEgressRule", 0x7f, binding.EgressSecurityStage)
-	EgressRuleTable             = newFeatureTable("EgressRule", 0x6f, binding.EgressSecurityStage)
-	EgressDefaultTable          = newFeatureTable("EgressDefaultRule", 0x5f, binding.EgressSecurityStage)
-	EgressMetricTable           = newFeatureTable("EgressMetric", 0x4f, binding.EgressSecurityStage)
+	AntreaPolicyEgressRuleTable = newTable("AntreaPolicyEgressRule", binding.EgressSecurityStage, binding.PipelineIP)
+	EgressRuleTable             = newTable("EgressRule", binding.EgressSecurityStage, binding.PipelineIP)
+	EgressDefaultTable          = newTable("EgressDefaultRule", binding.EgressSecurityStage, binding.PipelineIP)
+	EgressMetricTable           = newTable("EgressMetric", binding.EgressSecurityStage, binding.PipelineIP)
 
 	// Tables in RoutingStage:
-	L3ForwardingTable       = newFeatureTable("L3Forwarding", 0x7f, binding.RoutingStage)
-	ServiceHairpinMarkTable = newFeatureTable("ServiceHairpinMark", 0x6f, binding.RoutingStage)
-	L3DecTTLTable           = newFeatureTable("L3DecTTL", 0x5f, binding.RoutingStage)
+	L3ForwardingTable       = newTable("L3Forwarding", binding.RoutingStage, binding.PipelineIP)
+	ServiceHairpinMarkTable = newTable("ServiceHairpinMark", binding.RoutingStage, binding.PipelineIP)
+	L3DecTTLTable           = newTable("L3DecTTL", binding.RoutingStage, binding.PipelineIP)
 
 	// Tables in PostRoutingStage:
-	SNATTable                = newFeatureTable("SNAT", 0x7f, binding.PostRoutingStage)
-	SNATConntrackCommitTable = newFeatureTable("SNATConntrackCommit", 0x6f, binding.PostRoutingStage)
+	SNATTable                = newTable("SNAT", binding.PostRoutingStage, binding.PipelineIP)
+	SNATConntrackCommitTable = newTable("SNATConntrackCommit", binding.PostRoutingStage, binding.PipelineIP)
 
 	// Tables in SwitchingStage:
-	L2ForwardingCalcTable = newFeatureTable("L2ForwardingCalc", 0x7f, binding.SwitchingStage)
+	L2ForwardingCalcTable = newTable("L2ForwardingCalc", binding.SwitchingStage, binding.PipelineIP)
 
 	// Tables in IngressSecurityStage:
-	IngressSecurityClassifierTable = newFeatureTable("IngressSecurityClassifier", 0x7f, binding.IngressSecurityStage)
-	AntreaPolicyIngressRuleTable   = newFeatureTable("AntreaPolicyIngressRule", 0x6f, binding.IngressSecurityStage)
-	IngressRuleTable               = newFeatureTable("IngressRule", 0x5f, binding.IngressSecurityStage)
-	IngressDefaultTable            = newFeatureTable("IngressDefaultRule", 0x4f, binding.IngressSecurityStage)
-	IngressMetricTable             = newFeatureTable("IngressMetric", 0x3f, binding.IngressSecurityStage)
+	IngressSecurityClassifierTable = newTable("IngressSecurityClassifier", binding.IngressSecurityStage, binding.PipelineIP)
+	AntreaPolicyIngressRuleTable   = newTable("AntreaPolicyIngressRule", binding.IngressSecurityStage, binding.PipelineIP)
+	IngressRuleTable               = newTable("IngressRule", binding.IngressSecurityStage, binding.PipelineIP)
+	IngressDefaultTable            = newTable("IngressDefaultRule", binding.IngressSecurityStage, binding.PipelineIP)
+	IngressMetricTable             = newTable("IngressMetric", binding.IngressSecurityStage, binding.PipelineIP)
 
 	// Tables in ConntrackStage:
-	ConntrackCommitTable = newFeatureTable("ConntrackCommit", 0x7f, binding.ConntrackStage)
+	ConntrackCommitTable = newTable("ConntrackCommit", binding.ConntrackStage, binding.PipelineIP)
 
 	// Tables in OutputStage:
-	L2ForwardingOutTable = newFeatureTable("L2ForwardingOut", 0x7f, binding.OutputStage)
+	L2ForwardingOutTable = newTable("L2ForwardingOut", binding.OutputStage, binding.PipelineIP)
 
 	// OVS pipeline for multicast is used to process multicast packets.
 	// Tables in RoutingStage:
-	MulticastTable = newFeatureTable("Multicast", 0x7f, binding.RoutingStage)
+	MulticastTable = newTable("Multicast", binding.RoutingStage, binding.PipelineMulticast)
 
 	// Flow priority level
 	priorityHigh            = uint16(210)
@@ -155,17 +155,17 @@ func (a ofAction) String() string {
 	}
 }
 
-// tableCache caches the OpenFlow tables used in the pipeline, and it supports using the table ID and name as the index to query the OpenFlow table.
+// tableCache caches the OpenFlow tables used in pipelines, and it supports using the table ID and name as the index to query the OpenFlow table.
 var tableCache = cache.NewIndexer(tableIDKeyFunc, cache.Indexers{tableNameIndex: tableNameIndexFunc})
 
 func tableNameIndexFunc(obj interface{}) ([]string, error) {
-	ft := obj.(*FeatureTable)
-	return []string{ft.GetName()}, nil
+	table := obj.(*Table)
+	return []string{table.GetName()}, nil
 }
 
 func tableIDKeyFunc(obj interface{}) (string, error) {
-	ft := obj.(*FeatureTable)
-	return fmt.Sprintf("%d", ft.GetID()), nil
+	table := obj.(*Table)
+	return fmt.Sprintf("%d", table.GetID()), nil
 }
 
 func getTableByID(id uint8) binding.Table {
@@ -173,7 +173,7 @@ func getTableByID(id uint8) binding.Table {
 	if !exists {
 		return nil
 	}
-	return obj.(*FeatureTable).ofTable
+	return obj.(*Table).ofTable
 }
 
 // GetFlowTableName returns the flow table name given the table ID. An empty
@@ -206,29 +206,29 @@ func GetTableList() []binding.Table {
 	return tables
 }
 
-func GetAntreaPolicyEgressTables() []*FeatureTable {
-	return []*FeatureTable{
+func GetAntreaPolicyEgressTables() []*Table {
+	return []*Table{
 		AntreaPolicyEgressRuleTable,
 		EgressDefaultTable,
 	}
 }
 
-func GetAntreaPolicyIngressTables() []*FeatureTable {
-	return []*FeatureTable{
+func GetAntreaPolicyIngressTables() []*Table {
+	return []*Table{
 		AntreaPolicyIngressRuleTable,
 		IngressDefaultTable,
 	}
 }
 
-func GetAntreaPolicyBaselineTierTables() []*FeatureTable {
-	return []*FeatureTable{
+func GetAntreaPolicyBaselineTierTables() []*Table {
+	return []*Table{
 		EgressDefaultTable,
 		IngressDefaultTable,
 	}
 }
 
-func GetAntreaPolicyMultiTierTables() []*FeatureTable {
-	return []*FeatureTable{
+func GetAntreaPolicyMultiTierTables() []*Table {
+	return []*Table{
 		AntreaPolicyEgressRuleTable,
 		AntreaPolicyIngressRuleTable,
 	}
@@ -327,10 +327,10 @@ type client struct {
 	featureMulticast       *featureMulticast
 	activeFeatures         []feature
 
-	featureTraceflow *featureTraceflow
-	tracedFeatures   []tracedFeature
+	featureTraceflow  *featureTraceflow
+	traceableFeatures []traceableFeature
 
-	pipelines map[pipeline]binding.Pipeline
+	pipelines map[binding.PipelineID]binding.Pipeline
 
 	// ofEntryOperations is a wrapper interface for OpenFlow entry Add / Modify / Delete operations. It
 	// enables convenient mocking in unit tests.
@@ -453,7 +453,7 @@ func (c *client) DeleteOFEntries(ofEntries []binding.OFEntry) error {
 func (c *client) defaultFlows() []binding.Flow {
 	cookieID := c.cookieAllocator.Request(cookie.Default).Raw()
 	var flows []binding.Flow
-	for pipelineProto, pipeline := range c.pipelines {
+	for id, pipeline := range c.pipelines {
 		// This generates the default flow for every table for a pipeline.
 		for _, table := range pipeline.ListAllTables() {
 			flowBuilder := table.BuildFlow(priorityMiss).Cookie(cookieID)
@@ -473,16 +473,16 @@ func (c *client) defaultFlows() []binding.Flow {
 		}
 
 		// This generates the flows to forward packets to different pipelines.
-		switch pipelineProto {
-		case pipelineIP:
+		switch id {
+		case binding.PipelineIP:
 			// This generates the flow to forward packets to pipeline for IP in PipelineClassifierTable.
 			for _, ipProtocol := range c.ipProtocols {
 				flows = append(flows, pipelineClassifyFlow(cookieID, ipProtocol, pipeline))
 			}
-		case pipelineARP:
+		case binding.PipelineARP:
 			// This generates the flow to forward packets to pipeline for ARP in PipelineClassifierTable.
 			flows = append(flows, pipelineClassifyFlow(cookieID, binding.ProtocolARP, pipeline))
-		case pipelineMulticast:
+		case binding.PipelineMulticast:
 			// This generates the flow to forward packets to pipeline for multicast in IPClassifierTable.
 			// Note that, the table is in ValidationStage of pipeline for IP. In another word, pipeline for multicast
 			// shares  with pipeline for IP.
@@ -2963,66 +2963,29 @@ func (c *client) genPacketInMeter(meterID binding.MeterIDType, rate uint32) bind
 	return meter
 }
 
-func generatePipeline(templates []*featureTemplate) binding.Pipeline {
-	pipelineID := binding.NewPipelineID()
-	sortedOFTableMap := make(map[binding.StageID][]binding.Table)
-
+func generatePipeline(pipelineID binding.PipelineID, requiredTables []*Table) binding.Pipeline {
 	// PipelineClassifierTable ID is always 0, and it is the first table for all pipelines. Create PipelineClassifierTable
 	// on the bridge when building a pipeline if it does not exist.
 	if PipelineClassifierTable.ofTable == nil {
-		PipelineClassifierTable.ofTable = binding.NewOFTable(binding.NextTableID(), PipelineClassifierTable.name, 0, binding.AllPipelines)
+		PipelineClassifierTable.ofTable = binding.NewOFTable(binding.NextTableID(), PipelineClassifierTable.name, 0, binding.PipelineAll)
 	}
-
-	// Iterate each stage to get a sorted FeatureTable list from every feature template.
-	for stage := binding.FirstStage; stage <= binding.LastStage; stage++ {
-		// tableMap is used to store all declared FeatureTables in a stage. As a FeatureTable can be declared by multiple
-		// features, a map is used to avoid duplication.
-		tableMap := make(map[*FeatureTable]struct{})
-		for _, template := range templates {
-			if tables, ok := template.stageTables[stage]; ok {
-				for _, table := range tables {
-					if table.stage != stage {
-						klog.Errorf("table %s belongs to stage %d, and it should not be declared in stage %d", table.name, table.stage, stage)
-						continue
-					}
-					if _, exist := tableMap[table]; !exist {
-						tableMap[table] = struct{}{}
-					}
-				}
-			}
+	var ofTables []binding.Table
+	for _, table := range requiredTables {
+		// Generate a sequencing ID for the flow table.
+		tableID := binding.NextTableID()
+		// Initialize a flow table.
+		table.ofTable = binding.NewOFTable(tableID, table.name, table.stage, pipelineID)
+		ofTables = append(ofTables, table.ofTable)
+		if _, exists, _ := tableCache.GetByKey(fmt.Sprintf("%d", table.GetID())); !exists {
+			tableCache.Add(table)
 		}
-		if len(tableMap) == 0 {
-			continue
-		}
-
-		// Use a slice to store all declared FeatureTables in a stage and sort them.
-		tableList := make([]*FeatureTable, 0, len(tableMap))
-		for tr := range tableMap {
-			tableList = append(tableList, tr)
-		}
-		sort.Slice(tableList, func(i, j int) bool {
-			return tableList[i].priority > tableList[j].priority
-		})
-
-		ofTableList := make([]binding.Table, 0, len(tableList))
-		for _, table := range tableList {
-			// Generate a sequencing ID for the flow table.
-			tableID := binding.NextTableID()
-			// Initialize a flow table.
-			table.ofTable = binding.NewOFTable(tableID, table.name, stage, pipelineID)
-			ofTableList = append(ofTableList, table.ofTable)
-			if _, exists, _ := tableCache.GetByKey(fmt.Sprintf("%d", table.GetID())); !exists {
-				tableCache.Add(table)
-			}
-		}
-		sortedOFTableMap[stage] = ofTableList
 	}
-	return binding.NewPipeline(pipelineID, sortedOFTableMap)
+	return binding.NewPipeline(pipelineID, ofTables)
 }
 
-func createPipelinesOnBridge(bridge binding.Bridge, pipelines map[pipeline]binding.Pipeline) {
-	bridge.CreateTable(PipelineClassifierTable.ofTable, binding.LastTableID, binding.TableMissActionDrop)
-	for _, pipeline := range pipelines {
+func (c *client) createPipelinesOnBridge() {
+	c.bridge.CreateTable(PipelineClassifierTable.ofTable, binding.LastTableID, binding.TableMissActionDrop)
+	for _, pipeline := range c.pipelines {
 		tables := pipeline.ListAllTables()
 		for i := range tables {
 			var nextID uint8
@@ -3036,7 +2999,7 @@ func createPipelinesOnBridge(bridge binding.Bridge, pipelines map[pipeline]bindi
 			}
 			tables[i].SetNext(nextID)
 			tables[i].SetMissAction(missAction)
-			bridge.CreateTable(tables[i], nextID, missAction)
+			c.bridge.CreateTable(tables[i], nextID, missAction)
 		}
 	}
 }
@@ -3137,7 +3100,7 @@ func NewClient(bridgeName string,
 		enableEgress:          enableEgress,
 		enableMulticast:       enableMulticast,
 		connectUplinkToBridge: connectUplinkToBridge,
-		pipelines:             make(map[pipeline]binding.Pipeline),
+		pipelines:             make(map[binding.PipelineID]binding.Pipeline),
 		packetInHandlers:      map[uint8]map[string]PacketInHandler{},
 		ovsctlClient:          ovsctl.NewClient(bridgeName),
 		ovsDatapathType:       ovsDatapathType,

@@ -564,7 +564,7 @@ func (c *client) NewDNSpacketInConjunction(id uint32) error {
 		actionFlows: []binding.Flow{
 			c.featureNetworkPolicy.dnsPacketInFlow(id),
 			c.featureNetworkPolicy.dnsResponseBypassPacketInFlow(),
-			c.featureNetworkPolicy.dnsResponseBypassConntrackFlow(c.pipelines[pipelineIP].GetFirstTableInStage(binding.ConntrackStateStage))},
+			c.featureNetworkPolicy.dnsResponseBypassConntrackFlow(c.pipelines[binding.PipelineIP].GetFirstTableInStage(binding.ConntrackStateStage))},
 	}
 	if err := c.ofEntryOperations.AddAll(conj.actionFlows); err != nil {
 		return fmt.Errorf("error when adding action flows for the DNS conjunction: %w", err)
@@ -1742,8 +1742,8 @@ type featureNetworkPolicy struct {
 	category cookie.Category
 }
 
-func (f *featureNetworkPolicy) getFeatureName() featureName {
-	return NetworkPolicy
+func (f *featureNetworkPolicy) getFeatureName() string {
+	return "NetworkPolicy"
 }
 
 func newFeatureNetworkPolicy(

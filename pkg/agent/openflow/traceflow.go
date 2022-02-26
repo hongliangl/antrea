@@ -22,8 +22,8 @@ type featureTraceflow struct {
 	cachedFlows *flowCategoryCache
 }
 
-func (f *featureTraceflow) getFeatureName() featureName {
-	return Egress
+func (f *featureTraceflow) getFeatureName() string {
+	return "Traceflow"
 }
 
 func newFeatureTraceflow() *featureTraceflow {

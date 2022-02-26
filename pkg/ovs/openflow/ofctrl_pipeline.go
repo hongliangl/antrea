@@ -16,38 +16,19 @@ package openflow
 
 import "sort"
 
-const (
-	AllPipelines uint8 = 255
-)
-
-var (
-	pipelineCache = make(map[uint8]*ofPipeline)
-	pipelineID    uint8
-)
+var pipelineCache = make(map[PipelineID]*ofPipeline)
 
 type ofPipeline struct {
-	pipelineID     uint8
-	sortedTableMap map[StageID][]Table
-	firstTable     Table
-	lastTable      Table
-	firstStage     StageID
-	lastStage      StageID
-}
-
-func (p *ofPipeline) GetNextStage(id StageID) StageID {
-	for {
-		stage := id + 1
-		if stage >= LastStage {
-			return LastStage
-		}
-		if _, ok := p.sortedTableMap[stage]; ok {
-			return stage
-		}
-	}
+	pipelineID PipelineID
+	tableMap   map[StageID][]Table
+	firstTable Table
+	lastTable  Table
+	firstStage StageID
+	lastStage  StageID
 }
 
 func (p *ofPipeline) GetFirstTableInStage(id StageID) Table {
-	tables, ok := p.sortedTableMap[id]
+	tables, ok := p.tableMap[id]
 	if ok {
 		return tables[0]
 	}
@@ -55,20 +36,16 @@ func (p *ofPipeline) GetFirstTableInStage(id StageID) Table {
 }
 
 func (p *ofPipeline) ListTablesInStage(id StageID) []Table {
-	return p.sortedTableMap[id]
+	return p.tableMap[id]
 }
 
 func (p *ofPipeline) IsStageValid(stage StageID) bool {
-	_, ok := p.sortedTableMap[stage]
+	_, ok := p.tableMap[stage]
 	return ok
 }
 
 func (p *ofPipeline) GetFirstTable() Table {
 	return p.firstTable
-}
-
-func (p *ofPipeline) GetLastTable() Table {
-	return p.lastTable
 }
 
 func (p *ofPipeline) IsLastTable(t Table) bool {
@@ -77,7 +54,7 @@ func (p *ofPipeline) IsLastTable(t Table) bool {
 
 func (p *ofPipeline) ListAllTables() []Table {
 	tables := make([]Table, 0)
-	for _, t := range p.sortedTableMap {
+	for _, t := range p.tableMap {
 		tables = append(tables, t...)
 	}
 	sort.Slice(tables, func(i, j int) bool {
@@ -86,17 +63,22 @@ func (p *ofPipeline) ListAllTables() []Table {
 	return tables
 }
 
-func NewPipeline(id uint8, stageTableMap map[StageID][]Table) Pipeline {
-	p := &ofPipeline{pipelineID: id, sortedTableMap: stageTableMap}
+func NewPipeline(id PipelineID, ofTables []Table) Pipeline {
+	tableMap := make(map[StageID][]Table)
+	for _, t := range ofTables {
+		tableMap[t.GetStageID()] = append(tableMap[t.GetStageID()], t)
+	}
+	p := &ofPipeline{pipelineID: id, tableMap: tableMap}
+
 	for s := ClassifierStage; s <= LastStage; s++ {
-		if tables, ok := stageTableMap[s]; ok {
+		if tables, ok := tableMap[s]; ok {
 			p.firstStage = s
 			p.firstTable = tables[0]
 			break
 		}
 	}
 	for s := LastStage; true; s-- {
-		if tables, ok := stageTableMap[s]; ok {
+		if tables, ok := tableMap[s]; ok {
 			p.lastStage = s
 			tableCount := len(tables)
 			p.lastTable = tables[tableCount-1]
@@ -105,9 +87,4 @@ func NewPipeline(id uint8, stageTableMap map[StageID][]Table) Pipeline {
 	}
 	pipelineCache[id] = p
 	return p
-}
-
-func NewPipelineID() uint8 {
-	pipelineID += 1
-	return pipelineID
 }

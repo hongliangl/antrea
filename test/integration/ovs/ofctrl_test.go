@@ -67,14 +67,12 @@ var (
 	peerGW           = net.ParseIP("192.168.2.1")
 	vMAC, _          = net.ParseMAC("aa:bb:cc:dd:ee:ff")
 
-	ipDSCP     = uint8(10)
-	pipelineID = binding.NewPipelineID()
-
-	t0 = binding.NewOFTable(0, "t0", binding.ClassifierStage, pipelineID)
-	t1 = binding.NewOFTable(1, "t1", binding.ClassifierStage, pipelineID)
-	t2 = binding.NewOFTable(2, "t2", binding.ClassifierStage, pipelineID)
-	t3 = binding.NewOFTable(3, "t3", binding.ClassifierStage, pipelineID)
-	t4 = binding.NewOFTable(4, "t4", binding.ClassifierStage, pipelineID)
+	ipDSCP = uint8(10)
+	t0     = binding.NewOFTable(0, "t0", binding.ClassifierStage, binding.PipelineIP)
+	t1     = binding.NewOFTable(1, "t1", binding.ClassifierStage, binding.PipelineIP)
+	t2     = binding.NewOFTable(2, "t2", binding.ClassifierStage, binding.PipelineIP)
+	t3     = binding.NewOFTable(3, "t3", binding.ClassifierStage, binding.PipelineIP)
+	t4     = binding.NewOFTable(4, "t4", binding.ClassifierStage, binding.PipelineIP)
 )
 
 func newOFBridge(brName string) binding.Bridge {
