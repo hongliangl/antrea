@@ -42,11 +42,11 @@ import (
 //            +------------------------+                              +-------------------------+
 
 // feature is the interface to program a major function in Antrea data path. The following structures implement this interface:
-// - featurePodConnectivity, active by default, implementation of connectivity for Pods.
-// - featureNetworkPolicy, active by default, implementation of K8s NetworkPolicy and Antrea NetworkPolicy.
-// - featureService, active by default, implementation of K8s Service.
-// - featureEgress, activation is determined by feature gate Egress, implementation of Egress.
-// - featureMulticast, activation is determined by feature gate Multicast, implementation of multicast.
+// - featurePodConnectivity, implementation of connectivity for Pods, activated by default.
+// - featureNetworkPolicy, implementation of K8s NetworkPolicy and Antrea NetworkPolicy, activated by default.
+// - featureService, implementation of K8s Service, activated by default.
+// - featureEgress, implementation of Egress, activation is determined by feature gate Egress.
+// - featureMulticast, implementation of multicast, activation is determined by feature gate Multicast,
 // - featureTraceflow, implementation of Traceflow.
 type feature interface {
 	// getFeatureName returns the name of the feature.
@@ -60,21 +60,38 @@ type feature interface {
 }
 
 // Table in FlexiblePipeline is the basic unit to build OVS pipelines. A Table can be referenced by one or more features,
-// but its member struct ofTable will be initialized and realized on OVS only when it is referenced by any active features.
-// Note that, default active features are PodConnectivity, NetworkPolicy and Service. The activation of feature Egress
-// and Multicast is determined by feature gates.
+// but its member struct ofTable will be initialized and realized on OVS only when it is referenced by any activated features.
 type Table struct {
 	name     string
-	stage    binding.StageID
+	stage    binding.StageID // All stages are defined in pkg/ovs/openflow/interfaces.go
 	pipeline binding.PipelineID
 	ofTable  binding.Table
 }
 
-// tableOrderCache is used to cache the order of all defined tables located in file pkg/agent/openflow/pipeline.go. The table
-// has the same pipeline ID are cached in a slice by order of definition. When building a pipeline, the required table list
-// is aggregated from all active features, and the order of the required tables is determined by the cache.
+// tableOrderCache is used to save the order of all defined tables located in file pkg/agent/openflow/pipeline.go. The tables
+// have the same pipeline ID are saved in a slice by order of definition. When building a pipeline, the required table list
+// is aggregated from all activated features, and the order of the required tables is decided by the saved order.
 var tableOrderCache map[binding.PipelineID][]*Table
 
+// newTable is used to declare a Table. A table should belong to a stage and pipeline defined in file pkg/ovs/openflow/interfaces.go.
+// Stage is used to group tables which implement similar functions in a pipeline. Stages include:
+//   - ClassifierStage, implementation of classifying packet "category" (tunnel, local gateway or local Pod, etc).
+//   - ValidationStage, implementation of validating packets.
+//   - ConntrackStateStage, implementation of transforming committed packets in CT zones.
+//   - PreRoutingStage, similar to PREROUTING chain of nat table in iptables. DNAT of Service connection is performed in
+//     this stage.
+//   - EgressSecurityStage, implementation of egress rule for K8s NetworkPolicy and Antrea NetworkPolicy.
+//   - RoutingStage, implementation of forwarding packets in L3.
+//   - PostRoutingStage, similar to POSTROUTING chain of nat table in iptables. SNAT of Service connection is performed
+//     in this stage.
+//   - SwitchingStage, implementation of "dmac" table.
+//   - IngressSecurityStage, implementation of ingress rule for K8s NetworkPolicy and Antrea NetworkPolicy.
+//   - ConntrackStage, implementation of committing non-Service connections.
+//   - OutputStage, implementation of outputting packets to correct port.
+// Pipeline is used to implement a major function in Antrea data path. At this moment, we have the following pipelines:
+//   - Pipeline for IP.
+//   - Pipeline for ARP.
+//   - Pipeline for multicast.
 func newTable(tableName string, stage binding.StageID, pipeline binding.PipelineID) *Table {
 	table := &Table{
 		name:     tableName,
@@ -219,9 +236,8 @@ func (f *featureTraceflow) getRequiredTables() []*Table {
 	return nil
 }
 
-// traceableFeature is the interface to program to support Traceflow in Antrea data path. Any other feature expected to
-// trace the packet status with its flow entries needs to implement this interface. The following structures implement
-// this interface:
+// traceableFeature is the interface to support Traceflow in Antrea data path. Any other feature expected to trace the
+// packet status with its flow entries needs to implement this interface. The following structures implement this interface:
 // - featurePodConnectivity.
 // - featureNetworkPolicy.
 // - featureService.

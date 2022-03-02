@@ -101,7 +101,7 @@ func (f *featurePodConnectivity) initFlows() []binding.Flow {
 		}
 	}
 	flows = append(flows, f.defaultDropFlows()...)
-	flows = append(flows, f.l3FwdFlowToLocalCIDR()...)
+	flows = append(flows, f.l3FwdFlowToLocalPodCIDR()...)
 	flows = append(flows, f.l3FwdFlowToNode()...)
 	flows = append(flows, f.l3FwdFlowToExternal())
 	flows = append(flows, f.decTTLFlows()...)

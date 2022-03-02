@@ -70,7 +70,7 @@ func NewPipeline(id PipelineID, ofTables []Table) Pipeline {
 	}
 	p := &ofPipeline{pipelineID: id, tableMap: tableMap}
 
-	for s := ClassifierStage; s <= LastStage; s++ {
+	for s := FirstStage; s <= LastStage; s++ {
 		if tables, ok := tableMap[s]; ok {
 			p.firstStage = s
 			p.firstTable = tables[0]

@@ -41,17 +41,68 @@ import (
 )
 
 var (
-	// PipelineClassifierTable is table 0. Packets are forwarded to different pipelines in this table.
-	PipelineClassifierTable = newTable("PipelineClassifier", 0, binding.PipelineAll)
+	// PipelineClassifierTable is table 0. Packets are forwarded to different pipelines in this table. Note that, the value
+	// of stage and pipeline arguments for this table is dummy. This table is always realized to OVS.
+	PipelineClassifierTable = newTable("PipelineClassifier", binding.StageAll, binding.PipelineAll)
 
-	// OVS pipeline for ARP is used to process ARP packets.
+	//      _   _   _             _   _               _
+	//     / \ | |_| |_ ___ _ __ | |_(_) ___  _ __   | |
+	//    / _ \| __| __/ _ \ '_ \| __| |/ _ \| '_ \  | |
+	//   / ___ \ |_| ||  __/ | | | |_| | (_) | | | | |_|
+	//  /_/   \_\__|\__\___|_| |_|\__|_|\___/|_| |_| (_)
+	//
+	// Before adding a new table here, please read the following instruction carefully.
+	// - Double confirm the necessity of adding a new table, and consider how to reuse an existing table to implement
+	//   alternative functionality.
+	// - Choose a good name. A good name is very helpful for users to understand the function of the table.
+	// - Choose a stage. All tables in a stage are intended to implement a functional module in pipelines. All stages are
+	//   defined in file pkg/ovs/openflow/interfaces.go. If you want to add a new stage, please discuss with maintainers
+	//   or developers of Antrea.
+	// - Choose a target pipeline. All pipelines are defined in file pkg/ovs/openflow/interfaces.go. If you want to add a
+	//   new pipeline, please discuss with maintainers or developers of Antrea.
+	// - The most important thing is to choose the right place to declare the new table. For example:
+	//     * If you want to add a table called `DummyTable` between `SpoofGuardTable` and `IPv6Table` in pipeline for IP,
+	//       then the table should be declared as follows:
+	//       ```go
+	//          SpoofGuardTable  = newTable("SpoofGuard", binding.ValidationStage, binding.PipelineIP)
+	//          DummyTable       = newTable("Dummy", binding.ValidationStage, binding.PipelineIP)
+	//	        IPv6Table        = newTable("IPv6", binding.ValidationStage, binding.PipelineIP)
+	//	        IPClassifierTable = newTable("IPClassifier", binding.ValidationStage, binding.PipelineIP)
+	//       ```
+	//      * If you want to add a table called `DummyTable` just before `ARPResponderTable` in pipeline for ARP, then the
+	//        table should be declared as follows:
+	//       ```go
+	//          DummyTable        = newTable("Dummy", binding.OutputStage, binding.PipelineARP)
+	//          ARPResponderTable = newTable("ARPResponder", binding.OutputStage, binding.PipelineARP)
+	//       ```
+	//       * If you want to add a table called `DummyTable` just after `ConntrackStateTable` in pipeline for ARP, then
+	//         the table should be declared as follows:
+	//       ```go
+	//          SNATConntrackTable  = newTable("SNATConntrackZone", binding.ConntrackStateStage, binding.PipelineIP)
+	//          ConntrackTable      = newTable("ConntrackZone", binding.ConntrackStateStage, binding.PipelineIP)
+	//          ConntrackStateTable = newTable("ConntrackState", binding.ConntrackStateStage, binding.PipelineIP)
+	//	        DummyTable          = newTable("Dummy", binding.ConntrackStateStage, binding.PipelineIP)
+	//       ```
+	//  - Reference the newly added table in a feature in file pkg/agent/openflow/feature.go. The table can be referenced by
+	//    multiple features if multiple features need to install flows in the table. Note that, if the newly added table
+	//    is not referenced by any feature or the features referencing the table are all inactivated, then the table will
+	//    not be realized in OVS; if the newly added table is referenced by one or more features and at least on feature
+	//    is activated, then the table will be realized at desired position in OVS pipeline.
+	//  - For pipeline modularity, action GotoTable is no longer recommended. For packet forwarding within a stage, action
+	//    ResubmitToTables is recommended; for packet forwarding between stages, action GotoStage is recommended.
+
+	// Pipeline for ARP is used to process ARP packets. Tables of pipeline for ARP are declared in the following. Do
+	// don't declare any table of other pipelines here!
+
 	// Tables in ValidationStage:
 	ARPSpoofGuardTable = newTable("ARPSpoofGuard", binding.ValidationStage, binding.PipelineARP)
 
 	// Tables in OutputStage:
 	ARPResponderTable = newTable("ARPResponder", binding.OutputStage, binding.PipelineARP)
 
-	// OVS pipeline for IP is used to process IPv4/IPv6 packets.
+	// Pipeline for IP is used to process IPv4/IPv6 packets. Tables of pipeline for IP are declared in the following. Do
+	// don't declare any table of other pipelines here!
+
 	// Tables in ClassifierStage:
 	ClassifierTable = newTable("Classifier", binding.ClassifierStage, binding.PipelineIP)
 
@@ -106,7 +157,9 @@ var (
 	// Tables in OutputStage:
 	L2ForwardingOutTable = newTable("L2ForwardingOut", binding.OutputStage, binding.PipelineIP)
 
-	// OVS pipeline for multicast is used to process multicast packets.
+	// OVS pipeline for multicast is used to process multicast packets. Tables of pipeline for multicast are declared in
+	// the following. Do don't declare any table of other pipelines here!
+
 	// Tables in RoutingStage:
 	MulticastTable = newTable("Multicast", binding.RoutingStage, binding.PipelineMulticast)
 
@@ -325,7 +378,7 @@ type client struct {
 	featureEgress          *featureEgress
 	featureNetworkPolicy   *featureNetworkPolicy
 	featureMulticast       *featureMulticast
-	activeFeatures         []feature
+	activatedFeatures      []feature
 
 	featureTraceflow  *featureTraceflow
 	traceableFeatures []traceableFeature
@@ -454,7 +507,7 @@ func (c *client) defaultFlows() []binding.Flow {
 	cookieID := c.cookieAllocator.Request(cookie.Default).Raw()
 	var flows []binding.Flow
 	for id, pipeline := range c.pipelines {
-		// This generates the default flow for every table for a pipeline.
+		// This generates the default flow for every table in every pipeline.
 		for _, table := range pipeline.ListAllTables() {
 			flowBuilder := table.BuildFlow(priorityMiss).Cookie(cookieID)
 			switch table.GetMissAction() {
@@ -472,20 +525,21 @@ func (c *client) defaultFlows() []binding.Flow {
 			flows = append(flows, flowBuilder.Done())
 		}
 
-		// This generates the flows to forward packets to different pipelines.
 		switch id {
 		case binding.PipelineIP:
-			// This generates the flow to forward packets to pipeline for IP in PipelineClassifierTable.
+			// This generates the flow to match IPv4/IPv6 packets and forward them to the first table of pipeline for IP
+			// in PipelineClassifierTable.
 			for _, ipProtocol := range c.ipProtocols {
 				flows = append(flows, pipelineClassifyFlow(cookieID, ipProtocol, pipeline))
 			}
 		case binding.PipelineARP:
-			// This generates the flow to forward packets to pipeline for ARP in PipelineClassifierTable.
+			// This generates the flow to match ARP packets and forward them to the first table of pipeline for ARP in
+			// PipelineClassifierTable.
 			flows = append(flows, pipelineClassifyFlow(cookieID, binding.ProtocolARP, pipeline))
 		case binding.PipelineMulticast:
-			// This generates the flow to forward packets to pipeline for multicast in IPClassifierTable.
-			// Note that, the table is in ValidationStage of pipeline for IP. In another word, pipeline for multicast
-			// shares  with pipeline for IP.
+			// This generates the flow to match multicast packets and forward them to the first table of pipeline for
+			// multicast in IPClassifierTable. Note that, IPClassifierTable is in ValidationStage of pipeline for IP.
+			// In another word, pipeline for multicast is forked from IPClassifierTable in pipeline for IP.
 			flows = append(flows, multicastPipelineClassifyFlow(cookieID, pipeline))
 		}
 	}
@@ -519,7 +573,7 @@ func (f *featurePodConnectivity) tunnelClassifierFlow(tunnelOFPort uint32) bindi
 // Tables: ClassifierTable
 // Refactored from:
 //   - func (c *client) gatewayClassifierFlow(category cookie.Category) binding.Flow
-// gatewayClassifierFlow generates the flow to mark the packets from the Antrea gateway port.
+// gatewayClassifierFlow generates the flow to mark the packets from Antrea gateway port.
 func (f *featurePodConnectivity) gatewayClassifierFlow() binding.Flow {
 	return ClassifierTable.ofTable.BuildFlow(priorityNormal).
 		Cookie(f.cookieAllocator.Request(f.category).Raw()).
@@ -595,7 +649,7 @@ func (f *featurePodConnectivity) conntrackFlows() []binding.Flow {
 	var flows []binding.Flow
 	for _, ipProtocol := range f.ipProtocols {
 		flows = append(flows,
-			// This generates the flow to maintain tracked connection in CT zone.
+			// This generates the flow to transform the packets from tracked connection in CT zone.
 			ConntrackTable.ofTable.BuildFlow(priorityNormal).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
@@ -621,6 +675,7 @@ func (f *featurePodConnectivity) conntrackFlows() []binding.Flow {
 				MatchCTStateTrk(true).
 				Action().Drop().
 				Done(),
+			// TODO: refactor with latest upstream main branch and merge the following three into one flow.
 			// This generates the flow to mark the connection initiated through the Antrea gateway with FromGatewayCTMark.
 			// There are two cases:
 			// - When AntreaProxy is disabled and kube-proxy is used, a Pod (not host network) as client connects to a
@@ -650,13 +705,6 @@ func (f *featurePodConnectivity) conntrackFlows() []binding.Flow {
 				CTDone().
 				Done(),
 		)
-		// This generates default flow to match the first packet of a new connection (including Service / non-Service connection)
-		// and forward it PreRoutingStage.
-		flows = append(flows,
-			ConntrackStateTable.ofTable.BuildFlow(priorityMiss).
-				Cookie(cookieID).
-				Action().GotoStage(binding.PreRoutingStage).
-				Done())
 		if f.connectUplinkToBridge {
 			flows = append(flows,
 				// When Node bridge local port and uplink port connect to OVS bridge, this generates the flow to mark the
@@ -679,6 +727,13 @@ func (f *featurePodConnectivity) conntrackFlows() []binding.Flow {
 					Done())
 		}
 	}
+	// This generates default flow to match the first packet of a new connection and forward it PreRoutingStage.
+	flows = append(flows,
+		ConntrackStateTable.ofTable.BuildFlow(priorityMiss).
+			Cookie(cookieID).
+			Action().GotoStage(binding.PreRoutingStage).
+			Done())
+
 	return flows
 }
 
@@ -695,8 +750,7 @@ func (f *featureService) conntrackFlows() []binding.Flow {
 	for _, ipProtocol := range f.ipProtocols {
 		flows = append(flows,
 			// This generates the flow to mark tracked DNATed Service connection with RewriteMACRegMark (load-balanced by
-			// AntreaProxy) and forward the packets of the connection to EgressSecurityStage directly to bypass
-			// PreRoutingStage.
+			// AntreaProxy) and forward the packets to EgressSecurityStage directly to bypass PreRoutingStage.
 			ConntrackStateTable.ofTable.BuildFlow(priorityNormal).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
@@ -734,7 +788,7 @@ func (f *featureService) snatConntrackFlows() []binding.Flow {
 	var flows []binding.Flow
 	for _, ipProtocol := range f.ipProtocols {
 		flows = append(flows,
-			// This generates the flow to maintain tracked SNATed Service connection.
+			// This generates the flow to transform the packets from tracked SNATed Service connection in SNAT CT zone.
 			SNATConntrackTable.ofTable.BuildFlow(priorityNormal).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
@@ -745,18 +799,18 @@ func (f *featureService) snatConntrackFlows() []binding.Flow {
 			// For the first packet of Service connection, if it requires SNAT, the packet will be committed to SNAT
 			// CT zone. For reply packets of the connection, they can be transformed correctly by passing through SNAT,
 			// DNAT CT zone in order. However, for consequent request packets, they can be only transformed by passing
-			// DNAT CT zone, not by passing SNAT CT zone, since there is no related conntrack record in SNAT CT zone for
-			// the 5-tuple of the packets before entering SNAT CT zone.
-			// For the consequent request packets, they need to pass SNAT CT zone again to perform SNAT in SNATConntrackCommitTable
-			// after passing DNAT CT zone. The consequent request packets should have a CT mark in DNAT CT zone to distinguish
-			// them from the connection that don't require SNAT, so ServiceSNATCTMark CT mark is used DNAT CT zone.
-			// To avoid adding another table, the first packet is committed to SNATConntrackCommitTable again. ServiceSNATStateField
-			// is used to prevent the packet from being forked to SNATConntrackCommitTable cyclically since the status of
-			// ServiceSNATStateField is changed from NotRequireSNATRegMark / RequireSNATRegMark to CTMarkedSNATRegMark.
+			// through DNAT CT zone, not by passing through SNAT CT zone, since there is no related conntrack record in
+			// SNAT CT zone for the 5-tuple of the packets before entering SNAT CT zone.
+			// For the consequent request packets, they need to pass through SNAT CT zone again to perform SNAT in
+			// SNATConntrackCommitTable after passing DNAT CT zone. The consequent request packets should have a CT mark
+			// in DNAT CT zone to distinguish them from the connection that don't require SNAT, so ServiceSNATCTMark is
+			// loaded DNAT CT zone to mark the connection that has been performed SNAT. To avoid adding another table,
+			// the first packet is committed to SNATConntrackCommitTable again. ServiceSNATStateField is used to prevent
+			// the packet from being forked to SNATConntrackCommitTable cyclically since the value of ServiceSNATStateField
+			// is changed from NotRequireSNATRegMark / RequireSNATRegMark to CTMarkedSNATRegMark.
 			// The following two functions generate the flows described as above.
-
-			// This generates the flow to match the first packet of hairpin connection. The source can be from the Antrea
-			// gateway or local Pods. HairpinCTMark is used to match the consequent packets of tracked hairpin connection.
+			// This generates the flow to match the first packet of hairpin connection. The connection can be initiated through
+			// Antrea gateway or local Pods.
 			SNATConntrackCommitTable.ofTable.BuildFlow(priorityNormal).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
@@ -770,8 +824,8 @@ func (f *featureService) snatConntrackFlows() []binding.Flow {
 				LoadToCtMark(HairpinCTMark).
 				CTDone().
 				Done(),
-			// This generates the flow to match the first packet of NodePort / LoadBalancer connection which require
-			// SNAT and are initiated through Antrea gateway.
+			// This generates the flow to match the first packet of NodePort / LoadBalancer connection that requires SNAT
+			// initiated through Antrea gateway.
 			SNATConntrackCommitTable.ofTable.BuildFlow(priorityNormal).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
@@ -784,15 +838,16 @@ func (f *featureService) snatConntrackFlows() []binding.Flow {
 				LoadToCtMark(ServiceSNATCTMark).
 				CTDone().
 				Done(),
-			// For the packets of connection that require SNAT, after processing by the flows generated by above functions,
-			// the status of ServiceSNATStateField changed to CTMarkedSNATRegMark and ServiceSNATCTMark is also loaded in
-			// DNAT CT zone. The connection can be distinguished from other connections that don't require SNAT in DNAT
-			// CT zone. Then the connection should be committed to SNAT CT zone and performed SNAT with an IP. ServiceCTMark
-			// is also loaded in SNAT CT zone since ServiceCTMark loaded in DNAT CT zone is invisible in SNAT CT zone.
-			// Note that, ServiceCTMark is used to skip ConntrackCommitTable.
+
+			// For the first packet of connection that require SNAT, when the status of ServiceSNATStateField is changed
+			// to CTMarkedSNATRegMark and ServiceSNATCTMark is also loaded in DNAT CT zone. The packets of the connection
+			// can be distinguished from the packets of other connections that don't require SNAT in DNAT CT zone. Then
+			// the connection should be committed to SNAT CT zone and performed SNAT with an IP. ServiceCTMark is also
+			// loaded in SNAT CT zone since ServiceCTMark loaded in DNAT CT zone is invisible after passing through SNAT
+			// CT zone. Note that, ServiceCTMark is used to skip ConntrackCommitTable.
 			// The following three functions generate the flows described as above.
-			// This generates the flow to mark the first packet of hairpin connection sourced from the Antrea gateway and
-			// destined for the Antrea gateway. The hairpin connection requires virtual IP to perform SNAT.
+			// This generates the flow to match the first packet of hairpin connection sourced from Antrea gateway and destined
+			// for Antrea gateway, and perform SNAT with a virtual IP since the packet is from a hairpin connection.
 			SNATConntrackCommitTable.ofTable.BuildFlow(priorityNormal).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
@@ -805,8 +860,8 @@ func (f *featureService) snatConntrackFlows() []binding.Flow {
 				LoadToCtMark(ServiceCTMark).
 				CTDone().
 				Done(),
-			// This generates the flow to mark the first packet of hairpin connection sourced from a Pod and destined
-			// to the same Pod. The hairpin connection requires the Antrea gateway IP to perform SNAT.
+			// This generates the flow to match the first packet of hairpin connection sourced from a Pod and destined for
+			// the same Pod, and perform SNAT with the Antrea gateway IP.
 			SNATConntrackCommitTable.ofTable.BuildFlow(priorityNormal).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
@@ -819,8 +874,8 @@ func (f *featureService) snatConntrackFlows() []binding.Flow {
 				LoadToCtMark(ServiceCTMark).
 				CTDone().
 				Done(),
-			// This generates the flow to mark the first packet of Service NodePort / LoadBalancer connection sourced
-			// from the Antrea gateway and destined for a Pod. The connection requires the Antrea gateway IP to perform SNAT.
+			// This generates the flow to match the first packet of Service NodePort / LoadBalancer connection sourced
+			// from the Antrea gateway and destined for a Pod，and perform SNAT with Antrea gateway IP.
 			SNATConntrackCommitTable.ofTable.BuildFlow(priorityLow).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
@@ -834,7 +889,7 @@ func (f *featureService) snatConntrackFlows() []binding.Flow {
 				CTDone().
 				Done(),
 			// This generates the flow to match the subsequent request packets of Service connection whose first request
-			// packet has been committed in SNAT CT zone and commit the packets in SNAT CT zone again to perform SNAT.
+			// packet has been committed in SNAT CT zone, and commit the packets in SNAT CT zone again to perform SNAT.
 			// For example:
 			/*
 				* 192.168.77.1 is the IP address of client.
@@ -863,11 +918,12 @@ func (f *featureService) snatConntrackFlows() []binding.Flow {
 					* output
 				  * packet ...
 			*/
-			// The source IP address of pkt 3 cannot be transformed through zone 65521 (SNAT CT zone) since there is no
-			// conntrack record about 192.168.77.1:12345<->192.168.77.100:30001, and the source IP is still 192.168.77.100.
-			// Before output, packet 3 requires SNAT.
-			// This generates the flow to perform SNAT for the subsequent request packets (not the first packet) of Service
-			// connection that requires SNAT.
+			// The source IP address of packet 3 cannot be transformed after passing through zone 65521 (SNAT CT zone)
+			// since there is no conntrack record about 192.168.77.1:12345<->192.168.77.100:30001, and the source IP is
+			// still 192.168.77.100. As a result, subsequent request packets like packet 3 need to pass through SNAT CT
+			// zone to perform SNAT.
+			// This generates the flow to perform SNAT for the subsequent request packets (except the first packet) of
+			// Service connection that requires SNAT.
 			SNATConntrackCommitTable.ofTable.BuildFlow(priorityNormal).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
@@ -1264,7 +1320,7 @@ func (f *featurePodConnectivity) l2ForwardCalcFlow(dstMAC net.HardwareAddr, ofPo
 // Tables: l2ForwardOutputFlow
 // Refactored from:
 //   - part of func (c *client) l2ForwardOutputFlows(category cookie.Category) []binding.Flow
-// l2ForwardOutputHairpinServiceFlow generates the flow to output the packets of hairpin Service connection with IN_PORT
+// l2ForwardOutputHairpinServiceFlow generates the flow to output the packet of hairpin Service connection with IN_PORT
 // action.
 func (f *featureService) l2ForwardOutputHairpinServiceFlow() binding.Flow {
 	return L2ForwardingOutTable.ofTable.BuildFlow(priorityHigh).
@@ -1295,9 +1351,9 @@ func (f *featurePodConnectivity) l2ForwardOutputFlow() binding.Flow {
 // Tables: L3ForwardingTable
 // Refactored from:
 //   - func (c *client) l3FwdFlowToPod(localGatewayMAC net.HardwareAddr, podInterfaceIPs []net.IP, podInterfaceMAC net.HardwareAddr, category cookie.Category) []binding.Flow
-// l3FwdFlowToPod generates the flows to forward packets to a local Pod. For per-Node IPAM Pod, the flow rewrites destination
-// MAC to the Pod interface's MAC, and rewrites source MAC to the Antrea gateway interface's MAC. For Antrea IPAM Pod, the
-// flow only rewrites destination MAC to the Pod interface's MAC.
+// l3FwdFlowToPod generates the flows to match the packets destined for a local Pod. For a per-Node IPAM Pod, the flow
+// rewrites destination MAC to the Pod interface's MAC, and rewrites source MAC to Antrea gateway interface's MAC. For
+// an Antrea IPAM Pod, the flow only rewrites the destination MAC to the Pod interface's MAC.
 func (f *featurePodConnectivity) l3FwdFlowToPod(localGatewayMAC net.HardwareAddr,
 	podInterfaceIPs []net.IP,
 	podInterfaceMAC net.HardwareAddr,
@@ -1307,28 +1363,7 @@ func (f *featurePodConnectivity) l3FwdFlowToPod(localGatewayMAC net.HardwareAddr
 	for _, ip := range podInterfaceIPs {
 		ipProtocol := getIPProtocol(ip)
 		if isAntreaFlexibleIPAM {
-			// This generates the flow to forward the packets to Antrea IPAM Pod.
-			// For simplicity, in the following:
-			//   - per-Node IPAM Pod is referred to as Pod.
-			//   - Antrea IPAM Pod is referred to as Antrea Pod.
-			// The common conditions are:
-			//   - the traffic mode is noEncap.
-			//   - Pod / Antrea Pod is not in host network.
-			// Corresponding traffic models are:
-			//   01. Pod                            -- Service [request/reply]             --> Antrea Pod
-			//   02. Antrea Pod                     -- Service [request/reply]             --> Antrea Pod
-			//   03. Antrea Pod                     -- Service [request][hairpin]          --> Antrea Pod, HairpinRegMark
-			//   04. Gateway                        -- Service [request]                   --> Antrea Pod
-			//   05. External(via Gateway)          -- Service [request]                   --> Antrea Pod, NotRequireSNATRegMark(+new+trk)
-			//   06. External(via Gateway)          -- Service [request]                   --> Antrea Pod, RequireSNATRegMark(+new+trk)
-			//   07. Pod                            -- Connect [request/reply]             --> Antrea Pod
-			//   08. Antrea Pod                     -- Connect [request/reply]             --> Antrea Pod, AntreaFlexibleIPAMRegMark
-			//   09. Remote Pod(via Uplink)         -- Service [request/reply]             --> Antrea Pod
-			//   10. Remote Pod(via Uplink)         -- Connect [request/reply]             --> Antrea Pod
-			//   11. Remote Antrea Pod(via Uplink)  -- Service [request/reply]             --> Antrea Pod
-			//   12. Remote Antrea Pod(via Uplink)  -- Connect [request/reply]             --> Antrea Pod
-			//   13. Node(via Bridge)               -- Connect [request]                   --> Antrea Pod
-			//   14. External(via Uplink)           -- Connect [request]                   --> Antrea Pod
+			// This generates the flow to match the packets destined for an Antrea IPAM Pod.
 			flows = append(flows, L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
@@ -1338,28 +1373,7 @@ func (f *featurePodConnectivity) l3FwdFlowToPod(localGatewayMAC net.HardwareAddr
 				Action().NextTable().
 				Done())
 		} else {
-			// This generates the flow to match the packets to per-Node IPAM Pod.
-			// For simplicity, in the following:
-			//   - per-Node IPAM Pod is referred to as Pod.
-			//   - Antrea IPAM Pod is referred to as Antrea Pod.
-			// The common conditions are:
-			//   - with RewriteMACRegMark.
-			//   - Pod / Antrea Pod is not in host network.
-			// Corresponding traffic models are:
-			//   01. Pod                            -- Service [request/reply]             --> Pod
-			//   02. Pod                            -- Service [request][hairpin]          --> Pod, HairpinRegMark
-			//   03. Gateway                        -- Service [request]                   --> Pod, NotRequireSNATRegMark(+new+trk)
-			//   04. Gateway                        -- Service [request]                   --> Pod, RequireSNATRegMark(+new+trk)
-			//   05. Node(via Gateway)              -- Service [reply]                     --> Pod
-			//   06. External(via Gateway)          -- Service [request]                   --> Pod, NotRequireSNATRegMark(+new+trk)
-			//   07. External(via Gateway)          -- Service [request]                   --> Pod, RequireSNATRegMark(+new+trk)
-			//   08. Antrea IPAM Pod                -- Service [request/reply][noEncap]    --> Pod, AntreaFlexibleIPAMRegMark
-			//   09. Remote Pod(via Uplink)         -- Service [reply][Windows][noEncap]   --> Pod
-			//   10. Remote Pod(via Uplink)         -- Connect [reply][Windows][noEncap]   --> Pod
-			//   11. Remote Pod(via Tunnel)         -- Service [request][reply][encap]     --> Pod
-			//   12. Remote Pod(via Tunnel)         -- Egress  [reply][Linux][encap]       --> Pod
-			//   13. Remote Pod(via Tunnel)         -- Connect [request/reply][encap]      --> Pod
-			//   14. Antrea Pod                     -- Connect [request/reply][noEncap]    --> Pod, AntreaFlexibleIPAMRegMark
+			// This generates the flow to match the packets with RewriteMACRegMark and destined for a per-Node IPAM Pod.
 			flows = append(flows, L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
@@ -1381,8 +1395,9 @@ func (f *featurePodConnectivity) l3FwdFlowToPod(localGatewayMAC net.HardwareAddr
 // Requirements: networkPolicyOnly mode
 // Refactored from:
 //   - func (c *client) l3FwdFlowRouteToPod(podInterfaceIPs []net.IP, podInterfaceMAC net.HardwareAddr, category cookie.Category) []binding.Flow
-// l3FwdFlowRouteToPod generates the flows to route the packets to a Pod based on the destination IP. It rewrites destination
-// MAC to the Pod interface's MAC. The flows are used in networkPolicyOnly mode to match the packets from the Antrea gateway.
+// l3FwdFlowRouteToPod generates the flows to match the packets destined for a Pod based on the destination IPs. It rewrites
+// destination MAC to the Pod interface's MAC. The flows are used in networkPolicyOnly mode to match the packets from the
+// Antrea gateway.
 func (f *featurePodConnectivity) l3FwdFlowRouteToPod(podInterfaceIPs []net.IP, podInterfaceMAC net.HardwareAddr) []binding.Flow {
 	cookieID := f.cookieAllocator.Request(f.category).Raw()
 	var flows []binding.Flow
@@ -1406,9 +1421,9 @@ func (f *featurePodConnectivity) l3FwdFlowRouteToPod(podInterfaceIPs []net.IP, p
 // Requirements: networkPolicyOnly mode
 // Refactored from:
 //   - func (c *client) l3FwdFlowRouteToGW(gwMAC net.HardwareAddr, category cookie.Category) []binding.Flow
-// l3FwdFlowRouteToGW generates the flows to route the packets to the Antrea gateway. It rewrites destination MAC to the
-// Antrea gateway interface's MAC. The flows are used in networkPolicyOnly mode to match the packets sourced from a local Pod
-// and destined for remote Pods, Nodes, or external network.
+// l3FwdFlowRouteToGW generates the flows to match the packets destined for the Antrea gateway. It rewrites destination MAC
+// to the Antrea gateway interface's MAC. The flows are used in networkPolicyOnly mode to match the packets sourced from a
+// local Pod and destined for remote Pods, Nodes, or external network.
 func (f *featurePodConnectivity) l3FwdFlowRouteToGW() []binding.Flow {
 	cookieID := f.cookieAllocator.Request(f.category).Raw()
 	var flows []binding.Flow
@@ -1436,22 +1451,7 @@ func (f *featurePodConnectivity) l3FwdFlowToGateway() []binding.Flow {
 	var flows []binding.Flow
 	for ipProtocol, gatewayIP := range f.gatewayIPs {
 		flows = append(flows,
-			// This generates the flow to match the packets destined for the Antrea gateway with RewriteMACRegMark.
-			// For simplicity, in the following:
-			//   - per-Node IPAM Pod is referred to as Pod.
-			//   - Antrea IPAM Pod is referred to as Antrea Pod.
-			// The common conditions are:
-			//   - with RewriteMACRegMark
-			//   - Pod / Antrea Pod is not in host network.
-			// Corresponding traffic models are:
-			//   01. Pod                       -- Service [reply]                              --> Gateway
-			//   02. Remote Pod(via Tunnel)    -- Service [reply][encap]                       --> Gateway
-			//   03. Remote Pod(via Tunnel)    -- Connect [request/reply][encap]               --> Gateway
-			//   04. Antrea Pod                -- Service [reply][noEncap]                     --> Gateway, AntreaFlexibleIPAMRegMark
-			//   05. Node(via Gateway)         -- Service [reply][hairpin]                     --> Gateway
-			//   06. External(via Gateway)     -- Service [reply][hairpin]                     --> Gateway
-			//   07. Remote Pod(via Uplink)    -- Connect [request][noEncap][Windows]          --> Gateway
-			//   08. Remote Pod(via Uplink)    -- Service [reply][noEncap][Windows]            --> Gateway
+			// This generates the flow to match the packets with RewriteMACRegMark destined for the Antrea gateway.
 			L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
@@ -1461,15 +1461,7 @@ func (f *featurePodConnectivity) l3FwdFlowToGateway() []binding.Flow {
 				Action().LoadRegMark(ToGatewayRegMark).
 				Action().NextTable().
 				Done(),
-			// This generates the flow to match the packets destined for the Antrea gateway without RewriteMACRegMark.
-			// For simplicity, in the following:
-			//   - per-Node IPAM Pod is referred to as Pod.
-			//   - Antrea IPAM Pod is referred to as Antrea Pod.
-			// The common conditions are:
-			//   - without RewriteMACRegMark
-			//   - Pod / Antrea Pod is not in host network.
-			// The traffic model is:
-			//   01. Pod                            -- Connect [request/reply]                     --> Gateway
+			// This generates the flow to match the packets without RewriteMACRegMark destined for the Antrea gateway.
 			L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
@@ -1478,14 +1470,8 @@ func (f *featurePodConnectivity) l3FwdFlowToGateway() []binding.Flow {
 				Action().LoadRegMark(ToGatewayRegMark).
 				Action().GotoStage(binding.SwitchingStage).
 				Done(),
-		)
-		// This generates the flow to match the reply packets of connection with FromGatewayCTMark from local Pods.
-		// For simplicity, in the following:
-		//   - per-Node IPAM Pod is referred to as Pod.
-		// Corresponding traffic models are:
-		//   01. Pod                       -- Service [reply]         --> Pod, AntreaProxy is disabled and kube-proxy is used.
-		//   02. Pod                       -- NodePortLocal [reply]   --> Pod, AntreaProxy is enabled or not.
-		flows = append(flows,
+			// This generates the flow to match the reply packets of connection with FromGatewayCTMark, and the packets are
+			// from local Pods.
 			L3ForwardingTable.ofTable.BuildFlow(priorityHigh).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
@@ -1496,14 +1482,13 @@ func (f *featurePodConnectivity) l3FwdFlowToGateway() []binding.Flow {
 				Action().SetDstMAC(f.nodeConfig.GatewayConfig.MAC).
 				Action().LoadRegMark(ToGatewayRegMark).
 				Action().GotoStage(binding.SwitchingStage).
-				Done())
-		// When encap mode is enabled, this generates the flow to match the reply packets of connection with FromGatewayCTMark
-		// from remote Pods via tunnel.
-		// For simplicity, in the following:
-		//   - per-Node IPAM Pod is referred to as Pod.
+				Done(),
+		)
+		// When encap mode is enabled, this generates the flow to match the reply packets of connection with FromGatewayCTMark,
+		// and the packets are from remote Pods via tunnel.
 		// Corresponding traffic models are:
-		//   01. Remote Pod(via Tunnel)    -- Service [reply]         --> Pod, AntreaProxy is disabled and kube-proxy is used.
-		//   02. Remote Pod(via Tunnel)    -- NodePortLocal [reply]   --> Pod, AntreaProxy is enabled or not.
+		//   - AntreaProxy is disabled and kube-proxy is used, reply packets from remote Pods.
+		//   - AntreaProxy is enabled or not, reply packets of NodePortLocal from remote Pods.
 		if f.networkConfig.TrafficEncapMode.SupportsEncap() {
 			flows = append(flows, L3ForwardingTable.ofTable.BuildFlow(priorityHigh).
 				Cookie(cookieID).
@@ -1526,22 +1511,9 @@ func (f *featurePodConnectivity) l3FwdFlowToGateway() []binding.Flow {
 // Tables: L3ForwardingTable
 // Refactored from:
 //   - func (c *client) l3FwdFlowToRemote(localGatewayMAC net.HardwareAddr, peerSubnet net.IPNet, tunnelPeer net.IP, category cookie.Category) binding.Flow
-// l3FwdFlowToRemoteViaTun generates the flow to forward the packets to remote Nodes through tunnel.
+// l3FwdFlowToRemoteViaTun generates the flow to match the packets destined for remote Pods via tunnel.
 func (f *featurePodConnectivity) l3FwdFlowToRemoteViaTun(localGatewayMAC net.HardwareAddr, peerSubnet net.IPNet, tunnelPeer net.IP) binding.Flow {
 	ipProtocol := getIPProtocol(peerSubnet.IP)
-	// For simplicity, in the following:
-	//   - per-Node IPAM Pod is referred to as Pod.
-	//   - Antrea IPAM Pod is referred to as Antrea Pod.
-	// The common conditions are:
-	//   - the traffic mode is encap.
-	//   - Pod / Antrea Pod is not in host network.
-	// Corresponding traffic models are:
-	//   01. Pod          -- Service [request/reply]      --> Remote Pod
-	//   02. Pod          -- Connect [request/reply]      --> Remote Pod
-	//   03. Gateway      -- Service [request]            --> Remote Pod, RequireSNATRegMark(+new+trk)
-	//   04. Gateway      -- Connect [request/reply]      --> Remote Pod
-	//   05. External     -- Service [request]            --> Remote Pod, RequireSNATRegMark(+new+trk)
-	//   06. External     -- Egress  [reply][Linux]       --> Remote Pod
 	return L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
 		Cookie(f.cookieAllocator.Request(f.category).Raw()).
 		MatchProtocol(ipProtocol).
@@ -1550,7 +1522,7 @@ func (f *featurePodConnectivity) l3FwdFlowToRemoteViaTun(localGatewayMAC net.Har
 		Action().SetDstMAC(GlobalVirtualMAC). // Rewrite dst MAC to virtual MAC.
 		Action().SetTunnelDst(tunnelPeer).    // Flow based tunnel. Set tunnel destination.
 		Action().LoadRegMark(ToTunnelRegMark).
-		Action().GotoTable(L3DecTTLTable.GetID()).
+		Action().ResubmitToTables(L3DecTTLTable.GetID()).
 		Done()
 }
 
@@ -1559,40 +1531,21 @@ func (f *featurePodConnectivity) l3FwdFlowToRemoteViaTun(localGatewayMAC net.Har
 // Tables: L3ForwardingTable
 // Refactored from:
 //   - func (c *client) l3FwdFlowToRemoteViaGW(localGatewayMAC net.HardwareAddr, peerSubnet net.IPNet, category cookie.Category, isAntreaFlexibleIPAM bool) binding.Flow
-// l3FwdFlowToRemoteViaGW generates the flow to forward the packets to remote Nodes through the Antrea gateway. It is used
-// when the cross-Node connections that do not require encapsulation (in noEncap, networkPolicyOnly, or hybrid mode).
+// l3FwdFlowToRemoteViaGW generates the flow to match the packets destined for remote Pods via the Antrea gateway. It is
+// used when the cross-Node connections that do not require encapsulation (in noEncap, networkPolicyOnly, or hybrid mode).
 func (f *featurePodConnectivity) l3FwdFlowToRemoteViaGW(localGatewayMAC net.HardwareAddr, peerSubnet net.IPNet) binding.Flow {
 	cookieID := f.cookieAllocator.Request(f.category).Raw()
 	ipProtocol := getIPProtocol(peerSubnet.IP)
-	// For simplicity, in the following:
-	//   - per-Node IPAM Pod is referred to as Pod.
-	//   - Antrea IPAM Pod is referred to as Antrea Pod.
-	// The common conditions are:
-	//   - traffic mode is noEncap.
-	//   - Pod / Antrea Pod is not in host network.
-	//   - for a Linux Node, this is used to forward packets to other remote Nodes.
-	//   - for a Windows Node, this is used to forward packets other Nodes whose transport interface MAC is unknown.
-	// Corresponding traffic models are:
-	//   01. Pod          -- Service [request/reply]      --> Remote Pod
-	//   02. Pod          -- Connect [request/reply]      --> Remote Pod
-	//   03. Gateway      -- Service [request][hairpin]   --> Remote Pod, RequireSNATRegMark(+new+trk)
-	//   04. External     -- Service [request][hairpin]   --> Remote Pod, RequireSNATRegMark(+new+trk)
-	if f.connectUplinkToBridge {
-		return L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
-			Cookie(cookieID).
-			MatchProtocol(ipProtocol).
-			MatchDstIPNet(peerSubnet).
-			MatchRegMark(NotAntreaFlexibleIPAMRegMark). // To distinguish the packets from Antrea IPAM Pod.
-			Action().SetDstMAC(localGatewayMAC).
-			Action().LoadRegMark(ToGatewayRegMark).
-			Action().NextTable().
-			Done()
-	}
-	return L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
+	// This generates the flow to match the packets destined for remote Pods. Note that, this flow is used in Linux Nodes
+	// and Windows Nodes without knowing remote Node's Antrea gateway MAC.
+	fb := L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
 		Cookie(cookieID).
 		MatchProtocol(ipProtocol).
-		MatchDstIPNet(peerSubnet).
-		Action().SetDstMAC(localGatewayMAC).
+		MatchDstIPNet(peerSubnet)
+	if f.connectUplinkToBridge {
+		fb = fb.MatchRegMark(NotAntreaFlexibleIPAMRegMark) // Exclude the packets from Antrea IPAM Pods.
+	}
+	return fb.Action().SetDstMAC(localGatewayMAC).
 		Action().LoadRegMark(ToGatewayRegMark).
 		Action().NextTable().
 		Done()
@@ -1601,8 +1554,8 @@ func (f *featurePodConnectivity) l3FwdFlowToRemoteViaGW(localGatewayMAC net.Hard
 // Feature: PodConnectivity
 // Stage: RoutingStage
 // Tables: L3ForwardingTable
-// l3FwdFlowToRemoteViaUplink generates the flow to forward the packets to remote Nodes through uplink. It is used when
-// the cross-Node connections that do not require encapsulation (in noEncap, networkPolicyOnly, hybrid mode).
+// l3FwdFlowToRemoteViaUplink generates the flow to match the packets destined for remote Pods via uplink. It is used
+// when the cross-Node connections that do not require encapsulation (in noEncap, networkPolicyOnly, hybrid mode).
 func (f *featurePodConnectivity) l3FwdFlowToRemoteViaUplink(remoteGatewayMAC net.HardwareAddr,
 	peerSubnet net.IPNet,
 	isAntreaFlexibleIPAM bool) []binding.Flow {
@@ -1610,23 +1563,10 @@ func (f *featurePodConnectivity) l3FwdFlowToRemoteViaUplink(remoteGatewayMAC net
 	ipProtocol := getIPProtocol(peerSubnet.IP)
 	var flows []binding.Flow
 	if !isAntreaFlexibleIPAM {
-		// The following two functions generate the flows to forward the packets from per-Node IPAM Pod to remote Nodes.
-		// For simplicity, in the following:
-		//   - per-Node IPAM Pod is referred to as Pod.
-		//   - Antrea IPAM Pod is referred to as Antrea Pod.
-		// The common conditions are:
-		//   - traffic mode is noEncap.
-		//   - Pod / Antrea Pod is not in host network.
-		//   - for a Windows Node, this is used to forward the packets to other Nodes whose transport interface's MAC is unknown.
-		// Corresponding traffic models are:
-		//   01. Pod          -- Service [request/reply]      --> Remote Pod
-		//   02. Pod          -- Connect [request/reply]      --> Remote Pod
-		//   03. Gateway      -- Service [reply]              --> Remote Pod, RequireSNATRegMark(+new+trk)
-		//   04. Gateway      -- Connect [reply]              --> Remote Pod
 		flows = append(flows,
-			// This generates the flow to forward the packets to remote Nodes directly through uplink interface without
-			// passing through the Antrea gateway by rewriting destination MAC to remote Node Antrea gateway's MAC. Note
-			// that, this is only for per-Node IPAM Pods and used in Windows Nodes when traffic mode is noEncap.
+			// This generates the flow to match the packets destined for remote Pods via uplink directly without passing
+			// through the Antrea gateway by rewriting destination MAC to remote Node Antrea gateway's MAC. Note that,
+			// this flow is only used in Windows Nodes and remote Node Antrea gateway's MAC is known.
 			L3ForwardingTable.ofTable.BuildFlow(priorityHigh).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
@@ -1636,8 +1576,8 @@ func (f *featurePodConnectivity) l3FwdFlowToRemoteViaUplink(remoteGatewayMAC net
 				Action().LoadRegMark(ToUplinkRegMark).
 				Action().NextTable().
 				Done(),
-			// This generates the flow to forward packets to remote Nodes directly by matching destination MAC and setting
-			// output interface to uplink interface.
+			// This generates the flow to match the packets destined for remote Node by matching destination MAC, then
+			// load the ofPort number of uplink to TargetOFPortField.
 			L2ForwardingCalcTable.ofTable.BuildFlow(priorityNormal).
 				Cookie(cookieID).
 				MatchDstMAC(remoteGatewayMAC).
@@ -1646,18 +1586,9 @@ func (f *featurePodConnectivity) l3FwdFlowToRemoteViaUplink(remoteGatewayMAC net
 				Action().GotoStage(binding.ConntrackStage).
 				Done())
 	} else {
-		// The following function generate the flow to forward the packets from Antrea IPAM Pod to remote Nodes by rewriting
-		// destination MAC to Antrea gateway's MAC of remote Nodes.
-		// For simplicity, in the following:
-		//   - per-Node IPAM Pod is referred to as Pod.
-		//   - Antrea IPAM Pod is referred to as Antrea Pod.
-		// The common conditions are:
-		//   - traffic mode is noEncap.
-		//   - Pod / Antrea Pod is not in host network.
-		//   - Linux Node only.
-		// Corresponding traffic models are:
-		//   01. Antrea Pod          -- Service [request/reply]   --> Remote Pod
-		//   02. Antrea Pod          -- Connect [request/reply]   --> Remote Pod
+		// This generates the flow to match the packets sourced Antrea IPAM Pods and destined for remote Pods, and rewrite
+		// the destination MAC to remote Node Antrea gateway's MAC. Note that, this flow is only used in Linux when AntreaIPAM
+		// is enabled.
 		flows = append(flows, L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
 			Cookie(cookieID).
 			MatchProtocol(ipProtocol).
@@ -1678,7 +1609,7 @@ func (f *featurePodConnectivity) l3FwdFlowToRemoteViaUplink(remoteGatewayMAC net
 //   - func (c *client) arpResponderFlow(peerGatewayIP net.IP, category cookie.Category) binding.Flow
 // Modification:
 //  - Response arp request with specific MAC address.
-// arpResponderFlow generates the flow to response the ARP request with a MAC address for target IP address.
+// arpResponderFlow generates the flow to reply to the ARP request with a MAC address for the target IP address.
 func (f *featurePodConnectivity) arpResponderFlow(ipAddr net.IP, macAddr net.HardwareAddr) binding.Flow {
 	return ARPResponderTable.ofTable.BuildFlow(priorityNormal).
 		Cookie(f.cookieAllocator.Request(f.category).Raw()).
@@ -1702,7 +1633,7 @@ func (f *featurePodConnectivity) arpResponderFlow(ipAddr net.IP, macAddr net.Har
 // Requirements: networkPolicyOnly mode.
 // Refactored from:
 //   - func (c *client) arpResponderStaticFlow(category cookie.Category) binding.Flow
-// arpResponderStaticFlow generates the flow to reply for any ARP request with the same global virtual MAC. It is used
+// arpResponderStaticFlow generates the flow to reply to any ARP request with the same global virtual MAC. It is used
 // in policy-only mode, where traffic are routed via IP not MAC.
 func (f *featurePodConnectivity) arpResponderStaticFlow() binding.Flow {
 	return ARPResponderTable.ofTable.BuildFlow(priorityNormal).
@@ -1767,7 +1698,7 @@ func getIPProtocol(ip net.IP) binding.Protocol {
 //  - func (c *client) gatewayARPSpoofGuardFlows(gatewayIP net.IP, gatewayMAC net.HardwareAddr, category cookie.Category) (flows []binding.Flow)
 // Modification:
 // - Removed function gatewayARPSpoofGuardFlows.
-// arpSpoofGuardFlow generates the flow to check the ARP packets source from local Pods or the Antrea gateway.
+// arpSpoofGuardFlow generates the flow to check the ARP packets sourced from local Pods or the Antrea gateway.
 func (f *featurePodConnectivity) arpSpoofGuardFlow(ifIP net.IP, ifMAC net.HardwareAddr, ifOFPort uint32) binding.Flow {
 	return ARPSpoofGuardTable.ofTable.BuildFlow(priorityNormal).
 		Cookie(f.cookieAllocator.Request(f.category).Raw()).
@@ -1866,7 +1797,7 @@ func (f *featureService) serviceNeedLBFlow() binding.Flow {
 // Tables: ARPResponderTable
 // Refactored from:
 //   - func (c *client) arpNormalFlow(category cookie.Category) binding.Flow
-// arpNormalFlow generates the flow to response the ARP request packets in normal way if no flow in ARPResponderTable is matched.
+// arpNormalFlow generates the flow to reply to the ARP request packets in normal way if no flow in ARPResponderTable is matched.
 func (f *featurePodConnectivity) arpNormalFlow() binding.Flow {
 	return ARPResponderTable.ofTable.BuildFlow(priorityLow).
 		Cookie(f.cookieAllocator.Request(f.category).Raw()).
@@ -2498,18 +2429,16 @@ func (f *featureNetworkPolicy) ingressClassifierFlows() []binding.Flow {
 }
 
 // Feature: Egress
-// Stage: RoutingStage
-// Tables: L3ForwardingTable
+// Stage: PostRoutingStage
+// Tables: SNATTable
 // Refactored from:
 //   - func (c *client) snatRuleFlow(ofPort uint32, snatIP net.IP, snatMark uint32, localGatewayMAC net.HardwareAddr) binding.Flow
 // snatSkipNodeFlow generates the flow to skip SNAT for connection destined for the transport IP of a remote Node.
 func (f *featureEgress) snatSkipNodeFlow(nodeIP net.IP) binding.Flow {
 	ipProtocol := getIPProtocol(nodeIP)
-	// This generates the flow to match the packets to the remote Node IP.
-	return L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
+	return SNATTable.ofTable.BuildFlow(priorityHigh).
 		Cookie(f.cookieAllocator.Request(f.category).Raw()).
 		MatchProtocol(ipProtocol).
-		MatchRegMark(NotRewriteMACRegMark). // Excluding Service traffic.
 		MatchRegMark(FromLocalRegMark).
 		MatchDstIP(nodeIP).
 		Action().LoadRegMark(ToGatewayRegMark).
@@ -2529,7 +2458,6 @@ func (f *featureEgress) snatIPFromTunnelFlow(snatIP net.IP, mark uint32) binding
 	return SNATTable.ofTable.BuildFlow(priorityNormal).
 		Cookie(f.cookieAllocator.Request(f.category).Raw()).
 		MatchProtocol(ipProtocol).
-		MatchRegMark(EgressRegMark).
 		MatchCTStateNew(true).
 		MatchCTStateTrk(true).
 		MatchTunnelDst(snatIP).
@@ -2545,7 +2473,7 @@ func (f *featureEgress) snatIPFromTunnelFlow(snatIP net.IP, mark uint32) binding
 // Refactored from:
 //   - func (c *client) snatRuleFlow(ofPort uint32, snatIP net.IP, snatMark uint32, localGatewayMAC net.HardwareAddr) binding.Flow
 // snatRuleFlow generates the flow that applies the SNAT rule for a local Pod. If the SNAT IP exists on the local Node,
-// it sets the packet mark with the ID of the SNAT IP, for the traffic from local Pod to external; if the SNAT IP is
+// it sets the packet mark with the ID of the SNAT IP, for the traffic from local Pods to external; if the SNAT IP is
 // on a remote Node, it tunnels the packets to the remote Node.
 func (f *featureEgress) snatRuleFlow(ofPort uint32, snatIP net.IP, snatMark uint32, localGatewayMAC net.HardwareAddr) binding.Flow {
 	cookieID := f.cookieAllocator.Request(f.category).Raw()
@@ -2555,7 +2483,6 @@ func (f *featureEgress) snatRuleFlow(ofPort uint32, snatIP net.IP, snatMark uint
 		return SNATTable.ofTable.BuildFlow(priorityNormal).
 			Cookie(cookieID).
 			MatchProtocol(ipProtocol).
-			MatchRegMark(EgressRegMark).
 			MatchCTStateNew(true).
 			MatchCTStateTrk(true).
 			MatchInPort(ofPort).
@@ -2567,7 +2494,6 @@ func (f *featureEgress) snatRuleFlow(ofPort uint32, snatIP net.IP, snatMark uint
 	return SNATTable.ofTable.BuildFlow(priorityNormal).
 		Cookie(cookieID).
 		MatchProtocol(ipProtocol).
-		MatchRegMark(EgressRegMark).
 		MatchInPort(ofPort).
 		Action().SetSrcMAC(localGatewayMAC).
 		Action().SetDstMAC(GlobalVirtualMAC).
@@ -2880,31 +2806,28 @@ func (f *featureEgress) externalFlows(exceptCIDRs []net.IPNet) []binding.Flow {
 		}
 	}
 
-	flows := []binding.Flow{
-		// This generates the flow to match the packets to external network and forward them to SNATTable. The packets
-		// from local Pods or remote Pods will hit the flow.
-		// For simplicity, in the following:
-		//   - per-Node IPAM Pod is referred to as Pod.
-		//   - Remote Nodes' IPs are excluded by other flows.
-		//   - Egress is enabled.
-		// Corresponding traffic models are:
-		//   01. Pod                         -- Egress [request]            --> External
-		//   02. Remote Pod(via Tunnel)      -- Egress [request]            --> External
-		L3ForwardingTable.ofTable.BuildFlow(priorityMiss).
-			Cookie(cookieID).
-			Action().LoadRegMark(EgressRegMark).
-			Action().LoadRegMark(ToGatewayRegMark).
-			Action().GotoStage(binding.PostRoutingStage).
-			Done(),
-	}
-
+	var flows []binding.Flow
 	for _, ipProtocol := range f.ipProtocols {
 		flows = append(flows,
-			// This generates the flow to match the tracked Egress connection to SwitchingStage directly.
+			// This generates the flow to match the packets from local Pods and forward them to PostRoutingStage.
+			L3ForwardingTable.ofTable.BuildFlow(priorityLow).
+				Cookie(cookieID).
+				MatchProtocol(ipProtocol).
+				MatchRegMark(FromLocalRegMark).
+				Action().GotoStage(binding.PostRoutingStage).
+				Done(),
+			// This generates the flow to match the packets from tunnel and forward them to PostRoutingStage.
+			L3ForwardingTable.ofTable.BuildFlow(priorityLow).
+				Cookie(cookieID).
+				MatchProtocol(ipProtocol).
+				MatchRegMark(FromTunnelRegMark).
+				Action().SetDstMAC(f.gatewayMAC).
+				Action().GotoStage(binding.PostRoutingStage).
+				Done(),
+			// This generates the flow to match the packets of tracked Egress connection to SwitchingStage directly.
 			SNATTable.ofTable.BuildFlow(priorityNormal).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
-				MatchRegMark(EgressRegMark).
 				MatchCTStateNew(false).
 				MatchCTStateTrk(true).
 				MatchRegMark(FromTunnelRegMark).
@@ -2915,18 +2838,16 @@ func (f *featureEgress) externalFlows(exceptCIDRs []net.IPNet) []binding.Flow {
 			SNATTable.ofTable.BuildFlow(priorityLow).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
-				MatchRegMark(EgressRegMark).
 				MatchCTStateNew(true).
 				MatchCTStateTrk(true).
 				MatchRegMark(FromTunnelRegMark).
 				Action().Drop().
 				Done())
-		// This generates the flows to bypass the connection destined for the except CIDRs.
+		// This generates the flows to bypass the connections sourced from local Pods and destined for the except CIDRs for Egress.
 		for _, cidr := range exceptCIDRsMap[ipProtocol] {
-			flows = append(flows, L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
+			flows = append(flows, SNATTable.ofTable.BuildFlow(priorityHigh).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
-				MatchRegMark(NotRewriteMACRegMark).
 				MatchRegMark(FromLocalRegMark).
 				MatchDstIPNet(cidr).
 				Action().LoadRegMark(ToGatewayRegMark).
@@ -3147,29 +3068,12 @@ func (f *featurePodConnectivity) defaultDropFlows() []binding.Flow {
 // Feature: PodConnectivity
 // Stage: RoutingStage
 // Tables: L3ForwardingTable
-// l3FwdFlowToLocalCIDR generates the flow to match the packets to local per-Node IPAM Pods.
-func (f *featurePodConnectivity) l3FwdFlowToLocalCIDR() []binding.Flow {
+// l3FwdFlowToLocalPodCIDR generates the flow to match the packets to local per-Node IPAM Pods.
+func (f *featurePodConnectivity) l3FwdFlowToLocalPodCIDR() []binding.Flow {
 	cookieID := f.cookieAllocator.Request(f.category).Raw()
 	var flows []binding.Flow
 	for ipProtocol, cidr := range f.localCIDRs {
-		// This generates the flow to match the packets to local Pods.
-		// For simplicity, in the following:
-		//   - per-Node IPAM Pod is referred to as Pod.
-		//   - Antrea IPAM Pod is referred to as Antrea Pod.
-		// The common conditions are:
-		//   - with NotRewriteMACRegMark (without RewriteMACRegMark).
-		//   - Pod / Antrea Pod is not in host network.
-		// Corresponding traffic models are:
-		//   01. Pod                              -- Connect [request/reply]            --> Pod
-		//   02. Gateway                          -- Connect [request/reply]            --> Pod
-		//   03. External                         -- Egress  [reply]                    --> Pod
-		//   04. External                         -- Connect [reply]                    --> Pod
-		//   05. Node(via Gateway)                -- Connect [reply]                    --> Pod
-		//   06. Remote Pod(via Gateway)          -- Connect [request/reply][noEncap]   --> Pod
-		//   07. Remote Pod(via Gateway)          -- Service [request][noEncap]         --> Pod
-		//   08. Remote Antrea Pod(via Gateway)   -- Connect [request/reply][noEncap]   --> Pod
-		//   09. Remote Antrea Pod(via Gateway)   -- Service [request][noEncap]         --> Pod
-		//   10. External(via Gateway)            -- Connect [reply]                    --> Pod
+		// This generates the flow to match the packets destined for local Pods without RewriteMACRegMark.
 		flows = append(flows, L3ForwardingTable.ofTable.BuildFlow(priorityLow).
 			Cookie(cookieID).
 			MatchProtocol(ipProtocol).
@@ -3185,23 +3089,13 @@ func (f *featurePodConnectivity) l3FwdFlowToLocalCIDR() []binding.Flow {
 // Feature: PodConnectivity
 // Stage: RoutingStage
 // Tables: L3ForwardingTable
-// l3FwdFlowToNode generates the flows to match the packets to local Node.
+// l3FwdFlowToNode generates the flows to match the packets destined for local Node.
 func (f *featurePodConnectivity) l3FwdFlowToNode() []binding.Flow {
 	cookieID := f.cookieAllocator.Request(f.category).Raw()
 	var flows []binding.Flow
 	for ipProtocol, nodeIP := range f.nodeIPs {
 		flows = append(flows,
 			// This generates the flow to match the packets with RewriteMACRegMark to local Node via the Antrea gateway.
-			// For simplicity, in the following:
-			//   - per-Node IPAM Pod is referred to as Pod.
-			//   - Antrea IPAM Pod is referred to as Antrea Pod.
-			// The common conditions are:
-			//   - with RewriteMACRegMark。
-			//   - Pod / Antrea Pod is not in host network.
-			// Corresponding traffic models are:
-			//   01. Pod                     -- Service [request]            --> Node(via Gateway)
-			//   02. Gateway                 -- Service [request][hairpin]   --> Node(via Gateway)
-			//   03. External(via Gateway)   -- Service [request][hairpin]   --> Node(via Gateway)
 			L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
@@ -3212,13 +3106,6 @@ func (f *featurePodConnectivity) l3FwdFlowToNode() []binding.Flow {
 				Action().NextTable().
 				Done(),
 			// This generates the flow to match the packets without RewriteMACRegMark to local Node via the Antrea gateway.
-			// For simplicity, in the following:
-			//   - per-Node IPAM Pod is referred to as Pod.
-			//   - Antrea IPAM Pod is referred to as Antrea Pod.
-			// The common condition is:
-			//   - Pod / Antrea Pod is not in host network.
-			// The traffic model is:
-			//   01. Pod                     -- Connect [request]             --> Node(via Gateway)
 			L3ForwardingTable.ofTable.BuildFlow(priorityNormal).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
@@ -3230,14 +3117,8 @@ func (f *featurePodConnectivity) l3FwdFlowToNode() []binding.Flow {
 
 		if f.connectUplinkToBridge {
 			flows = append(flows,
-				// This generates the flow to match the packets to local Node via bridge local port.
-				// For simplicity, in the following:
-				//   - Antrea IPAM Pod is referred to as Antrea Pod.
-				// The common condition is:
-				//   - Pod / Antrea Pod is not in host network.
-				// Corresponding traffic models are:
-				//   01. Antrea Pod              -- Service [request]         --> Node(via Bridge)
-				//   02. Antrea Pod              -- Connect [request/reply]   --> Node(via Bridge)
+				// This generates the flow to match the packets sourced from local Antrea Pods and destined for local Node
+				// via bridge local port.
 				L3ForwardingTable.ofTable.BuildFlow(priorityHigh).
 					Cookie(cookieID).
 					MatchProtocol(ipProtocol).
@@ -3247,14 +3128,8 @@ func (f *featurePodConnectivity) l3FwdFlowToNode() []binding.Flow {
 					Action().LoadRegMark(ToBridgeRegMark).
 					Action().GotoStage(binding.SwitchingStage).
 					Done(),
-				// When Node bridge local port and uplink port connect to OVS, this generates the flow to mark the reply
+				// When Node bridge local port and uplink port connect to OVS, this generates the flow to match the reply
 				// packets of connection initiated through the bridge local port with FromBridgeCTMark.
-				// For simplicity, in the following:
-				//   - Antrea IPAM Pod is referred to as Antrea Pod.
-				// The common condition is:
-				//   - Pod / Antrea Pod is not in host network.
-				// The traffic model is:
-				//   01. Antrea Pod              -- NodePortLocal [reply]         --> Pod
 				L3ForwardingTable.ofTable.BuildFlow(priorityHigh).
 					Cookie(cookieID).
 					MatchProtocol(ipProtocol).
@@ -3273,20 +3148,8 @@ func (f *featurePodConnectivity) l3FwdFlowToNode() []binding.Flow {
 // Feature: PodConnectivity
 // Stage: RoutingStage
 // Tables: L3ForwardingTable
-// l3FwdFlowToExternal generates the flow to forward the packets of non-Service or Egress connection to external network.
+// l3FwdFlowToExternal generates the flow to match the packets of non-Service destined for external network.
 func (f *featurePodConnectivity) l3FwdFlowToExternal() binding.Flow {
-	// This generates the flow to match the packets to external network.
-	// For simplicity, in the following:
-	//   - per-Node IPAM Pod is referred to as Pod.
-	//   - Antrea IPAM Pod is referred to as Antrea Pod.
-	//   - Remote Nodes' IPs are regards as External.
-	// The common condition is:
-	//   - Pod / Antrea Pod is not in host network.
-	// Corresponding traffic models are:
-	//   01. Pod            -- Connect [request]               --> External(via Gateway)
-	//   02. Pod            -- Connect [request][noEncap]      --> Remote Antrea Pod(via Uplink)
-	//   03. Antrea Pod     -- Connect [request][noEncap]      --> Remote Antrea Pod(via Uplink)
-	//   04. Antrea Pod     -- Connect [request][noEncap]      --> External(via Uplink)
 	return L3ForwardingTable.ofTable.BuildFlow(priorityMiss).
 		Cookie(f.cookieAllocator.Request(f.category).Raw()).
 		Action().GotoStage(binding.SwitchingStage).
@@ -3351,19 +3214,6 @@ func (f *featureService) l3FwdFlowsToExternal() []binding.Flow {
 	if f.connectUplinkToBridge {
 		flows = append(flows,
 			// This generates the flow to match the packets sourced from per-Node IPAM Pods and destined for external network.
-			// For simplicity, in the following:
-			//   - per-Node IPAM Pod is referred to as Pod.
-			// The common conditions are:
-			//   - with RewriteMACRegMark.
-			//   - with NotAntreaFlexibleIPAMRegMark.
-			//   - Pod / Antrea Pod is not in host network.
-			// Corresponding traffic models are:
-			//   01. Pod                        -- Service [request]                    --> External(via Gateway)
-			//   02. Gateway                    -- Service [request][hairpin]           --> External(via Gateway)
-			//   03. Node(via Gateway)          -- Service [reply][hairpin]             --> External(via Gateway)
-			//   04. External(via Gateway)      -- Service [request/reply][hairpin]     --> External(via Gateway)
-			//   05. Pod                        -- Service [request][noEncap]           --> Remote Antrea Pod(via Gateway)
-			//   06. Gateway                    -- Service [request][noEncap]           --> Remote Antrea Pod(via Gateway), RequireSNATRegMark(+new+trk)
 			L3ForwardingTable.ofTable.BuildFlow(priorityLow).
 				Cookie(cookieID).
 				MatchRegMark(RewriteMACRegMark).
@@ -3373,19 +3223,9 @@ func (f *featureService) l3FwdFlowsToExternal() []binding.Flow {
 				Action().LoadRegMark(ToGatewayRegMark).
 				Action().NextTable().
 				Done())
-
 		for _, ipProtocol := range f.ipProtocols {
 			flows = append(flows,
-				// This generates the flow to match packets sourced from Antrea IPAM Pod and destined for external network.
-				// For simplicity, in the following:
-				//   - Antrea IPAM Pod is referred to as Antrea Pod.
-				// The common conditions are:
-				//   - with RewriteMACRegMark.
-				//   - with AntreaFlexibleIPAMRegMark.
-				//   - Pod / Antrea Pod is not in host network.
-				// Corresponding traffic models are:
-				//   01. Antrea Pod                 -- Service [request]        --> Remote Antrea Pod(via Uplink)
-				//   02. Antrea Pod                 -- Service [request]        --> External(via Uplink)
+				// TODO: to refactor this flow
 				L3ForwardingTable.ofTable.BuildFlow(priorityLow).
 					Cookie(cookieID).
 					MatchProtocol(ipProtocol).
@@ -3397,15 +3237,6 @@ func (f *featureService) l3FwdFlowsToExternal() []binding.Flow {
 					Action().LoadRegMark(ToUplinkRegMark).
 					Action().NextTable().
 					Done(),
-				// This generates the flow to match packets sourced from Antrea IPAM Pod and destined for external network.
-				// For simplicity, in the following:
-				//   - Antrea IPAM Pod is referred to as Antrea Pod.
-				// The common conditions are:
-				//   - with RewriteMACRegMark.
-				//   - with AntreaFlexibleIPAMRegMark.
-				//   - Pod / Antrea Pod is not in host network.
-				// Corresponding traffic models are:
-				//   01. Antrea Pod                 -- Service [reply]        --> External(via Gateway)
 				L3ForwardingTable.ofTable.BuildFlow(priorityLow).
 					Cookie(cookieID).
 					MatchProtocol(ipProtocol).
@@ -3422,19 +3253,6 @@ func (f *featureService) l3FwdFlowsToExternal() []binding.Flow {
 		}
 	} else {
 		flows = append(flows,
-			// This generates the flow to forward the packets sourced from local Pods and destined for external network.
-			// For simplicity, in the following:
-			//   - per-Node IPAM Pod is referred to as Pod.
-			// The common conditions are:
-			//   - with RewriteMACRegMark.
-			//   - Pod / Antrea Pod is not in host network.
-			// Corresponding traffic models are:
-			//   01. Pod                        -- Service [request]              --> External(via Gateway)
-			//   02. Gateway                    -- Service [request][hairpin]     --> External(via Gateway)
-			//   03. Node(via Gateway)          -- Service [reply][hairpin]       --> External(via Gateway)
-			//   04. External(via Gateway)      -- Service [request][hairpin]     --> External(via Gateway)
-			//   05. Pod                        -- Service [request][noEncap]     --> Remote Pod(via Gateway)
-			//   06. Gateway                    -- Service [request][noEncap]     --> Remote Pod(via Gateway), RequireSNATRegMark(+new+trk)
 			L3ForwardingTable.ofTable.BuildFlow(priorityLow).
 				Cookie(cookieID).
 				MatchRegMark(RewriteMACRegMark).

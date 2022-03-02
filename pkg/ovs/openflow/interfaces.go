@@ -154,7 +154,7 @@ type Table interface {
 type StageID uint8
 
 const (
-	ClassifierStage StageID = iota + 1
+	ClassifierStage StageID = iota
 	ValidationStage
 	ConntrackStateStage
 	PreRoutingStage
@@ -165,6 +165,8 @@ const (
 	IngressSecurityStage
 	ConntrackStage
 	OutputStage
+
+	StageAll StageID = 255
 
 	FirstStage = ClassifierStage
 	LastStage  = OutputStage

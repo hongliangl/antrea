@@ -138,8 +138,6 @@ var (
 	NotRequireSNATRegMark = binding.NewRegMark(ServiceSNATStateField, 0b00)
 	RequireSNATRegMark    = binding.NewRegMark(ServiceSNATStateField, 0b01)
 	CTMarkedSNATRegMark   = binding.NewRegMark(ServiceSNATStateField, 0b11)
-	// reg4[23]: Mark to indicate the packet is Egress packet.
-	EgressRegMark = binding.NewOneBitRegMark(4, 23, "Egress")
 
 	// reg5(NXM_NX_REG5)
 	// Field to cache the Egress conjunction ID hit by TraceFlow packet.

@@ -712,7 +712,7 @@ func (c *client) initialize() error {
 		return fmt.Errorf("failed to install default flows: %v", err)
 	}
 
-	for _, activeFeature := range c.activeFeatures {
+	for _, activeFeature := range c.activatedFeatures {
 		if err := c.ofEntryOperations.AddAll(activeFeature.initFlows()); err != nil {
 			return fmt.Errorf("failed to install feature %v initial flows: %v", activeFeature.getFeatureName(), err)
 		}
@@ -786,7 +786,7 @@ func (c *client) generatePipelines() {
 		c.networkConfig,
 		c.connectUplinkToBridge,
 		c.enableMulticast)
-	c.activeFeatures = append(c.activeFeatures, c.featurePodConnectivity)
+	c.activatedFeatures = append(c.activatedFeatures, c.featurePodConnectivity)
 	c.traceableFeatures = append(c.traceableFeatures, c.featurePodConnectivity)
 
 	c.featureNetworkPolicy = newFeatureNetworkPolicy(c.cookieAllocator,
@@ -795,7 +795,7 @@ func (c *client) generatePipelines() {
 		c.ovsMetersAreSupported,
 		c.enableDenyTracking,
 		c.enableAntreaPolicy)
-	c.activeFeatures = append(c.activeFeatures, c.featureNetworkPolicy)
+	c.activatedFeatures = append(c.activatedFeatures, c.featureNetworkPolicy)
 	c.traceableFeatures = append(c.traceableFeatures, c.featureNetworkPolicy)
 
 	c.featureService = newFeatureService(c.cookieAllocator,
@@ -805,18 +805,18 @@ func (c *client) generatePipelines() {
 		c.enableProxy,
 		c.proxyAll,
 		c.connectUplinkToBridge)
-	c.activeFeatures = append(c.activeFeatures, c.featureService)
+	c.activatedFeatures = append(c.activatedFeatures, c.featureService)
 	c.traceableFeatures = append(c.traceableFeatures, c.featureService)
 
 	if c.enableEgress {
 		c.featureEgress = newFeatureEgress(c.cookieAllocator, c.ipProtocols, c.nodeConfig.GatewayConfig.MAC)
-		c.activeFeatures = append(c.activeFeatures, c.featureEgress)
+		c.activatedFeatures = append(c.activatedFeatures, c.featureEgress)
 	}
 
 	if c.enableMulticast {
 		// TODO: add support for IPv6 protocol
 		c.featureMulticast = newFeatureMulticast(c.cookieAllocator, []binding.Protocol{binding.ProtocolIP})
-		c.activeFeatures = append(c.activeFeatures, c.featureMulticast)
+		c.activatedFeatures = append(c.activatedFeatures, c.featureMulticast)
 	}
 	c.featureTraceflow = newFeatureTraceflow()
 
@@ -835,7 +835,7 @@ func (c *client) generatePipelines() {
 	for _, pipelineID := range pipelineIDs {
 		pipelineRequiredTablesMap[pipelineID] = make(map[*Table]struct{})
 	}
-	for _, f := range c.activeFeatures {
+	for _, f := range c.activatedFeatures {
 		for _, t := range f.getRequiredTables() {
 			if _, ok := pipelineRequiredTablesMap[t.pipeline]; ok {
 				pipelineRequiredTablesMap[t.pipeline][t] = struct{}{}
@@ -911,7 +911,7 @@ func (c *client) ReplayFlows() {
 
 	c.featureService.replayGroups()
 
-	for _, activeFeature := range c.activeFeatures {
+	for _, activeFeature := range c.activatedFeatures {
 		if err := c.ofEntryOperations.AddAll(activeFeature.replayFlows()); err != nil {
 			klog.Errorf("Error when replaying feature %v flows: %v", activeFeature.getFeatureName(), err)
 		}
