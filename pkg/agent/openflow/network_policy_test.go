@@ -450,6 +450,8 @@ func TestBatchInstallPolicyRuleFlows(t *testing.T) {
 				},
 			},
 			expectedFlowsFn: func(c *client) []binding.Flow {
+				priority100 := binding.NewPriority(priority100)
+				priority200 := binding.NewPriority(priority200)
 				cookiePolicy := c.cookieAllocator.Request(cookie.NetworkPolicy).Raw()
 				return []binding.Flow{
 					AntreaPolicyIngressRuleTable.ofTable.BuildFlow(priority100).Cookie(cookiePolicy).
@@ -921,7 +923,7 @@ func newMockRuleFlowBuilder(ctrl *gomock.Controller) *mocks.MockFlowBuilder {
 	ruleFlow = mocks.NewMockFlow(ctrl)
 	ruleFlowBuilder.EXPECT().Done().Return(ruleFlow).AnyTimes()
 	ruleFlow.EXPECT().CopyToBuilder(gomock.Any(), gomock.Any()).Return(ruleFlowBuilder).AnyTimes()
-	ruleFlow.EXPECT().FlowPriority().Return(uint16(priorityNormal)).AnyTimes()
+	ruleFlow.EXPECT().FlowPriority().Return(priorityNormal).AnyTimes()
 	ruleFlow.EXPECT().MatchString().Return("").AnyTimes()
 	return ruleFlowBuilder
 }
@@ -941,7 +943,7 @@ func newMockMetricFlowBuilder(ctrl *gomock.Controller) *mocks.MockFlowBuilder {
 	metricFlow = mocks.NewMockFlow(ctrl)
 	metricFlowBuilder.EXPECT().Done().Return(metricFlow).AnyTimes()
 	metricFlow.EXPECT().CopyToBuilder(gomock.Any(), gomock.Any()).Return(metricFlowBuilder).AnyTimes()
-	metricFlow.EXPECT().FlowPriority().Return(uint16(priorityNormal)).AnyTimes()
+	metricFlow.EXPECT().FlowPriority().Return(priorityNormal).AnyTimes()
 	metricFlow.EXPECT().MatchString().Return("").AnyTimes()
 	return metricFlowBuilder
 }
