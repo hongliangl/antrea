@@ -573,7 +573,7 @@ func (c *client) NewDNSpacketInConjunction(id uint32) error {
 		Protocol: &protocolUDP,
 		Port:     &dnsPort,
 	}
-	dnsPriority := priorityDNSIntercept
+	dnsPriority := priorityDNSIntercept.Value()
 	conj.serviceClause = conj.newClause(1, 2, getTableByID(conj.ruleTableID), nil)
 	conj.toClause = conj.newClause(2, 2, getTableByID(conj.ruleTableID), nil)
 
@@ -589,12 +589,12 @@ func (c *client) NewDNSpacketInConjunction(id uint32) error {
 }
 
 func (c *client) AddAddressToDNSConjunction(id uint32, addrs []types.Address) error {
-	dnsPriority := priorityDNSIntercept
+	dnsPriority := priorityDNSIntercept.Value()
 	return c.AddPolicyRuleAddress(id, types.DstAddress, addrs, &dnsPriority)
 }
 
 func (c *client) DeleteAddressFromDNSConjunction(id uint32, addrs []types.Address) error {
-	dnsPriority := priorityDNSIntercept
+	dnsPriority := priorityDNSIntercept.Value()
 	return c.DeletePolicyRuleAddress(id, types.DstAddress, addrs, &dnsPriority)
 }
 
@@ -1495,7 +1495,7 @@ func getMatchFlowUpdates(conj *policyRuleConjunction, newPriority uint16) (add, 
 		}
 		for _, ctx := range c.matches {
 			f := ctx.flow
-			updatedFlow := f.CopyToBuilder(newPriority, true).Done()
+			updatedFlow := f.CopyToBuilder(binding.NewPriority(newPriority), true).Done()
 			add = append(add, updatedFlow)
 			del = append(del, f)
 		}
@@ -1560,7 +1560,7 @@ func (f *featureNetworkPolicy) updateConjunctionMatchFlows(conj *policyRuleConju
 		for i, ctx := range cl.matches {
 			delete(f.globalConjMatchFlowCache, ctx.generateGlobalMapKey())
 			f := ctx.flow
-			updatedFlow := f.CopyToBuilder(newPriority, true).Done()
+			updatedFlow := f.CopyToBuilder(binding.NewPriority(newPriority), true).Done()
 			cl.matches[i].flow = updatedFlow
 			cl.matches[i].priority = &newPriority
 		}
@@ -1586,11 +1586,11 @@ func (f *featureNetworkPolicy) calculateFlowUpdates(updates map[uint16]uint16, t
 				continue
 			}
 			for _, actionFlow := range conj.actionFlows {
-				flowPriority := actionFlow.FlowPriority()
+				flowPriority := uint16(actionFlow.FlowPriority())
 				if flowPriority == original {
 					// The OF flow was created at the priority which need to be re-installed
 					// at the NewPriority now
-					updatedFlow := actionFlow.CopyToBuilder(newPriority, true).Done()
+					updatedFlow := actionFlow.CopyToBuilder(binding.NewPriority(newPriority), true).Done()
 					addFlows = append(addFlows, updatedFlow)
 					delFlows = append(delFlows, actionFlow)
 					// Store the actionFlow update to the policyRuleConjunction and update all

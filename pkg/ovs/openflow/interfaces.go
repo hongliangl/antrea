@@ -142,7 +142,7 @@ type TableStatus struct {
 type Table interface {
 	GetID() uint8
 	GetName() string
-	BuildFlow(priority uint16) FlowBuilder
+	BuildFlow(priority Priority) FlowBuilder
 	GetMissAction() MissActionType
 	Status() TableStatus
 	GetNext() uint8
@@ -188,13 +188,13 @@ type OFEntry interface {
 type Flow interface {
 	OFEntry
 	// Returns the flow priority associated with OFEntry
-	FlowPriority() uint16
+	FlowPriority() Priority
 	FlowProtocol() Protocol
 	MatchString() string
 	// CopyToBuilder returns a new FlowBuilder that copies the matches of the Flow.
 	// It copies the original actions of the Flow only if copyActions is set to true, and
 	// resets the priority in the new FlowBuilder if the provided priority is not 0.
-	CopyToBuilder(priority uint16, copyActions bool) FlowBuilder
+	CopyToBuilder(priority Priority, copyActions bool) FlowBuilder
 	IsDropFlow() bool
 }
 
@@ -228,7 +228,7 @@ type Action interface {
 	Normal() FlowBuilder
 	Conjunction(conjID uint32, clauseID uint8, nClause uint8) FlowBuilder
 	Group(id GroupIDType) FlowBuilder
-	Learn(id uint8, priority uint16, idleTimeout, hardTimeout uint16, cookieID uint64) LearnAction
+	Learn(id uint8, priority Priority, idleTimeout, hardTimeout uint16, cookieID uint64) LearnAction
 	GotoTable(table uint8) FlowBuilder
 	NextTable() FlowBuilder
 	GotoStage(stage StageID) FlowBuilder

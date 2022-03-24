@@ -121,11 +121,11 @@ func (t *ofTable) ResetStatus() {
 }
 
 // BuildFlow returns FlowBuilder object to help construct Openflow entry.
-func (t *ofTable) BuildFlow(priority uint16) FlowBuilder {
+func (t *ofTable) BuildFlow(priority Priority) FlowBuilder {
 	fb := new(ofFlowBuilder)
 	fb.table = t
 	// Set ofctl.Table to Flow, otherwise the flow can't find OFSwitch to install.
-	fb.Flow = &ofctrl.Flow{Table: t.Table, Match: ofctrl.FlowMatch{Priority: priority}}
+	fb.Flow = &ofctrl.Flow{Table: t.Table, Match: ofctrl.FlowMatch{Priority: priority.Value()}}
 	return fb
 }
 

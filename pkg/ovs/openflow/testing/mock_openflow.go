@@ -341,7 +341,7 @@ func (m *MockTable) EXPECT() *MockTableMockRecorder {
 }
 
 // BuildFlow mocks base method
-func (m *MockTable) BuildFlow(arg0 uint16) openflow.FlowBuilder {
+func (m *MockTable) BuildFlow(arg0 openflow.Priority) openflow.FlowBuilder {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "BuildFlow", arg0)
 	ret0, _ := ret[0].(openflow.FlowBuilder)
@@ -500,7 +500,7 @@ func (mr *MockFlowMockRecorder) Add() *gomock.Call {
 }
 
 // CopyToBuilder mocks base method
-func (m *MockFlow) CopyToBuilder(arg0 uint16, arg1 bool) openflow.FlowBuilder {
+func (m *MockFlow) CopyToBuilder(arg0 openflow.Priority, arg1 bool) openflow.FlowBuilder {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "CopyToBuilder", arg0, arg1)
 	ret0, _ := ret[0].(openflow.FlowBuilder)
@@ -528,10 +528,10 @@ func (mr *MockFlowMockRecorder) Delete() *gomock.Call {
 }
 
 // FlowPriority mocks base method
-func (m *MockFlow) FlowPriority() uint16 {
+func (m *MockFlow) FlowPriority() openflow.Priority {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "FlowPriority")
-	ret0, _ := ret[0].(uint16)
+	ret0, _ := ret[0].(openflow.Priority)
 	return ret0
 }
 
@@ -774,7 +774,7 @@ func (mr *MockActionMockRecorder) Group(arg0 interface{}) *gomock.Call {
 }
 
 // Learn mocks base method
-func (m *MockAction) Learn(arg0 byte, arg1, arg2, arg3 uint16, arg4 uint64) openflow.LearnAction {
+func (m *MockAction) Learn(arg0 byte, arg1 openflow.Priority, arg2, arg3 uint16, arg4 uint64) openflow.LearnAction {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Learn", arg0, arg1, arg2, arg3, arg4)
 	ret0, _ := ret[0].(openflow.LearnAction)

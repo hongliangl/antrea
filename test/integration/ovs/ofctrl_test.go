@@ -40,7 +40,7 @@ var (
 
 	table binding.Table
 
-	priorityNormal = uint16(200)
+	priorityNormal = binding.NewPriority(200)
 
 	portFoundMark   = binding.NewOneBitRegMark(0, 16, "OFPortFound")
 	portCacheField  = binding.NewRegField(1, 0, 31, "OFPortCache")
@@ -750,7 +750,7 @@ func TestFlowWithCTMatchers(t *testing.T) {
 	ctIPDst, ctIPDstNet, _ := net.ParseCIDR("2.2.2.2/24")
 	ctPortSrc := uint16(10001)
 	ctPortDst := uint16(20002)
-	priority := uint16(200)
+	priority := binding.NewPriority(200)
 	flow1 := table.BuildFlow(priority).
 		MatchProtocol(binding.ProtocolIP).
 		MatchCTStateNew(true).
@@ -806,7 +806,7 @@ func TestNoteAction(t *testing.T) {
 	defer bridge.Disconnect()
 
 	ofctlClient := ovsctl.NewClient(br)
-	priority := uint16(1001)
+	priority := binding.NewPriority(1001)
 	srcIP := net.ParseIP("1.1.1.2")
 	testNotes := "test for noteActions."
 	flow1 := table.BuildFlow(priority).

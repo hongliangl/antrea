@@ -33,7 +33,7 @@ func TestCopyToBuilder(t *testing.T) {
 	}
 
 	mark := NewCTMark(NewCTMarkField(0, 31), 12345)
-	oriFlow := table.BuildFlow(uint16(100)).MatchProtocol(ProtocolIP).
+	oriFlow := table.BuildFlow(NewPriority(100)).MatchProtocol(ProtocolIP).
 		Cookie(uint64(1004)).
 		MatchRegFieldWithValue(testField, 0x101).
 		MatchCTStateNew(true).MatchCTStateTrk(true).
@@ -47,9 +47,9 @@ func TestCopyToBuilder(t *testing.T) {
 	newFlow := oriFlow.CopyToBuilder(0, false)
 	assert.Equal(t, oriFlow.MatchString(), newFlow.Done().MatchString())
 	assert.Equal(t, oriFlow.(*ofFlow).Match, newFlow.Done().(*ofFlow).Match)
-	newPriority := uint16(200)
+	newPriority := NewPriority(200)
 	newFlow2 := oriFlow.CopyToBuilder(newPriority, false)
-	assert.Equal(t, newPriority, newFlow2.Done().(*ofFlow).Match.Priority)
+	assert.Equal(t, newPriority.Value(), newFlow2.Done().(*ofFlow).Match.Priority)
 }
 
 func TestCopyToBuilder_Drop(t *testing.T) {
@@ -57,7 +57,7 @@ func TestCopyToBuilder_Drop(t *testing.T) {
 		id:   t0,
 		next: t1,
 	}
-	oriFlow := table.BuildFlow(uint16(100)).MatchProtocol(ProtocolIP).
+	oriFlow := table.BuildFlow(NewPriority(100)).MatchProtocol(ProtocolIP).
 		Cookie(uint64(1004)).
 		MatchRegFieldWithValue(testField, 0x101).
 		MatchCTStateNew(true).MatchCTStateTrk(true).
@@ -67,8 +67,8 @@ func TestCopyToBuilder_Drop(t *testing.T) {
 	assert.Equal(t, oriFlow.MatchString(), newFlow.Done().MatchString())
 	assert.Equal(t, oriFlow.(*ofFlow).Match, newFlow.Done().(*ofFlow).Match)
 	assert.Equal(t, false, newFlow.Done().IsDropFlow())
-	newPriority := uint16(200)
+	newPriority := NewPriority(200)
 	newFlow2 := oriFlow.CopyToBuilder(newPriority, true)
-	assert.Equal(t, newPriority, newFlow2.Done().(*ofFlow).Match.Priority)
+	assert.Equal(t, newPriority.Value(), newFlow2.Done().(*ofFlow).Match.Priority)
 	assert.Equal(t, true, newFlow2.Done().IsDropFlow())
 }

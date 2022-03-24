@@ -116,8 +116,8 @@ func (f *ofFlow) MatchString() string {
 	return repr
 }
 
-func (f *ofFlow) FlowPriority() uint16 {
-	return f.Match.Priority
+func (f *ofFlow) FlowPriority() Priority {
+	return NewPriority(f.Match.Priority)
 }
 
 func (f *ofFlow) FlowProtocol() Protocol {
@@ -146,7 +146,7 @@ func (f *ofFlow) GetBundleMessage(entryOper OFOperation) (ofctrl.OpenFlowModMess
 // of the ofctrl.Flow, e.g. "realized" and "isInstalled". It copies the
 // original actions of the Flow only if copyActions is set to true, and
 // resets the priority in the new FlowBuilder if it is provided.
-func (f *ofFlow) CopyToBuilder(priority uint16, copyActions bool) FlowBuilder {
+func (f *ofFlow) CopyToBuilder(priority Priority, copyActions bool) FlowBuilder {
 	flow := &ofctrl.Flow{
 		Table:      f.Flow.Table,
 		CookieID:   f.Flow.CookieID,
@@ -157,7 +157,7 @@ func (f *ofFlow) CopyToBuilder(priority uint16, copyActions bool) FlowBuilder {
 		f.Flow.CopyActionsToNewFlow(flow)
 	}
 	if priority > 0 {
-		flow.Match.Priority = priority
+		flow.Match.Priority = priority.Value()
 	}
 	newFlow := ofFlow{
 		table:    f.table,
