@@ -63,13 +63,17 @@ func newFeaturePodConnectivity(
 		if ipProtocol == binding.ProtocolIP {
 			ctZones[ipProtocol] = CtZone
 			gatewayIPs[ipProtocol] = nodeConfig.GatewayConfig.IPv4
-			localCIDRs[ipProtocol] = *nodeConfig.PodIPv4CIDR
 			nodeIPs[ipProtocol] = nodeConfig.NodeIPv4Addr.IP
+			if nodeConfig.PodIPv4CIDR != nil {
+				localCIDRs[ipProtocol] = *nodeConfig.PodIPv4CIDR
+			}
 		} else if ipProtocol == binding.ProtocolIPv6 {
 			ctZones[ipProtocol] = CtZoneV6
 			gatewayIPs[ipProtocol] = nodeConfig.GatewayConfig.IPv6
-			localCIDRs[ipProtocol] = *nodeConfig.PodIPv6CIDR
 			nodeIPs[ipProtocol] = nodeConfig.NodeIPv6Addr.IP
+			if nodeConfig.PodIPv6CIDR != nil {
+				localCIDRs[ipProtocol] = *nodeConfig.PodIPv6CIDR
+			}
 		}
 	}
 
@@ -104,7 +108,6 @@ func (f *featurePodConnectivity) initFlows() []binding.Flow {
 			}
 		}
 	}
-	flows = append(flows, f.l3FwdFlowToLocalPodCIDR()...)
 	if f.connectUplinkToBridge {
 		flows = append(flows, f.l3FwdFlowToNode()...)
 	}
@@ -117,6 +120,9 @@ func (f *featurePodConnectivity) initFlows() []binding.Flow {
 		// If IPv6 is enabled, this flow will never get hit.
 		// Replies any ARP request with the same global virtual MAC.
 		flows = append(flows, f.arpResponderStaticFlow())
+	} else {
+		// If NetworkPolicyOnly mode is enabled, Pod CIDR cannot be obtai
+		flows = append(flows, f.l3FwdFlowToLocalPodCIDR()...)
 	}
 	return flows
 }
