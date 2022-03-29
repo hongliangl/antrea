@@ -104,7 +104,7 @@ func (f *featurePodConnectivity) initFlows() []binding.Flow {
 			}
 		}
 	}
-	flows = append(flows, f.l3FwdFlowToLocalPodCIDR()...)
+
 	if f.connectUplinkToBridge {
 		flows = append(flows, f.l3FwdFlowToNode()...)
 	}
@@ -117,6 +117,9 @@ func (f *featurePodConnectivity) initFlows() []binding.Flow {
 		// If IPv6 is enabled, this flow will never get hit.
 		// Replies any ARP request with the same global virtual MAC.
 		flows = append(flows, f.arpResponderStaticFlow())
+	} else {
+		//
+		flows = append(flows, f.l3FwdFlowToLocalPodCIDR()...)
 	}
 	return flows
 }
