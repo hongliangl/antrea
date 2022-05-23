@@ -39,6 +39,7 @@ import (
 	"antrea.io/antrea/pkg/agent/controller/noderoute"
 	"antrea.io/antrea/pkg/agent/controller/serviceexternalip"
 	"antrea.io/antrea/pkg/agent/controller/traceflow"
+	"antrea.io/antrea/pkg/agent/controller/trafficcontrol"
 	"antrea.io/antrea/pkg/agent/flowexporter"
 	"antrea.io/antrea/pkg/agent/flowexporter/exporter"
 	"antrea.io/antrea/pkg/agent/interfacestore"
@@ -94,10 +95,12 @@ func run(o *Options) error {
 	crdInformerFactory := crdinformers.NewSharedInformerFactory(crdClient, informerDefaultResync)
 	traceflowInformer := crdInformerFactory.Crd().V1alpha1().Traceflows()
 	egressInformer := crdInformerFactory.Crd().V1alpha2().Egresses()
+	externalIPPoolInformer := crdInformerFactory.Crd().V1alpha2().ExternalIPPools()
+	trafficControlInformer := crdInformerFactory.Crd().V1alpha2().TrafficControls()
 	nodeInformer := informerFactory.Core().V1().Nodes()
 	serviceInformer := informerFactory.Core().V1().Services()
 	endpointsInformer := informerFactory.Core().V1().Endpoints()
-	externalIPPoolInformer := crdInformerFactory.Crd().V1alpha2().ExternalIPPools()
+	namespaceInformer := informerFactory.Core().V1().Namespaces()
 
 	// Create Antrea Clientset for the given config.
 	antreaClientProvider := agent.NewAntreaClientProvider(o.config.AntreaClientConnection, k8sClient)
@@ -460,7 +463,8 @@ func run(o *Options) error {
 	// Initialize localPodInformer for NPLAgent, AntreaIPAMController, and secondary network controller.
 	var localPodInformer cache.SharedIndexInformer
 	if enableNodePortLocal || enableBridgingMode ||
-		features.DefaultFeatureGate.Enabled(features.SecondaryNetwork) {
+		features.DefaultFeatureGate.Enabled(features.SecondaryNetwork) ||
+		features.DefaultFeatureGate.Enabled(features.TrafficControl) {
 		listOptions := func(options *metav1.ListOptions) {
 			options.FieldSelector = fields.OneTermEqualSelector("spec.nodeName", nodeConfig.Name).String()
 		}
@@ -528,6 +532,17 @@ func run(o *Options) error {
 			cniPodInfoStore,
 			cniServer)
 		go podWatchController.Run(stopCh)
+	}
+
+	if features.DefaultFeatureGate.Enabled(features.TrafficControl) {
+		tcController := trafficcontrol.NewTrafficControlController(ofClient,
+			ifaceStore,
+			ovsBridgeClient,
+			trafficControlInformer,
+			localPodInformer,
+			namespaceInformer,
+			podUpdateChannel)
+		go tcController.Run(stopCh)
 	}
 
 	//  Start the localPodInformer

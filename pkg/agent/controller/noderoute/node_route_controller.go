@@ -653,7 +653,9 @@ func (c *Controller) createIPSecTunnelPort(nodeName string, nodeIP net.IP) (int3
 			false,
 			"",
 			nodeIP.String(),
+			"",
 			c.networkConfig.IPSecPSK,
+			nil,
 			ovsExternalIDs)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create IPsec tunnel port for Node %s", nodeName)
@@ -693,7 +695,7 @@ func ParseTunnelInterfaceConfig(
 		klog.V(2).Infof("OVS port %s has no options", portData.Name)
 		return nil
 	}
-	remoteIP, localIP, psk, csum := ovsconfig.ParseTunnelInterfaceOptions(portData)
+	remoteIP, localIP, _, psk, csum, _ := ovsconfig.ParseTunnelInterfaceOptions(portData)
 
 	var interfaceConfig *interfacestore.InterfaceConfig
 	var nodeName string

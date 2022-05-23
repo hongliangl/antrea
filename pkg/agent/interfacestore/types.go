@@ -33,6 +33,8 @@ const (
 	UplinkInterface
 	// HostInterface is used to mark current interface is for host
 	HostInterface
+	// TrafficControlInterface is used to mark current interface is for traffic control port
+	TrafficControlInterface
 
 	AntreaInterfaceTypeKey = "antrea-type"
 	AntreaGateway          = "gateway"
@@ -40,6 +42,7 @@ const (
 	AntreaTunnel           = "tunnel"
 	AntreaUplink           = "uplink"
 	AntreaHost             = "host"
+	AntreaTrafficControl   = "traffic-control"
 	AntreaUnset            = ""
 )
 
@@ -67,11 +70,13 @@ type TunnelInterfaceConfig struct {
 	// IP address of the local Node.
 	LocalIP net.IP
 	// IP address of the remote Node.
-	RemoteIP net.IP
-	PSK      string
+	RemoteIP        net.IP
+	DestinationPort int32
+	PSK             string
 	// Whether options:csum is set for this tunnel interface.
 	// If true, encapsulation header UDP checksums will be computed on outgoing packets.
-	Csum bool
+	Csum         bool
+	ExtraOptions map[string]interface{}
 }
 
 type InterfaceConfig struct {
@@ -157,6 +162,15 @@ func NewUplinkInterface(uplinkName string) *InterfaceConfig {
 
 func NewHostInterface(hostInterfaceName string) *InterfaceConfig {
 	return &InterfaceConfig{InterfaceName: hostInterfaceName, Type: HostInterface}
+}
+
+func NewTrafficControlInterface(interfaceName string, isTunnel bool, tunnelType ovsconfig.TunnelType, remoteIP net.IP, dstPort int32, extraOptions map[string]interface{}) *InterfaceConfig {
+	trafficControlConfig := &InterfaceConfig{InterfaceName: interfaceName, Type: TrafficControlInterface}
+	if isTunnel {
+		tunnelConfig := &TunnelInterfaceConfig{Type: tunnelType, RemoteIP: remoteIP, DestinationPort: dstPort, ExtraOptions: extraOptions}
+		trafficControlConfig.TunnelInterfaceConfig = tunnelConfig
+	}
+	return trafficControlConfig
 }
 
 // TODO: remove this method after IPv4/IPv6 dual-stack is supported completely.

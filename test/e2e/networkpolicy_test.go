@@ -951,8 +951,8 @@ func createAndWaitForPodWithServiceAccount(t *testing.T, data *TestData, createF
 	return name, podIP, cleanupFunc
 }
 
-func createAndWaitForPodWithLabels(t *testing.T, data *TestData, createFunc func(name, ns string, portNum int32, labels map[string]string) error, name, ns string, portNum int32, labels map[string]string) (string, *PodIPs, func() error) {
-	if err := createFunc(name, ns, portNum, labels); err != nil {
+func createAndWaitForPodWithLabels(t *testing.T, data *TestData, createFunc func(name, ns, nodeName string, portNum int32, labels map[string]string) error, name, ns string, portNum int32, labels map[string]string) (string, *PodIPs, func() error) {
+	if err := createFunc(name, ns, "", portNum, labels); err != nil {
 		t.Fatalf("Error when creating busybox test Pod: %v", err)
 	}
 	cleanupFunc := func() error {

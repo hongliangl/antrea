@@ -1171,7 +1171,7 @@ func (data *TestData) createServerPod(name string, ns string, portName string, p
 }
 
 // createCustomPod creates a Pod in given Namespace with custom labels.
-func (data *TestData) createServerPodWithLabels(name, ns string, portNum int32, labels map[string]string) error {
+func (data *TestData) createServerPodWithLabels(name, ns, nodeName string, portNum int32, labels map[string]string) error {
 	cmd := []string{"/agnhost", "serve-hostname", "--tcp", "--http=false", "--port", fmt.Sprintf("%d", portNum)}
 	env := corev1.EnvVar{Name: fmt.Sprintf("SERVE_PORT_%d", portNum), Value: "foo"}
 	port := corev1.ContainerPort{ContainerPort: portNum}
@@ -1181,7 +1181,7 @@ func (data *TestData) createServerPodWithLabels(name, ns string, portNum int32, 
 			pod.Labels[k] = v
 		}
 	}
-	return data.CreatePodOnNodeInNamespace(name, ns, "", containerName, agnhostImage, cmd, nil, []corev1.EnvVar{env}, []corev1.ContainerPort{port}, false, mutateLabels)
+	return data.CreatePodOnNodeInNamespace(name, ns, nodeName, containerName, agnhostImage, cmd, nil, []corev1.EnvVar{env}, []corev1.ContainerPort{port}, false, mutateLabels)
 }
 
 // DeletePod deletes a Pod in the test namespace.

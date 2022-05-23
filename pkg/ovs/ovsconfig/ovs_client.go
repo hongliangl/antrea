@@ -373,7 +373,7 @@ func (br *OVSBridge) CreateInternalPort(name string, ofPortRequest int32, extern
 // the bridge.
 // If ofPortRequest is not zero, it will be passed to the OVS port creation.
 func (br *OVSBridge) CreateTunnelPort(name string, tunnelType TunnelType, ofPortRequest int32) (string, Error) {
-	return br.createTunnelPort(name, tunnelType, ofPortRequest, false, "", "", "", nil)
+	return br.createTunnelPort(name, tunnelType, ofPortRequest, false, "", "", "", "", nil, nil)
 }
 
 // CreateTunnelPortExt creates a tunnel port with the specified name and type
@@ -384,7 +384,7 @@ func (br *OVSBridge) CreateTunnelPort(name string, tunnelType TunnelType, ofPort
 // psk is for the pre-shared key of IPsec ESP tunnel. If it is not empty, it
 // will be set to the tunnel port interface options. Flow based IPsec tunnel is
 // not supported, so remoteIP must be provided too when psk is not empty.
-// If externalIDs is not nill, the IDs in it will be added to the port's
+// If externalIDs is not nil, the IDs in it will be added to the port's
 // external_ids.
 func (br *OVSBridge) CreateTunnelPortExt(
 	name string,
@@ -393,12 +393,14 @@ func (br *OVSBridge) CreateTunnelPortExt(
 	csum bool,
 	localIP string,
 	remoteIP string,
+	dstPort string,
 	psk string,
+	extraOptions map[string]interface{},
 	externalIDs map[string]interface{}) (string, Error) {
 	if psk != "" && remoteIP == "" {
 		return "", newInvalidArgumentsError("IPsec tunnel can not be flow based. remoteIP must be set")
 	}
-	return br.createTunnelPort(name, tunnelType, ofPortRequest, csum, localIP, remoteIP, psk, externalIDs)
+	return br.createTunnelPort(name, tunnelType, ofPortRequest, csum, localIP, remoteIP, dstPort, psk, extraOptions, externalIDs)
 }
 
 func (br *OVSBridge) createTunnelPort(
@@ -408,19 +410,28 @@ func (br *OVSBridge) createTunnelPort(
 	csum bool,
 	localIP string,
 	remoteIP string,
+	dstPort string,
 	psk string,
+	extraOptions map[string]interface{},
 	externalIDs map[string]interface{}) (string, Error) {
 
-	if tunnelType != VXLANTunnel && tunnelType != GeneveTunnel && tunnelType != GRETunnel && tunnelType != STTTunnel {
+	if tunnelType != VXLANTunnel &&
+		tunnelType != GeneveTunnel &&
+		tunnelType != GRETunnel &&
+		tunnelType != STTTunnel &&
+		tunnelType != ERSPANTunnel {
 		return "", newInvalidArgumentsError("unsupported tunnel type: " + string(tunnelType))
 	}
 	if ofPortRequest < 0 || ofPortRequest > ofPortRequestMax {
 		return "", newInvalidArgumentsError(fmt.Sprint("invalid ofPortRequest value: ", ofPortRequest))
 	}
 
-	options := make(map[string]interface{}, 3)
+	options := make(map[string]interface{})
 	if remoteIP != "" {
 		options["remote_ip"] = remoteIP
+		if key, ok := extraOptions["key"]; ok {
+			options["key"] = key
+		}
 	} else {
 		// Flow based tunnel.
 		options["key"] = "flow"
@@ -437,7 +448,37 @@ func (br *OVSBridge) createTunnelPort(
 		options["csum"] = "true"
 	}
 
+	if dstPort != "" {
+		options["dst_port"] = dstPort
+	}
+
+	if tunnelType == ERSPANTunnel {
+		br.setERSPANPortOptions(extraOptions, options)
+	}
+
 	return br.createPort(name, name, string(tunnelType), ofPortRequest, 0, externalIDs, options)
+}
+
+func (br *OVSBridge) setERSPANPortOptions(extraOptions, options map[string]interface{}) {
+	version := extraOptions["erspan_ver"]
+	options["erspan_ver"] = version
+
+	if key, ok := extraOptions["key"]; ok {
+		options["key"] = key
+	}
+
+	if version == "1" {
+		if idx, ok := extraOptions["erspan_idx"]; ok {
+			options["erspan_idx"] = idx
+		}
+	} else if version == "2" {
+		if dir, ok := extraOptions["erspan_dir"]; ok {
+			options["erspan_dir"] = dir
+		}
+		if hwid, ok := extraOptions["erspan_hwid"]; ok {
+			options["erspan_hwid"] = hwid
+		}
+	}
 }
 
 // GetInterfaceOptions returns the options of the provided interface.
@@ -481,30 +522,59 @@ func (br *OVSBridge) SetInterfaceOptions(name string, options map[string]interfa
 
 // ParseTunnelInterfaceOptions reads remote IP, local IP, IPsec PSK, and csum
 // from the tunnel interface options and returns them.
-func ParseTunnelInterfaceOptions(portData *OVSPortData) (net.IP, net.IP, string, bool) {
+func ParseTunnelInterfaceOptions(portData *OVSPortData) (net.IP, net.IP, int32, string, bool, map[string]interface{}) {
 	if portData.Options == nil {
-		return nil, nil, "", false
+		return nil, nil, 0, "", false, nil
 	}
 
 	var ok bool
-	var remoteIPStr, localIPStr, psk string
+	var remoteIPStr, localIPStr, dstPortStr, psk string
 	var remoteIP, localIP net.IP
+	var dstPort int64
 	var csum bool
+	extraOptions := make(map[string]interface{})
 
 	if remoteIPStr, ok = portData.Options["remote_ip"]; ok {
 		if remoteIPStr != "flow" {
 			remoteIP = net.ParseIP(remoteIPStr)
+			if key, ok := portData.Options["key"]; ok {
+				extraOptions["key"] = key
+			}
 		}
 	}
 	if localIPStr, ok = portData.Options["local_ip"]; ok {
 		localIP = net.ParseIP(localIPStr)
 	}
 
+	if dstPortStr, ok = portData.Options["dst_port"]; ok {
+		dstPort, _ = strconv.ParseInt(dstPortStr, 10, 32)
+	}
+
 	psk = portData.Options["psk"]
 	if csumStr, ok := portData.Options["csum"]; ok {
 		csum, _ = strconv.ParseBool(csumStr)
 	}
-	return remoteIP, localIP, psk, csum
+
+	if version, ok := portData.Options["erspan_ver"]; ok {
+		extraOptions["erspan_ver"] = version
+		if key, ok := portData.Options["key"]; ok {
+			extraOptions["key"] = key
+		}
+		if version == "1" {
+			if idx, ok := portData.Options["erspan_idx"]; ok {
+				extraOptions["erspan_idx"] = idx
+			}
+		} else if version == "2" {
+			if dir, ok := portData.Options["erspan_dir"]; ok {
+				extraOptions["erspan_dir"] = dir
+			}
+			if hwid, ok := portData.Options["erspan_hwid"]; ok {
+				extraOptions["erspan_hwid"] = hwid
+			}
+		}
+	}
+
+	return remoteIP, localIP, int32(dstPort), psk, csum, extraOptions
 }
 
 // CreateUplinkPort creates uplink port.
