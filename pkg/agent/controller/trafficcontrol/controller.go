@@ -76,6 +76,12 @@ const (
 	returnPortIndexName = "returnPort"
 )
 
+var (
+	trafficControlPortExternalIDs = map[string]interface{}{
+		interfacestore.AntreaInterfaceTypeKey: interfacestore.AntreaTrafficControl,
+	}
+)
+
 // trafficControlState keeps the actual state of a TrafficControl that has been realized.
 type trafficControlState struct {
 	// TrafficControl name.
@@ -494,65 +500,79 @@ func (c *Controller) filterPods(appliedTo *v1alpha2.AppliedTo) ([]*v1.Pod, error
 	return nonHostNetworkPods, nil
 }
 
-func genTunnelPortName(portNamePrefix string, config interface{}) string {
+func genVXLANPortName(tunnel *v1alpha2.UDPTunnel) string {
 	hash := sha1.New() // #nosec G401: not used for security purposes
-	buf := make([]byte, 4)
+	hash.Write(net.ParseIP(tunnel.RemoteIP))
 
-	writeUint32 := func(val uint32) {
-		binary.BigEndian.PutUint32(buf, val)
-		hash.Write(buf)
+	destinationPort := defaultVXLANTunnelDestinationPort
+	if tunnel.DestinationPort != nil {
+		destinationPort = *tunnel.DestinationPort
 	}
-	writeIP := func(ip string) {
-		hash.Write(net.ParseIP(ip))
+	binary.Write(hash, binary.BigEndian, destinationPort)
+	var vni int32
+	if tunnel.VNI != nil {
+		vni = *tunnel.VNI
 	}
+	binary.Write(hash, binary.BigEndian, vni)
+	return fmt.Sprintf("%s-%s", portNamePrefixVXLAN, hex.EncodeToString(hash.Sum(nil))[:6])
+}
 
-	switch config.(type) {
-	case *v1alpha2.UDPTunnel:
-		tunnelConfig := config.(*v1alpha2.UDPTunnel)
-		writeIP(tunnelConfig.RemoteIP)
-		writeUint32(uint32(*tunnelConfig.DestinationPort))
-		var vni uint32
-		if tunnelConfig.VNI != nil {
-			vni = uint32(*tunnelConfig.VNI)
-		}
-		writeUint32(vni)
+func genGENEVEPortName(tunnel *v1alpha2.UDPTunnel) string {
+	hash := sha1.New() // #nosec G401: not used for security purposes
+	hash.Write(net.ParseIP(tunnel.RemoteIP))
 
-	case *v1alpha2.GRETunnel:
-		tunnelConfig := config.(*v1alpha2.GRETunnel)
-		writeIP(tunnelConfig.RemoteIP)
-		if tunnelConfig.Key != nil {
-			writeUint32(uint32(*tunnelConfig.Key))
-		}
-
-	case *v1alpha2.ERSPANTunnel:
-		tunnelConfig := config.(*v1alpha2.ERSPANTunnel)
-		version := tunnelConfig.Version
-		writeIP(tunnelConfig.RemoteIP)
-		writeUint32(uint32(tunnelConfig.Version))
-		var sessionID uint32
-		if tunnelConfig.SessionID != nil {
-			sessionID = uint32(*tunnelConfig.SessionID)
-		}
-		writeUint32(sessionID)
-		if version == 1 {
-			var index uint32
-			if tunnelConfig.Index != nil {
-				index = uint32(*tunnelConfig.Index)
-			}
-			writeUint32(index)
-		} else if version == 2 {
-			var dir, hardwareID uint32
-			if tunnelConfig.Dir != nil {
-				dir = uint32(*tunnelConfig.Dir)
-			}
-			if tunnelConfig.HardwareID != nil {
-				hardwareID = uint32(*tunnelConfig.HardwareID)
-			}
-			writeUint32(dir)
-			writeUint32(hardwareID)
-		}
+	destinationPort := defaultGENEVETunnelDestinationPort
+	if tunnel.DestinationPort != nil {
+		destinationPort = *tunnel.DestinationPort
 	}
-	return fmt.Sprintf("%s-%s", portNamePrefix, hex.EncodeToString(hash.Sum(nil))[:6])
+	binary.Write(hash, binary.BigEndian, destinationPort)
+	var vni int32
+	if tunnel.VNI != nil {
+		vni = *tunnel.VNI
+	}
+	binary.Write(hash, binary.BigEndian, vni)
+	return fmt.Sprintf("%s-%s", portNamePrefixGENEVE, hex.EncodeToString(hash.Sum(nil))[:6])
+}
+
+func genGREPortName(tunnel *v1alpha2.GRETunnel) string {
+	hash := sha1.New() // #nosec G401: not used for security purposes
+	hash.Write(net.ParseIP(tunnel.RemoteIP))
+
+	var key int32
+	if tunnel.Key != nil {
+		key = *tunnel.Key
+	}
+	binary.Write(hash, binary.BigEndian, key)
+	return fmt.Sprintf("%s-%s", portNamePrefixGRE, hex.EncodeToString(hash.Sum(nil))[:6])
+}
+
+// genERSPANPortName generates a port name for the given ERSPAN tunnel.
+// Note that ERSPAN tunnel's uniqueness is based on the remote IP and the session ID only, which means if there are two
+// tunnels having same remote IP and session ID but different other attributes, creating the second port would fail in
+// OVS.
+func genERSPANPortName(tunnel *v1alpha2.ERSPANTunnel) string {
+	hash := sha1.New() // #nosec G401: not used for security purposes
+	hash.Write(net.ParseIP(tunnel.RemoteIP))
+
+	var sessionID, index, dir, hardwareID int32
+	if tunnel.SessionID != nil {
+		sessionID = *tunnel.SessionID
+	}
+	if tunnel.Index != nil {
+		index = *tunnel.Index
+	}
+	if tunnel.Dir != nil {
+		dir = *tunnel.Dir
+	}
+	if tunnel.HardwareID != nil {
+		hardwareID = *tunnel.HardwareID
+	}
+	binary.Write(hash, binary.BigEndian, sessionID)
+	binary.Write(hash, binary.BigEndian, tunnel.Version)
+	binary.Write(hash, binary.BigEndian, index)
+	binary.Write(hash, binary.BigEndian, dir)
+	binary.Write(hash, binary.BigEndian, hardwareID)
+	return fmt.Sprintf("%s-%s", portNamePrefixERSPAN, hex.EncodeToString(hash.Sum(nil))[:6])
 }
 
 func ParseTrafficControlInterfaceConfig(portData *ovsconfig.OVSPortData, portConfig *interfacestore.OVSPortConfig) *interfacestore.InterfaceConfig {
@@ -560,235 +580,153 @@ func ParseTrafficControlInterfaceConfig(portData *ovsconfig.OVSPortData, portCon
 		Type:          interfacestore.TrafficControlInterface,
 		InterfaceName: portData.Name,
 		OVSPortConfig: portConfig}
-	if portData.IFType != "" {
-		remoteIP, _, dstPort, _, _, extraOptions := ovsconfig.ParseTunnelInterfaceOptions(portData)
-		tunnelConfig := &interfacestore.TunnelInterfaceConfig{Type: ovsconfig.TunnelType(portData.IFType), RemoteIP: remoteIP, DestinationPort: dstPort, ExtraOptions: extraOptions}
-		intf.TunnelInterfaceConfig = tunnelConfig
-	}
 	return intf
 }
 
-func setOVSInternalLinkUp(portName string) error {
-	// Host link might not be queried at once after creating OVS internal port; retry max 5 times with 1s
-	// delay each time to ensure the link is ready.
-	var err error
-	for retry := 0; retry < maxRetryForHostLink; retry++ {
-		//_, _, err := util.SetLinkUp(portName)
+func (c *Controller) createOVSInternalPort(portName string) (string, error) {
+	portUUID, err := c.ovsBridgeClient.CreateInternalPort(portName, 0, trafficControlPortExternalIDs)
+	if err != nil {
+		return "", err
+	}
+	// Host link might not be available immediately after creating OVS internal port.
+	if pollErr := wait.PollImmediate(time.Second, 5*time.Second, func() (bool, error) {
+		_, _, err := util.SetLinkUp(portName)
 		if err == nil {
-			break
+			return true, nil
 		}
 		if _, ok := err.(util.LinkNotFound); ok {
-			klog.V(2).Infof("Not found host link for interface %s, retry after 1s", portName)
-			time.Sleep(1 * time.Second)
-			continue
+			return false, nil
 		}
-		return err
+		return false, err
+	}); pollErr != nil {
+		return "", pollErr
 	}
-
-	if err != nil {
-		klog.Errorf("Failed to find host link for interface %s: %v", portName, err)
-		return err
-	}
-	return nil
+	return portUUID, nil
 }
 
-func (c *Controller) createTrafficControlPort(port *v1alpha2.TrafficControlPort) (uint32, error) {
-	externalIDs := map[string]interface{}{
-		interfacestore.AntreaInterfaceTypeKey: interfacestore.AntreaTrafficControl,
+func (c *Controller) createUDPTunnelPort(portName string, tunnelType ovsconfig.TunnelType, tunnelConfig *v1alpha2.UDPTunnel) (string, error) {
+	extraOptions := map[string]interface{}{}
+	if tunnelConfig.DestinationPort != nil {
+		extraOptions["dst_port"] = strconv.Itoa(int(*tunnelConfig.DestinationPort))
 	}
+	if tunnelConfig.VNI != nil {
+		extraOptions["key"] = strconv.Itoa(int(*tunnelConfig.VNI))
+	}
+	portUUID, err := c.ovsBridgeClient.CreateTunnelPortExt(portName,
+		tunnelType,
+		0,
+		false,
+		"",
+		tunnelConfig.RemoteIP,
+		"",
+		extraOptions,
+		trafficControlPortExternalIDs)
+	return portUUID, err
+}
 
-	var portName, portUUID string
-	var err ovsconfig.Error
-	var isTunnel bool
-	var tunnelType string
-	var remoteIP string
-	var dstPort int32
-	var extraOptions map[string]interface{}
+func (c *Controller) createGREPort(portName string, tunnelConfig *v1alpha2.GRETunnel) (string, error) {
+	extraOptions := map[string]interface{}{}
+	if tunnelConfig.Key != nil {
+		extraOptions["key"] = strconv.Itoa(int(*tunnelConfig.Key))
+	}
+	portUUID, err := c.ovsBridgeClient.CreateTunnelPortExt(portName,
+		ovsconfig.GRETunnel,
+		0,
+		false,
+		"",
+		tunnelConfig.RemoteIP,
+		"",
+		extraOptions,
+		trafficControlPortExternalIDs)
+	return portUUID, err
+}
+
+func (c *Controller) createERSPANPort(portName string, tunnelConfig *v1alpha2.ERSPANTunnel) (string, error) {
+	extraOptions := make(map[string]interface{})
+	extraOptions["erspan_ver"] = strconv.Itoa(int(tunnelConfig.Version))
+	if tunnelConfig.SessionID != nil {
+		extraOptions["key"] = strconv.Itoa(int(*tunnelConfig.SessionID))
+	}
+	if tunnelConfig.Version == 1 {
+		if tunnelConfig.Index != nil {
+			extraOptions["erspan_idx"] = strconv.FormatInt(int64(*tunnelConfig.Index), 16)
+		}
+	} else if tunnelConfig.Version == 2 {
+		if tunnelConfig.Dir != nil {
+			extraOptions["erspan_dir"] = strconv.Itoa(int(*tunnelConfig.Dir))
+		}
+		if tunnelConfig.HardwareID != nil {
+			extraOptions["erspan_hwid"] = strconv.Itoa(int(*tunnelConfig.HardwareID))
+		}
+	}
+	portUUID, err := c.ovsBridgeClient.CreateTunnelPortExt(portName,
+		ovsconfig.ERSPANTunnel,
+		0,
+		false,
+		"",
+		tunnelConfig.RemoteIP,
+		"",
+		extraOptions,
+		trafficControlPortExternalIDs)
+	return portUUID, err
+}
+
+// getOrCreateTrafficControlPort ensures there is an OVS port for the given TrafficControlPort. It will create an port
+// if it doesn't exist. It returns the ofPort of the OVS port on success, a boolean indicating whether the port already
+// existed, and an error if there is.
+func (c *Controller) getOrCreateTrafficControlPort(port *v1alpha2.TrafficControlPort) (uint32, bool, error) {
+	var portName string
 	switch {
 	case port.OVSInternal != nil:
 		portName = port.OVSInternal.Name
-		portUUID, err = c.ovsBridgeClient.CreateInternalPort(portName, 0, externalIDs)
-		if err == nil {
-			if err := setOVSInternalLinkUp(portName); err != nil {
-				return 0, err
-			}
-		}
-
 	case port.Device != nil:
 		portName = port.Device.Name
-		portUUID, err = c.ovsBridgeClient.CreatePort(portName, portName, externalIDs)
-
 	case port.VXLAN != nil:
-		isTunnel = true
-		tunnelType = ovsconfig.VXLANTunnel
-		tunnelConfig := port.VXLAN.DeepCopy()
-		remoteIP = tunnelConfig.RemoteIP
-		dstPort = defaultVXLANTunnelDestinationPort
-		dstPortStr := ""
-		if tunnelConfig.DestinationPort != nil && *tunnelConfig.DestinationPort != defaultVXLANTunnelDestinationPort {
-			dstPort = *tunnelConfig.DestinationPort
-			// If field DestinationPort is not nil and its value is not the default VXLAN port, that value must be passed to
-			// the OVS method CreateTunnelPortExt to build VXLAN tunnel.
-			dstPortStr = strconv.Itoa(int(dstPort))
-		} else if tunnelConfig.DestinationPort == nil {
-			tunnelConfig.DestinationPort = &dstPort
-		}
-		if tunnelConfig.VNI != nil && *tunnelConfig.VNI != 0 {
-			// If the VNI is not 0, that VNI should be passed to the OVS method CreateTunnelPortExt to build VXLAN tunnel.
-			extraOptions = map[string]interface{}{"key": strconv.Itoa(int(*tunnelConfig.VNI))}
-		}
-		portName = genTunnelPortName(portNamePrefixVXLAN, tunnelConfig)
-		portUUID, err = c.ovsBridgeClient.CreateTunnelPortExt(portName,
-			ovsconfig.TunnelType(tunnelType),
-			0,
-			false,
-			"",
-			remoteIP,
-			dstPortStr,
-			"",
-			extraOptions,
-			externalIDs)
-
+		portName = genVXLANPortName(port.VXLAN)
 	case port.GENEVE != nil:
-		isTunnel = true
-		tunnelType = ovsconfig.GeneveTunnel
-		tunnelConfig := port.GENEVE.DeepCopy()
-		remoteIP = tunnelConfig.RemoteIP
-		dstPort = defaultGENEVETunnelDestinationPort
-		dstPortStr := ""
-		if tunnelConfig.DestinationPort != nil && *tunnelConfig.DestinationPort != defaultGENEVETunnelDestinationPort {
-			dstPort = *tunnelConfig.DestinationPort
-			// If field DestinationPort is not nil and its value is not the default GENEVE port, that value must be passed to
-			// the OVS method CreateTunnelPortExt to build GENEVE tunnel.
-			dstPortStr = strconv.Itoa(int(dstPort))
-		} else if tunnelConfig.DestinationPort == nil {
-			tunnelConfig.DestinationPort = &dstPort
-		}
-		if tunnelConfig.VNI != nil && *tunnelConfig.VNI != 0 {
-			// If the VNI is not 0, that VNI should be passed to the OVS method CreateTunnelPortExt to build GENEVE tunnel.
-			extraOptions = map[string]interface{}{"key": strconv.Itoa(int(*tunnelConfig.VNI))}
-		}
-		portName = genTunnelPortName(portNamePrefixGENEVE, tunnelConfig)
-		portUUID, err = c.ovsBridgeClient.CreateTunnelPortExt(portName,
-			ovsconfig.TunnelType(tunnelType),
-			0,
-			false,
-			"",
-			remoteIP,
-			dstPortStr,
-			"",
-			extraOptions,
-			externalIDs)
-
+		portName = genGENEVEPortName(port.GENEVE)
 	case port.GRE != nil:
-		isTunnel = true
-		tunnelType = ovsconfig.GRETunnel
-		tunnelConfig := port.GRE
-		remoteIP = tunnelConfig.RemoteIP
-		portName = genTunnelPortName(portNamePrefixGRE, tunnelConfig)
-		if tunnelConfig.Key != nil {
-			extraOptions = map[string]interface{}{"key": strconv.Itoa(int(*tunnelConfig.Key))}
-		}
-		portUUID, err = c.ovsBridgeClient.CreateTunnelPortExt(portName,
-			ovsconfig.TunnelType(tunnelType),
-			0,
-			false,
-			"",
-			remoteIP,
-			"",
-			"",
-			extraOptions,
-			externalIDs)
-
+		portName = genGREPortName(port.GRE)
 	case port.ERSPAN != nil:
-		isTunnel = true
-		tunnelType = ovsconfig.ERSPANTunnel
-		tunnelConfig := port.ERSPAN
-		remoteIP = tunnelConfig.RemoteIP
-		version := tunnelConfig.Version
-		portName = genTunnelPortName(portNamePrefixERSPAN, tunnelConfig)
-		extraOptions = make(map[string]interface{})
-		extraOptions["erspan_ver"] = strconv.Itoa(int(version))
-		if tunnelConfig.SessionID != nil && *tunnelConfig.SessionID != 0 {
-			extraOptions["key"] = strconv.Itoa(int(*tunnelConfig.SessionID))
-		}
-		if version == 1 {
-			if tunnelConfig.Index != nil && *tunnelConfig.Index != 0 {
-				extraOptions["erspan_idx"] = strconv.FormatInt(int64(*tunnelConfig.Index), 16)
-			}
-		} else if version == 2 {
-			if tunnelConfig.Dir != nil && *tunnelConfig.Dir != 0 {
-				extraOptions["erspan_dir"] = strconv.Itoa(int(*tunnelConfig.Dir))
-			}
-			if tunnelConfig.HardwareID != nil && *tunnelConfig.HardwareID != 0 {
-				extraOptions["erspan_hwid"] = strconv.Itoa(int(*tunnelConfig.HardwareID))
-			}
-		}
-		portUUID, err = c.ovsBridgeClient.CreateTunnelPortExt(portName,
-			ovsconfig.TunnelType(tunnelType),
-			0,
-			false,
-			"",
-			remoteIP,
-			"",
-			"",
-			extraOptions,
-			externalIDs)
+		portName = genERSPANPortName(port.ERSPAN)
+	}
+
+	if itf, ok := c.interfaceStore.GetInterfaceByName(portName); ok {
+		return uint32(itf.OFPort), true, nil
+	}
+
+	var portUUID string
+	var err error
+
+	switch {
+	case port.OVSInternal != nil:
+		portUUID, err = c.createOVSInternalPort(portName)
+	case port.Device != nil:
+		portUUID, err = c.ovsBridgeClient.CreatePort(portName, portName, trafficControlPortExternalIDs)
+	case port.VXLAN != nil:
+		portUUID, err = c.createUDPTunnelPort(portName, ovsconfig.VXLANTunnel, port.VXLAN)
+	case port.GENEVE != nil:
+		portUUID, err = c.createUDPTunnelPort(portName, ovsconfig.GeneveTunnel, port.GENEVE)
+	case port.GRE != nil:
+		portUUID, err = c.createGREPort(portName, port.GRE)
+	case port.ERSPAN != nil:
+		portUUID, err = c.createERSPANPort(portName, port.ERSPAN)
 	}
 
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 
 	ofPort, err := c.ovsBridgeClient.GetOFPort(portName, false)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 
-	itf := interfacestore.NewTrafficControlInterface(portName, isTunnel, ovsconfig.TunnelType(tunnelType), net.ParseIP(remoteIP), dstPort, extraOptions)
+	itf := interfacestore.NewTrafficControlInterface(portName)
 	itf.OVSPortConfig = &interfacestore.OVSPortConfig{PortUUID: portUUID, OFPort: ofPort}
 	c.interfaceStore.AddInterface(itf)
 
-	return uint32(ofPort), nil
-}
-
-func (c *Controller) getTrafficControlPort(port *v1alpha2.TrafficControlPort) (uint32, bool) {
-	var portName string
-	var defaultPort, defaultVNI int32
-	switch {
-	case port.OVSInternal != nil:
-		portName = port.OVSInternal.Name
-	case port.Device != nil:
-		portName = port.Device.Name
-	case port.VXLAN != nil:
-		tunnelConfig := port.VXLAN.DeepCopy()
-		if tunnelConfig.DestinationPort == nil {
-			defaultPort = defaultVXLANTunnelDestinationPort
-			tunnelConfig.DestinationPort = &defaultPort
-		}
-		if tunnelConfig.VNI == nil {
-			tunnelConfig.VNI = &defaultVNI
-		}
-		portName = genTunnelPortName(portNamePrefixVXLAN, tunnelConfig)
-	case port.GENEVE != nil:
-		tunnelConfig := port.GENEVE.DeepCopy()
-		if tunnelConfig.DestinationPort == nil {
-			defaultPort = defaultGENEVETunnelDestinationPort
-			tunnelConfig.DestinationPort = &defaultPort
-		}
-		if tunnelConfig.VNI == nil {
-			tunnelConfig.VNI = &defaultVNI
-		}
-		portName = genTunnelPortName(portNamePrefixGENEVE, tunnelConfig)
-	case port.GRE != nil:
-		portName = genTunnelPortName(portNamePrefixGRE, port.GRE)
-	case port.ERSPAN != nil:
-		portName = genTunnelPortName(portNamePrefixERSPAN, port.ERSPAN)
-	}
-	if itf, ok := c.interfaceStore.GetInterfaceByName(portName); ok {
-		return uint32(itf.OFPort), true
-	}
-	return 0, false
+	return uint32(itf.OFPort), false, nil
 }
 
 func (c *Controller) deleteTrafficControlPort(port uint32) error {
@@ -860,12 +798,8 @@ func (c *Controller) syncTrafficControl(tcName string) error {
 		}
 
 		if tc.Spec.ReturnPort != nil {
-			returnPort, exists = c.getTrafficControlPort(tc.Spec.ReturnPort)
-			// If the return port doesn't exist, create it.
-			if !exists {
-				if returnPort, err = c.createTrafficControlPort(tc.Spec.ReturnPort); err != nil {
-					return err
-				}
+			if returnPort, exists, err = c.getOrCreateTrafficControlPort(tc.Spec.ReturnPort); err != nil {
+				return err
 			}
 			shouldInstallReturnFlow := func() bool {
 				tcs, _ := c.installedTrafficControls.ByIndex(returnPortIndexName, strconv.Itoa(int(returnPort)))
@@ -899,12 +833,9 @@ func (c *Controller) syncTrafficControl(tcName string) error {
 			}
 		}
 
-		targetPort, exists = c.getTrafficControlPort(&tc.Spec.TargetPort)
-		// If the target port doesn't exist, create it.
-		if !exists {
-			if targetPort, err = c.createTrafficControlPort(&tc.Spec.TargetPort); err != nil {
-				return err
-			}
+		targetPort, _, err = c.getOrCreateTrafficControlPort(&tc.Spec.TargetPort)
+		if err != nil {
+			return err
 		}
 		// The target port of the TrafficControl is updated.
 		if tcState.targetPort != 0 && targetPort != tcState.targetPort {

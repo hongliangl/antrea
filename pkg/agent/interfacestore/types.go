@@ -164,12 +164,8 @@ func NewHostInterface(hostInterfaceName string) *InterfaceConfig {
 	return &InterfaceConfig{InterfaceName: hostInterfaceName, Type: HostInterface}
 }
 
-func NewTrafficControlInterface(interfaceName string, isTunnel bool, tunnelType ovsconfig.TunnelType, remoteIP net.IP, dstPort int32, extraOptions map[string]interface{}) *InterfaceConfig {
+func NewTrafficControlInterface(interfaceName string) *InterfaceConfig {
 	trafficControlConfig := &InterfaceConfig{InterfaceName: interfaceName, Type: TrafficControlInterface}
-	if isTunnel {
-		tunnelConfig := &TunnelInterfaceConfig{Type: tunnelType, RemoteIP: remoteIP, DestinationPort: dstPort, ExtraOptions: extraOptions}
-		trafficControlConfig.TunnelInterfaceConfig = tunnelConfig
-	}
 	return trafficControlConfig
 }
 

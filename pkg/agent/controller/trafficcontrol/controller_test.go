@@ -337,9 +337,9 @@ func TestTrafficControlAdd(t *testing.T) {
 			name: "Add TrafficControl with non-existing target port (VXLAN)",
 			tc:   generateTrafficControl(tc1Name, nil, labels1, directionIngress, actionMirror, udpTunnel, true, nil),
 			expectedCalls: func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient) {
-				extraOptions := map[string]interface{}{"key": strconv.Itoa(int(vni))}
+				extraOptions := map[string]interface{}{"key": strconv.Itoa(int(vni)), "dst_port": strconv.Itoa(int(destinationPort))}
 
-				mockOVSBridgeClient.EXPECT().CreateTunnelPortExt(gomock.Any(), ovsconfig.TunnelType(ovsconfig.VXLANTunnel), int32(0), false, "", remoteIP, strconv.Itoa(int(destinationPort)), "", extraOptions, externalIDs)
+				mockOVSBridgeClient.EXPECT().CreateTunnelPortExt(gomock.Any(), ovsconfig.TunnelType(ovsconfig.VXLANTunnel), int32(0), false, "", remoteIP, "", extraOptions, externalIDs)
 				mockOVSBridgeClient.EXPECT().GetOFPort(gomock.Any(), false)
 				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod1OFPort, pod3OFPort}), gomock.Any(), directionIngress, actionMirror)
 
@@ -349,9 +349,9 @@ func TestTrafficControlAdd(t *testing.T) {
 			name: "Add TrafficControl with non-existing target port (GENEVE)",
 			tc:   generateTrafficControl(tc1Name, nil, labels1, directionIngress, actionMirror, udpTunnel, false, nil),
 			expectedCalls: func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient) {
-				extraOptions := map[string]interface{}{"key": strconv.Itoa(int(vni))}
+				extraOptions := map[string]interface{}{"key": strconv.Itoa(int(vni)), "dst_port": strconv.Itoa(int(destinationPort))}
 
-				mockOVSBridgeClient.EXPECT().CreateTunnelPortExt(gomock.Any(), ovsconfig.TunnelType(ovsconfig.GeneveTunnel), int32(0), false, "", remoteIP, strconv.Itoa(int(destinationPort)), "", extraOptions, externalIDs)
+				mockOVSBridgeClient.EXPECT().CreateTunnelPortExt(gomock.Any(), ovsconfig.TunnelType(ovsconfig.GeneveTunnel), int32(0), false, "", remoteIP, "", extraOptions, externalIDs)
 				mockOVSBridgeClient.EXPECT().GetOFPort(gomock.Any(), false)
 				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod1OFPort, pod3OFPort}), gomock.Any(), directionIngress, actionMirror)
 
@@ -363,7 +363,7 @@ func TestTrafficControlAdd(t *testing.T) {
 			expectedCalls: func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient) {
 				extraOptions := map[string]interface{}{"key": strconv.Itoa(int(greKey))}
 
-				mockOVSBridgeClient.EXPECT().CreateTunnelPortExt(gomock.Any(), ovsconfig.TunnelType(ovsconfig.GRETunnel), int32(0), false, "", remoteIP, "", "", extraOptions, externalIDs)
+				mockOVSBridgeClient.EXPECT().CreateTunnelPortExt(gomock.Any(), ovsconfig.TunnelType(ovsconfig.GRETunnel), int32(0), false, "", remoteIP, "", extraOptions, externalIDs)
 				mockOVSBridgeClient.EXPECT().GetOFPort(gomock.Any(), false)
 				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod1OFPort, pod3OFPort}), gomock.Any(), directionIngress, actionMirror)
 
@@ -375,7 +375,7 @@ func TestTrafficControlAdd(t *testing.T) {
 			expectedCalls: func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient) {
 				extraOptions := map[string]interface{}{"erspan_ver": "1", "erspan_idx": strconv.Itoa(int(erspanIndex))}
 
-				mockOVSBridgeClient.EXPECT().CreateTunnelPortExt(gomock.Any(), ovsconfig.TunnelType(ovsconfig.ERSPANTunnel), int32(0), false, "", remoteIP, "", "", extraOptions, externalIDs)
+				mockOVSBridgeClient.EXPECT().CreateTunnelPortExt(gomock.Any(), ovsconfig.TunnelType(ovsconfig.ERSPANTunnel), int32(0), false, "", remoteIP, "", extraOptions, externalIDs)
 				mockOVSBridgeClient.EXPECT().GetOFPort(gomock.Any(), false)
 				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod1OFPort, pod3OFPort}), gomock.Any(), directionIngress, actionMirror)
 
@@ -387,7 +387,7 @@ func TestTrafficControlAdd(t *testing.T) {
 			expectedCalls: func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient) {
 				extraOptions := map[string]interface{}{"erspan_ver": "2", "erspan_dir": strconv.Itoa(int(erspanDir)), "erspan_hwid": strconv.Itoa(int(erspanHwID))}
 
-				mockOVSBridgeClient.EXPECT().CreateTunnelPortExt(gomock.Any(), ovsconfig.TunnelType(ovsconfig.ERSPANTunnel), int32(0), false, "", remoteIP, "", "", extraOptions, externalIDs)
+				mockOVSBridgeClient.EXPECT().CreateTunnelPortExt(gomock.Any(), ovsconfig.TunnelType(ovsconfig.ERSPANTunnel), int32(0), false, "", remoteIP, "", extraOptions, externalIDs)
 				mockOVSBridgeClient.EXPECT().GetOFPort(gomock.Any(), false)
 				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod1OFPort, pod3OFPort}), gomock.Any(), directionIngress, actionMirror)
 
@@ -1056,4 +1056,148 @@ func TestPodDelete(t *testing.T) {
 	_, exists := c.podToTCBindings[pod1NN]
 	require.Equal(t, false, exists)
 	require.Equal(t, expectedPodBinding, c.podToTCBindings[pod3NN])
+}
+
+func int32Ptr(i int32) *int32 {
+	j := i
+	return &j
+}
+
+func TestGenTunnelPortName(t *testing.T) {
+	testcases := []struct {
+		name  string
+		ports  []*v1alpha2.TrafficControlPort
+		expectedName                         string
+	}{
+		{
+			name: "VXLAN",
+			ports: []*v1alpha2.TrafficControlPort{
+				{
+					VXLAN: &v1alpha2.UDPTunnel{
+						RemoteIP: "1.1.1.1",
+					},
+				},
+				{
+					VXLAN: &v1alpha2.UDPTunnel{
+						RemoteIP:        "1.1.1.1",
+						DestinationPort: int32Ptr(4789),
+					},
+				},
+				{
+					VXLAN: &v1alpha2.UDPTunnel{
+						RemoteIP: "1.1.1.1",
+						VNI:      int32Ptr(0),
+					},
+				},
+				{
+					VXLAN: &v1alpha2.UDPTunnel{
+						RemoteIP:        "1.1.1.1",
+						DestinationPort: int32Ptr(4789),
+						VNI:             int32Ptr(0),
+					},
+				},
+			},
+			expectedName: "vxlan-cb3ab8",
+		},
+		{
+			name: "GENEVE",
+			ports: []*v1alpha2.TrafficControlPort{
+				{
+					GENEVE: &v1alpha2.UDPTunnel{
+						RemoteIP: "1.1.1.1",
+					},
+				},
+				{
+					GENEVE: &v1alpha2.UDPTunnel{
+						RemoteIP:        "1.1.1.1",
+						DestinationPort: int32Ptr(6089),
+					},
+				},
+				{
+					GENEVE: &v1alpha2.UDPTunnel{
+						RemoteIP: "1.1.1.1",
+						VNI:      int32Ptr(0),
+					},
+				},
+				{
+					GENEVE: &v1alpha2.UDPTunnel{
+						RemoteIP:        "1.1.1.1",
+						DestinationPort: int32Ptr(6089),
+						VNI:             int32Ptr(0),
+					},
+				},
+			},
+			expectedName: "geneve-e17764",
+		},
+		{
+			name: "GRE",
+			ports: []*v1alpha2.TrafficControlPort{
+				{
+					GRE: &v1alpha2.GRETunnel{
+						RemoteIP: "1.1.1.1",
+					},
+				},
+				{
+					GRE: &v1alpha2.GRETunnel{
+						RemoteIP: "1.1.1.1",
+						Key:      int32Ptr(0),
+					},
+				},
+			},
+			expectedName: "gre-b2d3bd",
+		},
+		{
+			name: "ERSPAN",
+			ports: []*v1alpha2.TrafficControlPort{
+				{
+					ERSPAN: &v1alpha2.ERSPANTunnel{
+						RemoteIP: "1.1.1.1",
+						Version:  1,
+					},
+				},
+				{
+					ERSPAN: &v1alpha2.ERSPANTunnel{
+						RemoteIP: "1.1.1.1",
+						Version:  1,
+					},
+				},
+				{
+					ERSPAN: &v1alpha2.ERSPANTunnel{
+						RemoteIP:  "1.1.1.1",
+						Version:   1,
+						SessionID: int32Ptr(0),
+					},
+				},
+				{
+					ERSPAN: &v1alpha2.ERSPANTunnel{
+						RemoteIP:   "1.1.1.1",
+						Version:    1,
+						SessionID:  int32Ptr(0),
+						Index:      int32Ptr(0),
+						Dir:        int32Ptr(0),
+						HardwareID: int32Ptr(0),
+					},
+				},
+			},
+			expectedName: "erspan-9de667",
+		},
+	}
+	for _, tt := range testcases {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, port := range tt.ports {
+				var gotName string
+				switch {
+				case port.VXLAN != nil:
+					gotName = genVXLANPortName(port.VXLAN)
+				case port.GENEVE != nil:
+					gotName = genGENEVEPortName(port.GENEVE)
+				case port.GRE != nil:
+					gotName = genGREPortName(port.GRE)
+				case port.ERSPAN != nil:
+					gotName = genERSPANPortName(port.ERSPAN)
+				}
+				assert.Equal(t, tt.expectedName, gotName)
+			}
+		})
+	}
 }

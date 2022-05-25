@@ -653,7 +653,6 @@ func (c *Controller) createIPSecTunnelPort(nodeName string, nodeIP net.IP) (int3
 			false,
 			"",
 			nodeIP.String(),
-			"",
 			c.networkConfig.IPSecPSK,
 			nil,
 			ovsExternalIDs)

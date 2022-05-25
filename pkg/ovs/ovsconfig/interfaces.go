@@ -41,7 +41,7 @@ type OVSBridgeClient interface {
 	CreateAccessPort(name, ifDev string, externalIDs map[string]interface{}, vlanID uint16) (string, Error)
 	CreateInternalPort(name string, ofPortRequest int32, externalIDs map[string]interface{}) (string, Error)
 	CreateTunnelPort(name string, tunnelType TunnelType, ofPortRequest int32) (string, Error)
-	CreateTunnelPortExt(name string, tunnelType TunnelType, ofPortRequest int32, csum bool, localIP, remoteIP, dstPort, psk string, extraOptions, externalIDs map[string]interface{}) (string, Error)
+	CreateTunnelPortExt(name string, tunnelType TunnelType, ofPortRequest int32, csum bool, localIP, remoteIP, psk string, extraOptions, externalIDs map[string]interface{}) (string, Error)
 	CreateUplinkPort(name string, ofPortRequest int32, externalIDs map[string]interface{}) (string, Error)
 	DeletePort(portUUID string) Error
 	DeletePorts(portUUIDList []string) Error

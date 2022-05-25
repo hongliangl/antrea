@@ -373,7 +373,7 @@ func (br *OVSBridge) CreateInternalPort(name string, ofPortRequest int32, extern
 // the bridge.
 // If ofPortRequest is not zero, it will be passed to the OVS port creation.
 func (br *OVSBridge) CreateTunnelPort(name string, tunnelType TunnelType, ofPortRequest int32) (string, Error) {
-	return br.createTunnelPort(name, tunnelType, ofPortRequest, false, "", "", "", "", nil, nil)
+	return br.createTunnelPort(name, tunnelType, ofPortRequest, false, "", "", "", nil, nil)
 }
 
 // CreateTunnelPortExt creates a tunnel port with the specified name and type
@@ -393,14 +393,13 @@ func (br *OVSBridge) CreateTunnelPortExt(
 	csum bool,
 	localIP string,
 	remoteIP string,
-	dstPort string,
 	psk string,
 	extraOptions map[string]interface{},
 	externalIDs map[string]interface{}) (string, Error) {
 	if psk != "" && remoteIP == "" {
 		return "", newInvalidArgumentsError("IPsec tunnel can not be flow based. remoteIP must be set")
 	}
-	return br.createTunnelPort(name, tunnelType, ofPortRequest, csum, localIP, remoteIP, dstPort, psk, extraOptions, externalIDs)
+	return br.createTunnelPort(name, tunnelType, ofPortRequest, csum, localIP, remoteIP, psk, extraOptions, externalIDs)
 }
 
 func (br *OVSBridge) createTunnelPort(
@@ -410,7 +409,6 @@ func (br *OVSBridge) createTunnelPort(
 	csum bool,
 	localIP string,
 	remoteIP string,
-	dstPort string,
 	psk string,
 	extraOptions map[string]interface{},
 	externalIDs map[string]interface{}) (string, Error) {
@@ -427,11 +425,12 @@ func (br *OVSBridge) createTunnelPort(
 	}
 
 	options := make(map[string]interface{})
+	for k, v := range extraOptions {
+		options[k] = v
+	}
+
 	if remoteIP != "" {
 		options["remote_ip"] = remoteIP
-		if key, ok := extraOptions["key"]; ok {
-			options["key"] = key
-		}
 	} else {
 		// Flow based tunnel.
 		options["key"] = "flow"
@@ -448,37 +447,7 @@ func (br *OVSBridge) createTunnelPort(
 		options["csum"] = "true"
 	}
 
-	if dstPort != "" {
-		options["dst_port"] = dstPort
-	}
-
-	if tunnelType == ERSPANTunnel {
-		br.setERSPANPortOptions(extraOptions, options)
-	}
-
 	return br.createPort(name, name, string(tunnelType), ofPortRequest, 0, externalIDs, options)
-}
-
-func (br *OVSBridge) setERSPANPortOptions(extraOptions, options map[string]interface{}) {
-	version := extraOptions["erspan_ver"]
-	options["erspan_ver"] = version
-
-	if key, ok := extraOptions["key"]; ok {
-		options["key"] = key
-	}
-
-	if version == "1" {
-		if idx, ok := extraOptions["erspan_idx"]; ok {
-			options["erspan_idx"] = idx
-		}
-	} else if version == "2" {
-		if dir, ok := extraOptions["erspan_dir"]; ok {
-			options["erspan_dir"] = dir
-		}
-		if hwid, ok := extraOptions["erspan_hwid"]; ok {
-			options["erspan_hwid"] = hwid
-		}
-	}
 }
 
 // GetInterfaceOptions returns the options of the provided interface.
