@@ -694,7 +694,7 @@ func ParseTunnelInterfaceConfig(
 		klog.V(2).Infof("OVS port %s has no options", portData.Name)
 		return nil
 	}
-	remoteIP, localIP, _, psk, csum, _ := ovsconfig.ParseTunnelInterfaceOptions(portData)
+	remoteIP, localIP, psk, csum := ovsconfig.ParseTunnelInterfaceOptions(portData)
 
 	var interfaceConfig *interfacestore.InterfaceConfig
 	var nodeName string

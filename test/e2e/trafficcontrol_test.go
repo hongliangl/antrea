@@ -48,6 +48,8 @@ var (
 
 	testNode      string
 	antreaPodName string
+
+	testPodName = "test-tc-pod"
 )
 
 func TestTrafficControl(t *testing.T) {
@@ -84,37 +86,50 @@ ip netns exec %[1]s ip addr add %[2]s/%[4]d dev %[1]s-a && \
 ip netns exec %[1]s ip link set dev %[1]s-a up && \
 ip netns exec %[1]s ip route replace default via %[3]s && \
 sleep 3600`, fakeExternalPodNS, fakeExternalIP, fakeExternalGW, 24)
-	if err := data.createPodOnNode(fakeExternalPod, testNamespace, testNode, agnhostImage, []string{"sh", "-c", cmd}, nil, nil, nil, true, func(pod *corev1.Pod) {
+	if err := data.createPodOnNode(fakeExternalPod, data.testNamespace, testNode, agnhostImage, []string{"sh", "-c", cmd}, nil, nil, nil, true, func(pod *corev1.Pod) {
 		privileged := true
 		pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{Privileged: &privileged}
 	}); err != nil {
 		t.Fatalf("Failed to create client Pod: %v", err)
 	}
-	defer deletePodWrapper(t, data, testNamespace, fakeExternalPod)
-	if err := data.podWaitForRunning(defaultTimeout, fakeExternalPod, testNamespace); err != nil {
+	defer deletePodWrapper(t, data, data.testNamespace, fakeExternalPod)
+	if err := data.podWaitForRunning(defaultTimeout, fakeExternalPod, data.testNamespace); err != nil {
 		t.Fatalf("Error when waiting for Pod '%s' to be in the Running state", fakeExternalPod)
 	}
 
-	// Create a Pod.
-	podName := "test-tc-tunnel-mirror"
-	require.NoError(t, createTestTCPod(t, data, podName, labels))
-	defer data.deletePodAndWait(defaultTimeout, podName, testNamespace)
-	podIPs, err := data.podWaitForIPs(defaultTimeout, podName, testNamespace)
+	// Create a Pod to test TrafficControl.
+
+	require.NoError(t, createTestTCPod(t, data, testPodName))
+	defer data.deletePodAndWait(defaultTimeout, testPodName, data.testNamespace)
+	podIPs, err := data.podWaitForIPs(defaultTimeout, testPodName, data.testNamespace)
 	if err != nil {
-		t.Fatalf("Error when waiting for IP for Pod '%s': %v", podName, err)
+		t.Fatalf("Error when waiting for IP for Pod '%s': %v", testPodName, err)
 	}
 	podIP := podIPs.ipv4.String()
 
 	t.Run("TestVXLANMirror", func(t *testing.T) { testVXLANMirror(t, data, podIP) })
 	t.Run("TestGENEVEMirror", func(t *testing.T) { testGENEVEMirror(t, data, podIP) })
 	t.Run("TestGREMirror", func(t *testing.T) { testGREMirror(t, data, podIP) })
+	t.Run("TestNetworkDeviceRedirect", func(t *testing.T) { testNetworkDeviceRedirect(t, data, podIP) })
 }
 
-func createTestTCPod(t *testing.T, data *TestData, podName string, labels map[string]string) error {
-	require.NoError(t, data.createServerPodWithLabels(podName, testNamespace, testNode, 80, labels))
-	if err := data.podWaitForRunning(defaultTimeout, podName, testNamespace); err != nil {
-		return fmt.Errorf("error when waiting for Pod '%s' to be in the Running state", podName)
+func createTestTCPod(t *testing.T, data *TestData, podName string) error {
+	args := []string{"netexec", "--http-port=8080"}
+	ports := []corev1.ContainerPort{
+		{
+			Name:          "http",
+			ContainerPort: 8080,
+			Protocol:      corev1.ProtocolTCP,
+		},
 	}
+	mutateLabels := func(pod *corev1.Pod) {
+		for k, v := range labels {
+			pod.Labels[k] = v
+		}
+	}
+
+	require.NoError(t, data.createPodOnNode(podName, data.testNamespace, testNode, agnhostImage, []string{}, args, nil, ports, false, mutateLabels))
+	require.NoError(t, data.podWaitForRunning(defaultTimeout, podName, data.testNamespace))
 	return nil
 }
 
@@ -222,7 +237,7 @@ func countMirroredPackets(t *testing.T, data *TestData, targetOFPort int) int {
 func countReceivedPackets(t *testing.T, data *TestData, tunnelPeer string) int {
 	var packets int
 	cmd := fmt.Sprintf("ip netns exec %s ifconfig %s", fakeExternalPodNS, tunnelPeer)
-	stdout, _, _ := data.RunCommandFromPod(testNamespace, fakeExternalPod, agnhostContainerName, []string{"sh", "-c", cmd})
+	stdout, _, _ := data.RunCommandFromPod(data.testNamespace, fakeExternalPod, agnhostContainerName, []string{"sh", "-c", cmd})
 	re := regexp.MustCompile(`RX packets:\d+`)
 	match := re.FindString(stdout)
 	if match != "" {
@@ -237,7 +252,7 @@ func countReceivedPackets(t *testing.T, data *TestData, tunnelPeer string) int {
 func verifyMirroredPackets(t *testing.T, data *TestData, podIP, tunnelPeer, tunnelPrefix string) {
 	// Run command to generate some packets to the Pod, and the ingress and egress packets of the Pod applying the TrafficControl
 	// will be mirrored to the target tunnel on OVS.
-	data.RunCommandOnNode(testNode, fmt.Sprintf("for i in $(seq 1 5); do curl %s; done", podIP))
+	data.RunCommandOnNode(testNode, fmt.Sprintf("for i in $(seq 1 5); do curl http://%s:8080; done", podIP))
 	// Count the packets mirrored to the target tunnel on OVS and packets received from the peer tunnel on external network.
 	// Note that, the peer tunnel on external network may receive some multicast or broadcast packets from OVS, as a result,
 	// the received packets should be greater than or equal to the mirrored packets.
@@ -251,7 +266,7 @@ func testVXLANMirror(t *testing.T, data *TestData, podIP string) {
 	tunnelPeer := "vxlan0"
 	cmd := fmt.Sprintf(`ip netns exec %[1]s ip link add %[4]s type vxlan id %[2]d dstport %[3]d dev %[1]s-a && \
 ip netns exec %[1]s ip link set %[4]s up`, fakeExternalPodNS, vni, dstVXLANPort, tunnelPeer)
-	_, _, err := data.RunCommandFromPod(testNamespace, fakeExternalPod, agnhostContainerName, []string{"sh", "-c", cmd})
+	_, _, err := data.RunCommandFromPod(data.testNamespace, fakeExternalPod, agnhostContainerName, []string{"sh", "-c", cmd})
 	require.NoError(t, err, "Failed to create VXLAN tunnel on fake namespace")
 
 	// Create a TrafficControl whose target port is VXLAN.
@@ -268,7 +283,7 @@ func testGENEVEMirror(t *testing.T, data *TestData, podIP string) {
 	tunnelPeer := "geneve0"
 	cmd := fmt.Sprintf(`ip netns exec %[1]s ip link add %[4]s type geneve id %[2]d dstport %[3]d remote %[5]s && \
 ip netns exec %[1]s ip link set %[4]s up`, fakeExternalPodNS, vni, dstGENEVEPort, tunnelPeer, fakeExternalGW)
-	_, _, err := data.RunCommandFromPod(testNamespace, fakeExternalPod, agnhostContainerName, []string{"sh", "-c", cmd})
+	_, _, err := data.RunCommandFromPod(data.testNamespace, fakeExternalPod, agnhostContainerName, []string{"sh", "-c", cmd})
 	require.NoError(t, err, "Failed to create GENEVE tunnel on fake namespace")
 
 	// Create a TrafficControl whose target port is GENEVE.
@@ -285,7 +300,7 @@ func testGREMirror(t *testing.T, data *TestData, podIP string) {
 	tunnelPeerPort := "gre1"
 	cmd := fmt.Sprintf(`ip netns exec %[1]s ip tunnel add %[4]s mode gre remote %[5]s key %[3]d && \
 ip netns exec %[1]s ip link set %[4]s up`, fakeExternalPodNS, vni, greKey, tunnelPeerPort, fakeExternalGW)
-	_, _, err := data.RunCommandFromPod(testNamespace, fakeExternalPod, agnhostContainerName, []string{"sh", "-c", cmd})
+	_, _, err := data.RunCommandFromPod(data.testNamespace, fakeExternalPod, agnhostContainerName, []string{"sh", "-c", cmd})
 	require.NoError(t, err, "Failed to create GRE tunnel on fake namespace")
 
 	// Create a TrafficControl whose target port is GRE.
@@ -295,4 +310,26 @@ ip netns exec %[1]s ip link set %[4]s up`, fakeExternalPodNS, vni, greKey, tunne
 
 	// Verify the mirrored packets.
 	verifyMirroredPackets(t, data, podIP, tunnelPeerPort, "gre-")
+}
+
+func testNetworkDeviceRedirect(t *testing.T, data *TestData, podIP string) {
+	targetPortName := "target-veth"
+	returnPortName := "return-veth"
+	addVethPairCmd := fmt.Sprintf(`ip link add dev %[1]s type veth peer name %[2]s && \
+ip link set dev %[1]s up && \
+ip link set dev %[2]s up`, targetPortName, returnPortName)
+	delVethPairCmd := fmt.Sprintf(`ip link del dev %s`, targetPortName)
+
+	_, _, _, err := data.RunCommandOnNode(testNode, addVethPairCmd)
+	require.NoError(t, err, "Failed to create veth pair on test Node")
+	defer data.RunCommandOnNode(testNode, delVethPairCmd)
+
+	targetPort := &v1alpha2.NetworkDevice{Name: targetPortName}
+	returnPort := &v1alpha2.NetworkDevice{Name: returnPortName}
+	tc := data.createTrafficControl(t, "tc-", nil, labels, v1alpha2.DirectionBoth, v1alpha2.ActionRedirect, targetPort, false, returnPort)
+	defer data.crdClient.CrdV1alpha2().TrafficControls().Delete(context.TODO(), tc.Name, metav1.DeleteOptions{})
+
+	_, hostname, _, err := data.RunCommandOnNode(testNode, fmt.Sprintf("curl --connect-timeout 1 --retry 5 --retry-connrefused http://%s:8080/hostname", podIP))
+	require.NoError(t, err)
+	require.Equal(t, testPodName, hostname)
 }

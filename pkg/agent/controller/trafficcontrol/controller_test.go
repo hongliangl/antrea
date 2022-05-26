@@ -95,7 +95,6 @@ var (
 	pod3OFPort        = uint32(3)
 	pod4OFPort        = uint32(4)
 	targetPort1OFPort = uint32(5)
-	returnPort1OFPort = uint32(6)
 	targetPort2OFPort = uint32(7)
 	returnPort2OFPort = uint32(8)
 	targetPort3OFPort = uint32(9)
@@ -105,7 +104,6 @@ var (
 	podInterface3    = newPodInterface("ns2", "pod3", int32(pod3OFPort))
 	podInterface4    = newPodInterface("ns2", "pod4", int32(pod4OFPort))
 	targetInterface1 = newTrafficControlInterface(targetPort1Name, int32(targetPort1OFPort))
-	returnInterface1 = newTrafficControlInterface(returnPort1Name, int32(returnPort1OFPort))
 	targetInterface2 = newHostInterface(targetPort2Name, int32(targetPort2OFPort))
 	returnInterface2 = newHostInterface(returnPort2Name, int32(returnPort2OFPort))
 	targetInterface3 = newTrafficControlInterface(targetPort3Name, int32(targetPort3OFPort))
@@ -118,6 +116,8 @@ var (
 	directionEgress  = v1alpha2.DirectionEgress
 	actionMirror     = v1alpha2.ActionMirror
 	actionRedirect   = v1alpha2.ActionRedirect
+
+	externalIDs = map[string]interface{}{interfacestore.AntreaInterfaceTypeKey: interfacestore.AntreaTrafficControl}
 )
 
 func newFakeController(t *testing.T, objects []runtime.Object, initObjects []runtime.Object, interfaces []*interfacestore.InterfaceConfig) *fakeController {
@@ -266,21 +266,19 @@ func generateTrafficControl(name string,
 	return tc
 }
 
-func generateTrafficControlState(name string,
-	direction v1alpha2.Direction,
+func generateTrafficControlState(direction v1alpha2.Direction,
 	action v1alpha2.TrafficControlAction,
-	targetOFPort,
-	returnOFPort uint32,
+	targetPortName,
+	returnPortName string,
 	ofPorts sets.Int32,
-	pods sets.String) trafficControlState {
-	return trafficControlState{
-		name:       name,
-		targetPort: targetOFPort,
-		returnPort: returnOFPort,
-		action:     action,
-		direction:  direction,
-		ofPorts:    ofPorts,
-		pods:       pods,
+	pods sets.String) *trafficControlState {
+	return &trafficControlState{
+		targetPortName: targetPortName,
+		returnPortName: returnPortName,
+		action:         action,
+		direction:      direction,
+		ofPorts:        ofPorts,
+		pods:           pods,
 	}
 }
 
@@ -295,34 +293,28 @@ func TestTrafficControlAdd(t *testing.T) {
 	vni := int32(1)
 	greKey := int32(2222)
 	remoteIP := "1.1.1.1"
-	erspanIndex := int32(1)
 	erspanDir := int32(1)
 	erspanHwID := int32(1)
-	externalIDs := map[string]interface{}{interfacestore.AntreaInterfaceTypeKey: interfacestore.AntreaTrafficControl}
 
 	networkDeviceName := "non-existing-port"
 	networkDevice := &v1alpha2.NetworkDevice{Name: networkDeviceName}
 	udpTunnel := &v1alpha2.UDPTunnel{RemoteIP: remoteIP, VNI: &vni, DestinationPort: &destinationPort}
 	greTunnel := &v1alpha2.GRETunnel{RemoteIP: remoteIP, Key: &greKey}
-	erspanV1Tunnel := &v1alpha2.ERSPANTunnel{Version: 1, RemoteIP: remoteIP, Index: &erspanIndex}
-	erspanV2Tunnel := &v1alpha2.ERSPANTunnel{Version: 2, RemoteIP: remoteIP, Dir: &erspanDir, HardwareID: &erspanHwID}
+	erspanTunnel := &v1alpha2.ERSPANTunnel{Version: 2, RemoteIP: remoteIP, Dir: &erspanDir, HardwareID: &erspanHwID}
 
 	interfaces := []*interfacestore.InterfaceConfig{
 		podInterface1,
 		podInterface2,
 		podInterface3,
 		podInterface4,
-		targetInterface1,
-		returnInterface1,
-		targetInterface2,
-		returnInterface2,
 	}
 
 	testcases := []struct {
-		name           string
-		tc             *v1alpha2.TrafficControl
-		existingStates []trafficControlState
-		expectedCalls  func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient)
+		name             string
+		tc               *v1alpha2.TrafficControl
+		extraInterfaces  []*interfacestore.InterfaceConfig
+		portToTCBindings map[string]*portToTCBinding
+		expectedCalls    func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient)
 	}{
 		{
 			name: "Add TrafficControl with non-existing target port (NetworkDevice)",
@@ -370,20 +362,8 @@ func TestTrafficControlAdd(t *testing.T) {
 			},
 		},
 		{
-			name: "Add TrafficControl with non-existing target port (ERSPAN v1)",
-			tc:   generateTrafficControl(tc1Name, nil, labels1, directionIngress, actionMirror, erspanV1Tunnel, false, nil),
-			expectedCalls: func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient) {
-				extraOptions := map[string]interface{}{"erspan_ver": "1", "erspan_idx": strconv.Itoa(int(erspanIndex))}
-
-				mockOVSBridgeClient.EXPECT().CreateTunnelPortExt(gomock.Any(), ovsconfig.TunnelType(ovsconfig.ERSPANTunnel), int32(0), false, "", remoteIP, "", extraOptions, externalIDs)
-				mockOVSBridgeClient.EXPECT().GetOFPort(gomock.Any(), false)
-				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod1OFPort, pod3OFPort}), gomock.Any(), directionIngress, actionMirror)
-
-			},
-		},
-		{
-			name: "Add TrafficControl with non-existing target port (ERSPAN v2)",
-			tc:   generateTrafficControl(tc1Name, nil, labels1, directionIngress, actionMirror, erspanV2Tunnel, false, nil),
+			name: "Add TrafficControl with non-existing target port (ERSPAN)",
+			tc:   generateTrafficControl(tc1Name, nil, labels1, directionIngress, actionMirror, erspanTunnel, false, nil),
 			expectedCalls: func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient) {
 				extraOptions := map[string]interface{}{"erspan_ver": "2", "erspan_dir": strconv.Itoa(int(erspanDir)), "erspan_hwid": strconv.Itoa(int(erspanHwID))}
 
@@ -394,52 +374,68 @@ func TestTrafficControlAdd(t *testing.T) {
 			},
 		},
 		{
-			name:           "Add TrafficControl with existing target port and return port (created by another TrafficControl)",
-			tc:             generateTrafficControl(tc1Name, nil, labels1, directionIngress, actionRedirect, targetPort1, false, returnPort1),
-			existingStates: []trafficControlState{{name: "another-tc", targetPort: targetPort1OFPort, returnPort: returnPort1OFPort}},
-			expectedCalls: func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient) {
-				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod1OFPort, pod3OFPort}), targetPort1OFPort, directionIngress, actionRedirect)
+			name:            "Add TrafficControl with existing target port and return port",
+			tc:              generateTrafficControl(tc1Name, nil, labels1, directionIngress, actionRedirect, targetPort2, false, returnPort2),
+			extraInterfaces: []*interfacestore.InterfaceConfig{targetInterface2, returnInterface2},
+			portToTCBindings: map[string]*portToTCBinding{
+				targetPort2Name: {targetPort2OFPort, sets.NewString(tc2Name)},
+				returnPort2Name: {returnPort2OFPort, sets.NewString(tc2Name)},
 			},
-		},
-		{
-			name: "Add TrafficControl with existing target port and return port (not created by TrafficControl controller)",
-			tc:   generateTrafficControl(tc1Name, nil, labels1, directionIngress, actionRedirect, targetPort2, false, returnPort2),
 			expectedCalls: func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient) {
-				mockOFClient.EXPECT().InstallTrafficControlReturnPortFlow(returnPort2OFPort)
 				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod1OFPort, pod3OFPort}), targetPort2OFPort, directionIngress, actionRedirect)
 			},
 		},
 		{
-			name: "Add TrafficControl with only Pod selector",
-			tc:   generateTrafficControl(tc1Name, nil, labels1, directionIngress, actionRedirect, targetPort1, false, nil),
+			name:            "Add TrafficControl with only Pod selector",
+			tc:              generateTrafficControl(tc1Name, nil, labels1, directionIngress, actionMirror, targetPort1, false, nil),
+			extraInterfaces: []*interfacestore.InterfaceConfig{targetInterface1},
+			portToTCBindings: map[string]*portToTCBinding{
+				targetPort1Name: {targetPort1OFPort, sets.NewString(tc2Name)},
+			},
 			expectedCalls: func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient) {
-				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod1OFPort, pod3OFPort}), targetPort1OFPort, directionIngress, actionRedirect)
+				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod1OFPort, pod3OFPort}), targetPort1OFPort, directionIngress, actionMirror)
 			},
 		},
 		{
-			name: "Add TrafficControl with only Namespace selector",
-			tc:   generateTrafficControl(tc1Name, labels1, nil, directionIngress, actionRedirect, targetPort1, false, nil),
+			name:            "Add TrafficControl with only Namespace selector",
+			extraInterfaces: []*interfacestore.InterfaceConfig{targetInterface1},
+			portToTCBindings: map[string]*portToTCBinding{
+				targetPort1Name: {targetPort1OFPort, sets.NewString(tc2Name)},
+			},
+			tc: generateTrafficControl(tc1Name, labels1, nil, directionIngress, actionMirror, targetPort1, false, nil),
 			expectedCalls: func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient) {
-				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod1OFPort, pod2OFPort}), targetPort1OFPort, directionIngress, actionRedirect)
+				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod1OFPort, pod2OFPort}), targetPort1OFPort, directionIngress, actionMirror)
 			},
 		},
 		{
-			name: "Add TrafficControl with Pod selector and Namespace selector",
-			tc:   generateTrafficControl(tc1Name, labels1, labels2, directionIngress, actionRedirect, targetPort1, false, nil),
+			name:            "Add TrafficControl with Pod selector and Namespace selector",
+			extraInterfaces: []*interfacestore.InterfaceConfig{targetInterface1},
+			portToTCBindings: map[string]*portToTCBinding{
+				targetPort1Name: {targetPort1OFPort, sets.NewString(tc2Name)},
+			},
+			tc: generateTrafficControl(tc1Name, labels1, labels2, directionIngress, actionRedirect, targetPort1, false, nil),
 			expectedCalls: func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient) {
 				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, []uint32{pod2OFPort}, targetPort1OFPort, directionIngress, actionRedirect)
 			},
 		},
 		{
-			name: "Add TrafficControl with nil Pod selector and nil Namespace selector",
-			tc:   generateTrafficControl(tc1Name, nil, nil, directionIngress, actionRedirect, targetPort1, false, nil),
+			name:            "Add TrafficControl with nil Pod selector and nil Namespace selector",
+			extraInterfaces: []*interfacestore.InterfaceConfig{targetInterface1},
+			portToTCBindings: map[string]*portToTCBinding{
+				targetPort1Name: {targetPort1OFPort, sets.NewString(tc2Name)},
+			},
+			tc: generateTrafficControl(tc1Name, nil, nil, directionIngress, actionRedirect, targetPort1, false, nil),
 			expectedCalls: func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient) {
 				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
 			},
 		},
 		{
-			name: "Add TrafficControl with empty Pod selector and empty Namespace selector",
-			tc:   generateTrafficControl(tc1Name, map[string]string{}, map[string]string{}, directionIngress, actionRedirect, targetPort1, false, nil),
+			name:            "Add TrafficControl with empty Pod selector and empty Namespace selector",
+			extraInterfaces: []*interfacestore.InterfaceConfig{targetInterface1},
+			portToTCBindings: map[string]*portToTCBinding{
+				targetPort1Name: {targetPort1OFPort, sets.NewString(tc2Name)},
+			},
+			tc: generateTrafficControl(tc1Name, map[string]string{}, map[string]string{}, directionIngress, actionRedirect, targetPort1, false, nil),
 			expectedCalls: func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient) {
 				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, []uint32{pod1OFPort, pod2OFPort, pod3OFPort, pod4OFPort}, targetPort1OFPort, directionIngress, actionRedirect)
 			},
@@ -447,8 +443,13 @@ func TestTrafficControlAdd(t *testing.T) {
 	}
 	for _, tt := range testcases {
 		t.Run(tt.name, func(t *testing.T) {
-			c := newFakeController(t, []runtime.Object{ns1, ns2, pod1, pod2, pod3, pod4}, []runtime.Object{tt.tc}, interfaces)
+
+			c := newFakeController(t, []runtime.Object{ns1, ns2, pod1, pod2, pod3, pod4}, []runtime.Object{tt.tc}, append(interfaces, tt.extraInterfaces...))
 			defer c.mockController.Finish()
+
+			if tt.portToTCBindings != nil {
+				c.portToTCBindings = tt.portToTCBindings
+			}
 
 			stopCh := make(chan struct{})
 			defer close(stopCh)
@@ -458,10 +459,6 @@ func TestTrafficControlAdd(t *testing.T) {
 			go c.localPodInformer.Run(stopCh)
 			c.crdInformerFactory.Start(stopCh)
 			c.crdInformerFactory.WaitForCacheSync(stopCh)
-
-			for _, state := range tt.existingStates {
-				c.installedTrafficControls.Add(state)
-			}
 
 			tt.expectedCalls(c.mockOFClient, c.mockOVSBridgeClient)
 			assert.NoError(t, c.syncTrafficControl(tt.tc.Name))
@@ -477,40 +474,40 @@ func TestTrafficControlUpdate(t *testing.T) {
 		podInterface3,
 		podInterface4,
 		targetInterface1,
-		returnInterface1,
-		targetInterface2,
-		returnInterface2,
 	}
 
 	testcases := []struct {
 		name                  string
 		updatedTrafficControl *v1alpha2.TrafficControl
-		expectedState         trafficControlState
+		expectedState         *trafficControlState
 		expectedCalls         func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient)
 	}{
 		{
 			name:                  "Update TrafficControl target port (NetworkDevice)",
 			updatedTrafficControl: generateTrafficControl(tc1Name, nil, labels1, directionIngress, actionMirror, targetPort2, false, nil),
-			expectedState:         generateTrafficControlState(tc1Name, directionIngress, actionMirror, targetPort2OFPort, 0, sets.NewInt32(int32(pod1OFPort), int32(pod3OFPort)), sets.NewString(pod1NN, pod3NN)),
+			expectedState:         generateTrafficControlState(directionIngress, actionMirror, targetPort2Name, "", sets.NewInt32(int32(pod1OFPort), int32(pod3OFPort)), sets.NewString(pod1NN, pod3NN)),
 			expectedCalls: func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient) {
 				mockOVSBridgeClient.EXPECT().DeletePort(gomock.Any())
-				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod1OFPort, pod3OFPort}), targetPort2OFPort, directionIngress, actionMirror)
+				mockOVSBridgeClient.EXPECT().CreatePort(targetPort2Name, targetPort2Name, externalIDs)
+				mockOVSBridgeClient.EXPECT().GetOFPort(targetPort2Name, false)
+				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod1OFPort, pod3OFPort}), gomock.Any(), directionIngress, actionMirror)
 			},
 		},
 		{
 			name:                  "Update TrafficControl action",
-			updatedTrafficControl: generateTrafficControl(tc1Name, nil, labels1, directionIngress, actionRedirect, targetPort2, false, returnPort2),
-			expectedState:         generateTrafficControlState(tc1Name, directionIngress, actionRedirect, targetPort2OFPort, returnPort2OFPort, sets.NewInt32(int32(pod1OFPort), int32(pod3OFPort)), sets.NewString(pod1NN, pod3NN)),
+			updatedTrafficControl: generateTrafficControl(tc1Name, nil, labels1, directionIngress, actionRedirect, targetPort1, false, returnPort1),
+			expectedState:         generateTrafficControlState(directionIngress, actionRedirect, targetPort1Name, returnPort1Name, sets.NewInt32(int32(pod1OFPort), int32(pod3OFPort)), sets.NewString(pod1NN, pod3NN)),
 			expectedCalls: func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient) {
-				mockOVSBridgeClient.EXPECT().DeletePort(targetPort1Name)
-				mockOFClient.EXPECT().InstallTrafficControlReturnPortFlow(returnPort2OFPort)
-				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod1OFPort, pod3OFPort}), targetPort2OFPort, directionIngress, actionRedirect)
+				mockOVSBridgeClient.EXPECT().CreatePort(returnPort1Name, returnPort1Name, externalIDs)
+				mockOVSBridgeClient.EXPECT().GetOFPort(returnPort1Name, false)
+				mockOFClient.EXPECT().InstallTrafficControlReturnPortFlow(gomock.Any())
+				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod1OFPort, pod3OFPort}), targetPort1OFPort, directionIngress, actionRedirect)
 			},
 		},
 		{
 			name:                  "Update TrafficControl direction",
 			updatedTrafficControl: generateTrafficControl(tc1Name, nil, labels1, directionEgress, actionMirror, targetPort1, false, nil),
-			expectedState:         generateTrafficControlState(tc1Name, directionEgress, actionMirror, targetPort1OFPort, 0, sets.NewInt32(int32(pod1OFPort), int32(pod3OFPort)), sets.NewString(pod1NN, pod3NN)),
+			expectedState:         generateTrafficControlState(directionEgress, actionMirror, targetPort1Name, "", sets.NewInt32(int32(pod1OFPort), int32(pod3OFPort)), sets.NewString(pod1NN, pod3NN)),
 			expectedCalls: func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient) {
 				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod1OFPort, pod3OFPort}), targetPort1OFPort, directionEgress, actionMirror)
 			},
@@ -518,7 +515,7 @@ func TestTrafficControlUpdate(t *testing.T) {
 		{
 			name:                  "Update TrafficControl Pod selector",
 			updatedTrafficControl: generateTrafficControl(tc1Name, nil, labels2, directionIngress, actionMirror, targetPort1, false, nil),
-			expectedState:         generateTrafficControlState(tc1Name, directionIngress, actionMirror, targetPort1OFPort, 0, sets.NewInt32(int32(pod2OFPort), int32(pod4OFPort)), sets.NewString(pod2NN, pod4NN)),
+			expectedState:         generateTrafficControlState(directionIngress, actionMirror, targetPort1Name, "", sets.NewInt32(int32(pod2OFPort), int32(pod4OFPort)), sets.NewString(pod2NN, pod4NN)),
 			expectedCalls: func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient) {
 				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod2OFPort, pod4OFPort}), targetPort1OFPort, directionIngress, actionMirror)
 			},
@@ -526,14 +523,13 @@ func TestTrafficControlUpdate(t *testing.T) {
 		{
 			name:                  "Update TrafficControl Namespace selector",
 			updatedTrafficControl: generateTrafficControl(tc1Name, labels2, labels1, directionIngress, actionMirror, targetPort1, false, nil),
-			expectedState:         generateTrafficControlState(tc1Name, directionIngress, actionMirror, targetPort1OFPort, 0, sets.NewInt32(int32(pod3OFPort)), sets.NewString(pod3NN)),
+			expectedState:         generateTrafficControlState(directionIngress, actionMirror, targetPort1Name, "", sets.NewInt32(int32(pod3OFPort)), sets.NewString(pod3NN)),
 			expectedCalls: func(mockOFClient *openflowtest.MockClient, mockOVSBridgeClient *ovsconfigtest.MockOVSBridgeClient) {
 				mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, []uint32{pod3OFPort}, targetPort1OFPort, directionIngress, actionMirror)
 			},
 		},
 	}
 	for _, tt := range testcases {
-
 		t.Run(tt.name, func(t *testing.T) {
 			c := newFakeController(t, []runtime.Object{ns1, ns2, pod1, pod2, pod3, pod4}, []runtime.Object{tc1}, interfaces)
 			defer c.mockController.Finish()
@@ -547,13 +543,27 @@ func TestTrafficControlUpdate(t *testing.T) {
 			c.crdInformerFactory.Start(stopCh)
 			c.crdInformerFactory.WaitForCacheSync(stopCh)
 
-			// Mark flows are expected to be installed for TrafficControl ADD event.
-			c.mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod1OFPort, pod3OFPort}), targetPort1OFPort, directionIngress, actionMirror)
+			// Fake the status after TrafficControl tc1 is added.
+			c.portToTCBindings = map[string]*portToTCBinding{
+				targetPort1Name: {targetPort1OFPort, sets.NewString(tc1Name)},
+			}
+			c.tcStates = map[string]*trafficControlState{
+				tc1Name: {
+					targetPortName: targetPort1Name,
+					action:         actionMirror,
+					direction:      directionIngress,
+					ofPorts:        sets.NewInt32(int32(pod1OFPort), int32(pod3OFPort)),
+					pods:           sets.NewString(pod1NN, pod3NN),
+				},
+			}
+			c.podToTCBindings = map[string]*podToTCBinding{
+				pod1NN: {effectiveTC: tc1Name, alternativeTCs: sets.NewString()},
+				pod3NN: {effectiveTC: tc1Name, alternativeTCs: sets.NewString()},
+			}
 
-			// Process the TrafficControl ADD events for TrafficControl tc1.
+			// Ignore the TrafficControl ADD events for TrafficControl tc1.
 			waitEvents(t, 1, c)
 			item, _ := c.queue.Get()
-			require.NoError(t, c.syncTrafficControl(item.(string)))
 			c.queue.Done(item)
 
 			_, err := c.crdClient.CrdV1alpha2().TrafficControls().Update(context.TODO(), tt.updatedTrafficControl, metav1.UpdateOptions{})
@@ -564,15 +574,12 @@ func TestTrafficControlUpdate(t *testing.T) {
 
 			time.Sleep(time.Second)
 			require.NoError(t, c.syncTrafficControl(tc1Name))
-
-			state, _, _ := c.installedTrafficControls.GetByKey(tc1Name)
-			require.Equal(t, tt.expectedState, state)
+			require.Equal(t, tt.expectedState, c.tcStates[tc1Name])
 		})
 	}
 }
 
 func TestSharedTargetPort(t *testing.T) {
-	externalIDs := map[string]interface{}{interfacestore.AntreaInterfaceTypeKey: interfacestore.AntreaTrafficControl}
 	tc1 := generateTrafficControl(tc1Name, nil, labels1, directionIngress, actionMirror, targetPort1, false, nil)
 	tc2 := generateTrafficControl(tc2Name, nil, labels2, directionIngress, actionMirror, targetPort1, false, nil)
 	interfaces := []*interfacestore.InterfaceConfig{
@@ -640,7 +647,6 @@ func TestSharedTargetPort(t *testing.T) {
 
 func TestPodUpdateFromCNIServer(t *testing.T) {
 	tc1 := generateTrafficControl(tc1Name, nil, labels1, directionIngress, actionMirror, targetPort1, false, nil)
-	testPodNN := k8s.NamespacedName("ns1", "pod1")
 
 	c := newFakeController(t, nil, []runtime.Object{tc1}, []*interfacestore.InterfaceConfig{targetInterface1})
 	defer c.mockController.Finish()
@@ -654,6 +660,20 @@ func TestPodUpdateFromCNIServer(t *testing.T) {
 	c.crdInformerFactory.Start(stopCh)
 	c.crdInformerFactory.WaitForCacheSync(stopCh)
 	go c.podUpdateChannel.Run(stopCh)
+
+	// Fake the status after TrafficControl tc1 is added.
+	c.portToTCBindings = map[string]*portToTCBinding{
+		targetPort1Name: {targetPort1OFPort, sets.NewString(tc1Name)},
+	}
+	c.tcStates = map[string]*trafficControlState{
+		tc1Name: {
+			targetPortName: targetPort1Name,
+			action:         actionMirror,
+			direction:      directionIngress,
+			ofPorts:        sets.NewInt32(),
+			pods:           sets.NewString(),
+		},
+	}
 
 	// Ignore the TrafficControl ADD event for TrafficControl tc1.
 	item, _ := c.queue.Get()
@@ -672,9 +692,8 @@ func TestPodUpdateFromCNIServer(t *testing.T) {
 	c.queue.Done(item)
 
 	// After syncing, verify the state of TrafficControl tc1.
-	state, _, _ := c.installedTrafficControls.GetByKey(tc1Name)
-	expectedState := generateTrafficControlState(tc1Name, directionIngress, actionMirror, targetPort1OFPort, 0, sets.NewInt32(), sets.NewString(testPodNN))
-	require.Equal(t, expectedState, state)
+	expectedState := generateTrafficControlState(directionIngress, actionMirror, targetPort1Name, "", sets.NewInt32(), sets.NewString(pod1NN))
+	require.Equal(t, expectedState, c.tcStates[tc1Name])
 
 	// Mark flows are expected to be installed after the interface of the Pod is ready.
 	c.mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, []uint32{pod1OFPort}, targetPort1OFPort, directionIngress, actionMirror)
@@ -693,9 +712,8 @@ func TestPodUpdateFromCNIServer(t *testing.T) {
 	c.queue.Done(item)
 
 	// After syncing, verify the state of TrafficControl tc1.
-	state, _, _ = c.installedTrafficControls.GetByKey(tc1Name)
-	expectedState = generateTrafficControlState(tc1Name, directionIngress, actionMirror, targetPort1OFPort, 0, sets.NewInt32(int32(pod1OFPort)), sets.NewString(testPodNN))
-	require.Equal(t, expectedState, state)
+	expectedState = generateTrafficControlState(directionIngress, actionMirror, targetPort1Name, "", sets.NewInt32(int32(pod1OFPort)), sets.NewString(pod1NN))
+	require.Equal(t, expectedState, c.tcStates[tc1Name])
 }
 
 func TestPodLabelsUpdate(t *testing.T) {
@@ -786,15 +804,44 @@ func TestPodLabelsUpdate(t *testing.T) {
 			c.crdInformerFactory.Start(stopCh)
 			c.crdInformerFactory.WaitForCacheSync(stopCh)
 
-			// TrafficControl tc1 is the effective TrafficControl of Pod pod1, corresponding flow are expected to be installed.
-			c.mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, []uint32{pod1OFPort}, targetPort1OFPort, directionIngress, actionMirror)
-
-			// Process the TrafficControl ADD events for TrafficControl tc1, tc2 and tc3. TrafficControl tc1 is the effective
+			// Fake the status after TrafficControl tc1, tc2 and tc3 is added. TrafficControl tc1 is the effective
 			// TrafficControl of the Pod, and tc2 is the alternative TrafficControl of the Pod.
+			c.portToTCBindings = map[string]*portToTCBinding{
+				targetPort1Name: {targetPort1OFPort, sets.NewString(tc1Name)},
+				targetPort2Name: {targetPort2OFPort, sets.NewString(tc2Name)},
+				targetPort3Name: {targetPort3OFPort, sets.NewString(tc3Name)},
+			}
+			c.tcStates = map[string]*trafficControlState{
+				tc1Name: {
+					targetPortName: targetPort1Name,
+					action:         actionMirror,
+					direction:      directionIngress,
+					ofPorts:        sets.NewInt32(int32(pod1OFPort)),
+					pods:           sets.NewString(pod1NN),
+				},
+				tc2Name: {
+					targetPortName: targetPort2Name,
+					action:         actionMirror,
+					direction:      directionIngress,
+					ofPorts:        sets.NewInt32(),
+					pods:           sets.NewString(pod1NN),
+				},
+				tc3Name: {
+					targetPortName: targetPort3Name,
+					action:         actionMirror,
+					direction:      directionIngress,
+					ofPorts:        sets.NewInt32(),
+					pods:           sets.NewString(),
+				},
+			}
+			c.podToTCBindings = map[string]*podToTCBinding{
+				pod1NN: {effectiveTC: tc1Name, alternativeTCs: sets.NewString(tc2Name)},
+			}
+
+			// Ignore the TrafficControl ADD events for TrafficControl tc1, tc2 and tc3.
 			waitEvents(t, 3, c)
 			for i := 0; i < 3; i++ {
 				item, _ := c.queue.Get()
-				require.NoError(t, c.syncTrafficControl(item.(string)))
 				c.queue.Done(item)
 			}
 
@@ -935,16 +982,44 @@ func TestNamespaceLabelsUpdate(t *testing.T) {
 			c.crdInformerFactory.Start(stopCh)
 			c.crdInformerFactory.WaitForCacheSync(stopCh)
 
-			// TrafficControl tc1 is the effective TrafficControl of the Pod pod1 in Namespace ns1, corresponding flow are
-			// expected to be installed.
-			c.mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, []uint32{pod1OFPort}, targetPort1OFPort, directionIngress, actionMirror)
+			// Fake the status after TrafficControl tc1, tc2 and tc3 is added. TrafficControl tc1 is the effective
+			// TrafficControl of the Pod, and tc2 is the alternative TrafficControl of the Pod.
+			c.portToTCBindings = map[string]*portToTCBinding{
+				targetPort1Name: {targetPort1OFPort, sets.NewString(tc1Name)},
+				targetPort2Name: {targetPort2OFPort, sets.NewString(tc2Name)},
+				targetPort3Name: {targetPort3OFPort, sets.NewString(tc3Name)},
+			}
+			c.tcStates = map[string]*trafficControlState{
+				tc1Name: {
+					targetPortName: targetPort1Name,
+					action:         actionMirror,
+					direction:      directionIngress,
+					ofPorts:        sets.NewInt32(int32(pod1OFPort)),
+					pods:           sets.NewString(pod1NN),
+				},
+				tc2Name: {
+					targetPortName: targetPort2Name,
+					action:         actionMirror,
+					direction:      directionIngress,
+					ofPorts:        sets.NewInt32(),
+					pods:           sets.NewString(pod1NN),
+				},
+				tc3Name: {
+					targetPortName: targetPort3Name,
+					action:         actionMirror,
+					direction:      directionIngress,
+					ofPorts:        sets.NewInt32(),
+					pods:           sets.NewString(),
+				},
+			}
+			c.podToTCBindings = map[string]*podToTCBinding{
+				pod1NN: {effectiveTC: tc1Name, alternativeTCs: sets.NewString(tc2Name)},
+			}
 
-			// Process the TrafficControl ADD events for TrafficControl tc1, tc2 and tc3. TrafficControl tc1 is the effective
-			// TrafficControl of the Pod pod1 in Namespace ns1, and tc2 is the alternative TrafficControl of the Pod.
+			// Ignore the TrafficControl ADD events for TrafficControl tc1, tc2 and tc3.
 			waitEvents(t, 3, c)
 			for i := 0; i < 3; i++ {
 				item, _ := c.queue.Get()
-				require.NoError(t, c.syncTrafficControl(item.(string)))
 				c.queue.Done(item)
 			}
 
@@ -1020,29 +1095,56 @@ func TestPodDelete(t *testing.T) {
 	c.crdInformerFactory.Start(stopCh)
 	c.crdInformerFactory.WaitForCacheSync(stopCh)
 
-	// Since TrafficControl tc1 is created firstly, it becomes the effective TrafficControl of Pod pod1 and pod3.
-	c.mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, gomock.InAnyOrder([]uint32{pod1OFPort, pod3OFPort}), targetPort1OFPort, directionIngress, actionMirror)
-	expectedPodBinding := &podToTCBinding{
+	// Fake the status after TrafficControl tc1, tc2 and tc3 is added. TrafficControl tc1 is the effective
+	// TrafficControl of the Pod, and tc2, tc3 is the alternative TrafficControl of the Pods.
+	c.portToTCBindings = map[string]*portToTCBinding{
+		targetPort1Name: {targetPort1OFPort, sets.NewString(tc1Name)},
+		targetPort2Name: {targetPort2OFPort, sets.NewString(tc2Name)},
+		targetPort3Name: {targetPort3OFPort, sets.NewString(tc3Name)},
+	}
+	c.tcStates = map[string]*trafficControlState{
+		tc1Name: {
+			targetPortName: targetPort1Name,
+			action:         actionMirror,
+			direction:      directionIngress,
+			ofPorts:        sets.NewInt32(int32(pod1OFPort), int32(pod3OFPort)),
+			pods:           sets.NewString(pod1NN, pod3NN),
+		},
+		tc2Name: {
+			targetPortName: targetPort2Name,
+			action:         actionMirror,
+			direction:      directionIngress,
+			ofPorts:        sets.NewInt32(),
+			pods:           sets.NewString(pod1NN, pod3NN),
+		},
+		tc3Name: {
+			targetPortName: targetPort3Name,
+			action:         actionMirror,
+			direction:      directionIngress,
+			ofPorts:        sets.NewInt32(),
+			pods:           sets.NewString(pod1NN, pod3NN),
+		},
+	}
+	c.podToTCBindings = map[string]*podToTCBinding{
+		pod1NN: {effectiveTC: tc1Name, alternativeTCs: sets.NewString(tc2Name, tc3Name)},
+		pod3NN: {effectiveTC: tc1Name, alternativeTCs: sets.NewString(tc2Name, tc3Name)},
+	}
+
+	// Ignore the TrafficControl ADD events for TrafficControl tc1, tc2 and tc3.
+	waitEvents(t, 3, c)
+	for i := 0; i < 3; i++ {
+		item, _ := c.queue.Get()
+		c.queue.Done(item)
+	}
+
+	c.mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, []uint32{pod3OFPort}, targetPort1OFPort, directionIngress, actionMirror)
+	expectedPod3Binding := &podToTCBinding{
 		effectiveTC:    tc1Name,
 		alternativeTCs: sets.NewString(tc2Name, tc3Name),
 	}
 
-	// Process the TrafficControl ADD events for TrafficControl tc1, tc2 and tc3.
-	waitEvents(t, 3, c)
-	for i := 0; i < 3; i++ {
-		item, _ := c.queue.Get()
-		require.NoError(t, c.syncTrafficControl(item.(string)))
-		c.queue.Done(item)
-	}
-	// Check the binding information of the Pod pod1 and pod3.
-	require.Equal(t, expectedPodBinding, c.podToTCBindings[pod1NN])
-	require.Equal(t, expectedPodBinding, c.podToTCBindings[pod3NN])
-
-	// Mark flows for TrafficControl tc1 should be updated.
-	c.mockOFClient.EXPECT().InstallTrafficControlMarkFlows(tc1Name, []uint32{pod3OFPort}, targetPort1OFPort, directionIngress, actionMirror)
-
-	// Delete the Pod pod1.
-	require.NoError(t, c.client.CoreV1().Pods("ns1").Delete(context.TODO(), "pod1", metav1.DeleteOptions{}))
+	// Delete Pod pod1.
+	require.NoError(t, c.client.CoreV1().Pods(pod1.Namespace).Delete(context.TODO(), pod1.Name, metav1.DeleteOptions{}))
 
 	// Process the TrafficControl events triggered by deleting Pod pod1.
 	waitEvents(t, 3, c)
@@ -1052,10 +1154,11 @@ func TestPodDelete(t *testing.T) {
 		c.queue.Done(item)
 	}
 
-	// Check the binding information of the Pod pod1, pod3 and TrafficControl.
+	// Check the binding information of Pod pod1, pod3 and TrafficControl.
 	_, exists := c.podToTCBindings[pod1NN]
 	require.Equal(t, false, exists)
-	require.Equal(t, expectedPodBinding, c.podToTCBindings[pod3NN])
+
+	require.Equal(t, expectedPod3Binding, c.podToTCBindings[pod3NN])
 }
 
 func int32Ptr(i int32) *int32 {
@@ -1065,9 +1168,9 @@ func int32Ptr(i int32) *int32 {
 
 func TestGenTunnelPortName(t *testing.T) {
 	testcases := []struct {
-		name  string
-		ports  []*v1alpha2.TrafficControlPort
-		expectedName                         string
+		name         string
+		ports        []*v1alpha2.TrafficControlPort
+		expectedName string
 	}{
 		{
 			name: "VXLAN",
@@ -1110,7 +1213,7 @@ func TestGenTunnelPortName(t *testing.T) {
 				{
 					GENEVE: &v1alpha2.UDPTunnel{
 						RemoteIP:        "1.1.1.1",
-						DestinationPort: int32Ptr(6089),
+						DestinationPort: int32Ptr(6081),
 					},
 				},
 				{
@@ -1122,7 +1225,7 @@ func TestGenTunnelPortName(t *testing.T) {
 				{
 					GENEVE: &v1alpha2.UDPTunnel{
 						RemoteIP:        "1.1.1.1",
-						DestinationPort: int32Ptr(6089),
+						DestinationPort: int32Ptr(6081),
 						VNI:             int32Ptr(0),
 					},
 				},

@@ -491,59 +491,29 @@ func (br *OVSBridge) SetInterfaceOptions(name string, options map[string]interfa
 
 // ParseTunnelInterfaceOptions reads remote IP, local IP, IPsec PSK, and csum
 // from the tunnel interface options and returns them.
-func ParseTunnelInterfaceOptions(portData *OVSPortData) (net.IP, net.IP, int32, string, bool, map[string]interface{}) {
+func ParseTunnelInterfaceOptions(portData *OVSPortData) (net.IP, net.IP, string, bool) {
 	if portData.Options == nil {
-		return nil, nil, 0, "", false, nil
+		return nil, nil, "", false
 	}
 
 	var ok bool
-	var remoteIPStr, localIPStr, dstPortStr, psk string
+	var remoteIPStr, localIPStr, psk string
 	var remoteIP, localIP net.IP
-	var dstPort int64
 	var csum bool
-	extraOptions := make(map[string]interface{})
 
 	if remoteIPStr, ok = portData.Options["remote_ip"]; ok {
 		if remoteIPStr != "flow" {
 			remoteIP = net.ParseIP(remoteIPStr)
-			if key, ok := portData.Options["key"]; ok {
-				extraOptions["key"] = key
-			}
 		}
 	}
 	if localIPStr, ok = portData.Options["local_ip"]; ok {
 		localIP = net.ParseIP(localIPStr)
 	}
-
-	if dstPortStr, ok = portData.Options["dst_port"]; ok {
-		dstPort, _ = strconv.ParseInt(dstPortStr, 10, 32)
-	}
-
 	psk = portData.Options["psk"]
 	if csumStr, ok := portData.Options["csum"]; ok {
 		csum, _ = strconv.ParseBool(csumStr)
 	}
-
-	if version, ok := portData.Options["erspan_ver"]; ok {
-		extraOptions["erspan_ver"] = version
-		if key, ok := portData.Options["key"]; ok {
-			extraOptions["key"] = key
-		}
-		if version == "1" {
-			if idx, ok := portData.Options["erspan_idx"]; ok {
-				extraOptions["erspan_idx"] = idx
-			}
-		} else if version == "2" {
-			if dir, ok := portData.Options["erspan_dir"]; ok {
-				extraOptions["erspan_dir"] = dir
-			}
-			if hwid, ok := portData.Options["erspan_hwid"]; ok {
-				extraOptions["erspan_hwid"] = hwid
-			}
-		}
-	}
-
-	return remoteIP, localIP, int32(dstPort), psk, csum, extraOptions
+	return remoteIP, localIP, psk, csum
 }
 
 // CreateUplinkPort creates uplink port.

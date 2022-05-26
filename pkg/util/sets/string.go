@@ -54,18 +54,3 @@ func SymmetricDifferenceString(s1, s2 sets.String) sets.String {
 	}
 	return result
 }
-
-func SymmetricDifferenceInt32(s1, s2 sets.Int32) sets.Int32 {
-	result := sets.NewInt32()
-	for key := range s1 {
-		if !s2.Has(key) {
-			result.Insert(key)
-		}
-	}
-	for key := range s2 {
-		if !s1.Has(key) {
-			result.Insert(key)
-		}
-	}
-	return result
-}

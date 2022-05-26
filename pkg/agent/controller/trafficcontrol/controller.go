@@ -62,18 +62,13 @@ const (
 
 	// Default VXLAN tunnel destination port.
 	defaultVXLANTunnelDestinationPort = int32(4789)
-	// Default Geneve tunnel destination port.
+	// Default GENEVE tunnel destination port.
 	defaultGENEVETunnelDestinationPort = int32(6081)
 
 	portNamePrefixVXLAN  = "vxlan"
 	portNamePrefixGENEVE = "geneve"
 	portNamePrefixGRE    = "gre"
 	portNamePrefixERSPAN = "erspan"
-
-	maxRetryForHostLink = 5
-
-	targetPortIndexName = "targetPort"
-	returnPortIndexName = "returnPort"
 )
 
 var (
@@ -84,12 +79,10 @@ var (
 
 // trafficControlState keeps the actual state of a TrafficControl that has been realized.
 type trafficControlState struct {
-	// TrafficControl name.
-	name string
-	// The actual target port of a TrafficControl.
-	targetPort uint32
-	// The actual return port of a TrafficControl.
-	returnPort uint32
+	// The actual name of target port used by a TrafficControl.
+	targetPortName string
+	// The actual name of return port used by a TrafficControl.
+	returnPortName string
 	// The actual action of a TrafficControl.
 	action v1alpha2.TrafficControlAction
 	// The actual direction of a TrafficControl.
@@ -102,9 +95,22 @@ type trafficControlState struct {
 	pods sets.String
 }
 
+// podToTCBinding keeps the TrafficControls applying to a Pod. There is only one effective TrafficControl for a Pod at any
+// given time.
+type podToTCBinding struct {
+	effectiveTC    string
+	alternativeTCs sets.String
+}
+
+type portToTCBinding struct {
+	ofPort          uint32
+	trafficControls sets.String
+}
+
 type Controller struct {
 	ofClient openflow.Client
 
+	portToTCBindings   map[string]*portToTCBinding
 	ovsBridgeClient    ovsconfig.OVSBridgeClient
 	ovsPortUpdateMutex sync.Mutex
 
@@ -118,21 +124,16 @@ type Controller struct {
 	namespaceLister       corelisters.NamespaceLister
 	namespaceListerSynced cache.InformerSynced
 
-	podToTCBindings          map[string]*podToTCBinding
-	podToTCBindingsMutex     sync.RWMutex
-	installedTrafficControls cache.Indexer
+	podToTCBindings      map[string]*podToTCBinding
+	podToTCBindingsMutex sync.Mutex
+
+	tcStates      map[string]*trafficControlState
+	tcStatesMutex sync.RWMutex
 
 	trafficControlInformer     cache.SharedIndexInformer
 	trafficControlLister       crdlisters.TrafficControlLister
 	trafficControlListerSynced cache.InformerSynced
 	queue                      workqueue.RateLimitingInterface
-}
-
-// podToTCBinding keeps the TrafficControls applying to a Pod. There is only one effective TrafficControl for a Pod at any
-// given time.
-type podToTCBinding struct {
-	effectiveTC    string
-	alternativeTCs sets.String
 }
 
 func NewTrafficControlController(ofClient openflow.Client,
@@ -156,7 +157,8 @@ func NewTrafficControlController(ofClient openflow.Client,
 		namespaceLister:            namespaceInformer.Lister(),
 		namespaceListerSynced:      namespaceInformer.Informer().HasSynced,
 		podToTCBindings:            map[string]*podToTCBinding{},
-		installedTrafficControls:   cache.NewIndexer(tcInfoKeyFunc, cache.Indexers{targetPortIndexName: tcTargetPortIndexFunc, returnPortIndexName: tcReturnPortIndexFunc}),
+		portToTCBindings:           map[string]*portToTCBinding{},
+		tcStates:                   map[string]*trafficControlState{},
 		queue:                      workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "trafficControlGroup"),
 	}
 	c.trafficControlInformer.AddEventHandlerWithResyncPeriod(
@@ -187,25 +189,11 @@ func NewTrafficControlController(ofClient openflow.Client,
 	return c
 }
 
-func tcInfoKeyFunc(obj interface{}) (string, error) {
-	return obj.(trafficControlState).name, nil
-}
-
-func tcTargetPortIndexFunc(obj interface{}) ([]string, error) {
-	tcState := obj.(trafficControlState)
-	return []string{strconv.Itoa(int(tcState.targetPort))}, nil
-}
-
-func tcReturnPortIndexFunc(obj interface{}) ([]string, error) {
-	tcState := obj.(trafficControlState)
-	return []string{strconv.Itoa(int(tcState.returnPort))}, nil
-}
-
 // processPodUpdate will be called when CNIServer publishes a Pod update event. It triggers the event for the effective
 // TrafficControl of the Pod.
 func (c *Controller) processPodUpdate(e interface{}) {
-	c.podToTCBindingsMutex.RLock()
-	defer c.podToTCBindingsMutex.RUnlock()
+	c.podToTCBindingsMutex.Lock()
+	defer c.podToTCBindingsMutex.Unlock()
 	podEvent := e.(types.PodUpdate)
 	pod := k8s.NamespacedName(podEvent.PodNamespace, podEvent.PodName)
 	binding, exists := c.podToTCBindings[pod]
@@ -421,24 +409,30 @@ func (c *Controller) processNextWorkItem() bool {
 	return true
 }
 
-func (c *Controller) newTrafficControlState(tc string, action v1alpha2.TrafficControlAction, direction v1alpha2.Direction) trafficControlState {
-	state := trafficControlState{
-		name:      tc,
+func (c *Controller) newTrafficControlState(tcName string, action v1alpha2.TrafficControlAction, direction v1alpha2.Direction) *trafficControlState {
+	c.tcStatesMutex.Lock()
+	defer c.tcStatesMutex.Unlock()
+	state := &trafficControlState{
 		pods:      sets.NewString(),
 		ofPorts:   sets.NewInt32(),
 		action:    action,
 		direction: direction,
 	}
-	c.installedTrafficControls.Add(state)
+	c.tcStates[tcName] = state
 	return state
 }
 
-func (c *Controller) getTrafficControlState(tc string) (trafficControlState, bool) {
-	state, exists, _ := c.installedTrafficControls.GetByKey(tc)
-	if exists {
-		return state.(trafficControlState), exists
-	}
-	return trafficControlState{}, false
+func (c *Controller) getTrafficControlState(tcName string) (*trafficControlState, bool) {
+	c.tcStatesMutex.RLock()
+	defer c.tcStatesMutex.RUnlock()
+	state, exists := c.tcStates[tcName]
+	return state, exists
+}
+
+func (c *Controller) deleteTrafficControlState(tcName string) {
+	c.tcStatesMutex.Lock()
+	defer c.tcStatesMutex.Unlock()
+	delete(c.tcStates, tcName)
 }
 
 func (c *Controller) filterPods(appliedTo *v1alpha2.AppliedTo) ([]*v1.Pod, error) {
@@ -671,10 +665,7 @@ func (c *Controller) createERSPANPort(portName string, tunnelConfig *v1alpha2.ER
 	return portUUID, err
 }
 
-// getOrCreateTrafficControlPort ensures there is an OVS port for the given TrafficControlPort. It will create an port
-// if it doesn't exist. It returns the ofPort of the OVS port on success, a boolean indicating whether the port already
-// existed, and an error if there is.
-func (c *Controller) getOrCreateTrafficControlPort(port *v1alpha2.TrafficControlPort) (uint32, bool, error) {
+func (c *Controller) getPortName(port *v1alpha2.TrafficControlPort) string {
 	var portName string
 	switch {
 	case port.OVSInternal != nil:
@@ -690,8 +681,22 @@ func (c *Controller) getOrCreateTrafficControlPort(port *v1alpha2.TrafficControl
 	case port.ERSPAN != nil:
 		portName = genERSPANPortName(port.ERSPAN)
 	}
+	return portName
+}
+
+// getOrCreateTrafficControlPort ensures that there is an OVS port for the given TrafficControlPort and binds the port
+// to the TrafficControl. The OVS port will be created if the port doesn't exist. It returns the ofPort of the OVS port
+// on success, a boolean indicating whether the port exists, and an error if there is.
+func (c *Controller) getOrCreateTrafficControlPort(port *v1alpha2.TrafficControlPort, portName, tcName string) (uint32, bool, error) {
+	c.ovsPortUpdateMutex.Lock()
+	defer c.ovsPortUpdateMutex.Unlock()
 
 	if itf, ok := c.interfaceStore.GetInterfaceByName(portName); ok {
+		// Bind the port to the TrafficControl.
+		if _, exists := c.portToTCBindings[portName]; !exists {
+			c.portToTCBindings[portName] = &portToTCBinding{ofPort: uint32(itf.OFPort), trafficControls: sets.NewString()}
+		}
+		c.portToTCBindings[portName].trafficControls.Insert(tcName)
 		return uint32(itf.OFPort), true, nil
 	}
 
@@ -725,18 +730,33 @@ func (c *Controller) getOrCreateTrafficControlPort(port *v1alpha2.TrafficControl
 	itf := interfacestore.NewTrafficControlInterface(portName)
 	itf.OVSPortConfig = &interfacestore.OVSPortConfig{PortUUID: portUUID, OFPort: ofPort}
 	c.interfaceStore.AddInterface(itf)
-
-	return uint32(itf.OFPort), false, nil
+	// Create binding for the newly created port.
+	c.portToTCBindings[portName] = &portToTCBinding{ofPort: uint32(ofPort), trafficControls: sets.NewString(tcName)}
+	return uint32(ofPort), false, nil
 }
 
-func (c *Controller) deleteTrafficControlPort(port uint32) error {
-	if itf, ok := c.interfaceStore.GetInterfaceByOFPort(port); ok {
-		if err := c.ovsBridgeClient.DeletePort(itf.PortUUID); err != nil {
-			return err
+// releaseTrafficControlPort releases the port from the TrafficControl and deletes the port if it is no longer used by
+// any TrafficControls. It returns the ofPort on success, a boolean indicating whether the port is deleted, and an error
+// if there is.
+func (c *Controller) releaseTrafficControlPort(portName, tcName string) (uint32, bool, error) {
+	c.ovsPortUpdateMutex.Lock()
+	defer c.ovsPortUpdateMutex.Unlock()
+	portBinding := c.portToTCBindings[portName]
+	ofPort := portBinding.ofPort
+
+	portBinding.trafficControls.Delete(tcName)
+	// If the port is no longer used by any TrafficControl, delete the port.
+	if len(portBinding.trafficControls) == 0 {
+		if itf, ok := c.interfaceStore.GetInterfaceByOFPort(ofPort); ok {
+			if err := c.ovsBridgeClient.DeletePort(itf.PortUUID); err != nil {
+				return ofPort, false, err
+			}
+			c.interfaceStore.DeleteInterface(itf)
 		}
-		c.interfaceStore.DeleteInterface(itf)
+		delete(c.portToTCBindings, portName)
+		return ofPort, true, nil
 	}
-	return nil
+	return ofPort, false, nil
 }
 
 func (c *Controller) syncTrafficControl(tcName string) error {
@@ -745,127 +765,98 @@ func (c *Controller) syncTrafficControl(tcName string) error {
 		klog.V(2).InfoS("Finished syncing TrafficControl", "TrafficControl", tcName, "durationTime", time.Since(startTime))
 	}()
 
-	var tcUpdated, tcDeleted bool
-	var returnPort, targetPort uint32
-	var tc *v1alpha2.TrafficControl
-	var tcState trafficControlState
+	var tcUpdated bool
+	var returnPortName, targetPortName string
 
-	syncFn := func() error {
-		// This anonymous function should be protected by a mutex lock. There are operations of adding or delete OVS
-		// port in this function, and the operations should be mutual exclusion between multiple workers. In addition,
-		// the field of targetPort and returnPort in trafficControlState stored in installedTrafficControls should be
-		// also updated, otherwise the stale trafficControlStates may provide unexpected results. For example,
-		//  - Update the return port of TrafficControl tc1 from port1 to port2.
-		//  - Assuming that port1 is no longer used by any other TrafficControls, then corresponding flow is uninstalled
-		//    and the port is deleted in current worker goroutine.
-		//  - Without updating the state of TrafficControl tc1 in installedTrafficControls, when syncing another TrafficControl
-		//    tc2 using return port port1 in another worker goroutine, the worker function queries the installedTrafficControls
-		//    with indices returnPortIndexName. The result of the query shows that port1 is still used by TrafficControl
-		//    tc1, then the return port will not be created and corresponding flow will not be uninstalled in that worker
-		//    goroutine.
-		c.ovsPortUpdateMutex.Lock()
-		defer c.ovsPortUpdateMutex.Unlock()
-
-		var err error
-		var exists bool
-
-		tc, err = c.trafficControlLister.Get(tcName)
-		if err != nil {
-			if apierrors.IsNotFound(err) {
-				// If the TrafficControl is deleted and the corresponding state doesn't exist, just return.
-				tcState, exists = c.getTrafficControlState(tcName)
-				if !exists {
-					return nil
-				}
-				// If a TrafficControl is deleted but the corresponding state exists, do some cleanup for the deleted
-				// TrafficControl.
-				if err = c.uninstallTrafficControl(&tcState); err != nil {
-					return err
-				}
-				// Delete the state of the TrafficControl to be deleted.
-				c.installedTrafficControls.Delete(tcState)
-				tcDeleted = true
+	tc, err := c.trafficControlLister.Get(tcName)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			// If the TrafficControl is deleted and the corresponding state doesn't exist, just return.
+			tcState, exists := c.getTrafficControlState(tcName)
+			if !exists {
 				return nil
 			}
-			return err
-		}
-
-		// Get the state of the TrafficControl.
-		tcState, exists = c.getTrafficControlState(tcName)
-		// If the TrafficControl exists and corresponding state doesn't exist, create state for the TrafficControl.
-		if !exists {
-			tcState = c.newTrafficControlState(tcName, tc.Spec.Action, tc.Spec.Direction)
-		}
-
-		if tc.Spec.ReturnPort != nil {
-			if returnPort, exists, err = c.getOrCreateTrafficControlPort(tc.Spec.ReturnPort); err != nil {
+			// If a TrafficControl is deleted but the corresponding state exists, do some cleanup for the deleted
+			// TrafficControl.
+			if err = c.uninstallTrafficControl(tcName, tcState); err != nil {
 				return err
 			}
-			shouldInstallReturnFlow := func() bool {
-				tcs, _ := c.installedTrafficControls.ByIndex(returnPortIndexName, strconv.Itoa(int(returnPort)))
-				return len(tcs) == 0
-			}
-			// There are two situations that the return flow should be installed for the return port:
-			// - The return port is newly created.
-			// - The return port is not newly created (using existing port as return port) and not used by any TrafficControl.
-			if !exists || shouldInstallReturnFlow() {
-				if err = c.ofClient.InstallTrafficControlReturnPortFlow(returnPort); err != nil {
+			// Delete the state of the deleted TrafficControl.
+			c.deleteTrafficControlState(tcName)
+			return nil
+		}
+		return err
+	}
+
+	// Get the TrafficControl state.
+	tcState, exists := c.getTrafficControlState(tcName)
+	// If the TrafficControl exists and corresponding state doesn't exist, create state for the TrafficControl.
+	if !exists {
+		tcState = c.newTrafficControlState(tcName, tc.Spec.Action, tc.Spec.Direction)
+	}
+
+	if tc.Spec.ReturnPort != nil {
+		// Get name of the return port.
+		returnPortName = c.getPortName(tc.Spec.ReturnPort)
+		// If the name is different from the cached name in the TrafficControl state, it could be caused by the return
+		// port update of the TrafficControl or the creation of the TrafficControl.
+		if returnPortName != tcState.returnPortName {
+			if tcState.returnPortName != "" {
+				// If the stale return port name cached in TrafficControl state is not empty, release the stale return port
+				// from the TrafficControl.
+				returnOFPort, portDeleted, err := c.releaseTrafficControlPort(returnPortName, tcName)
+				if err != nil {
 					return err
 				}
-			}
-			// The return port of the TrafficControl is updated.
-			if tcState.returnPort != 0 && returnPort != tcState.returnPort {
-				shouldDeleteFlows, shouldDeletePort := c.shouldDeleteFlowsAndPort(tcName, returnPortIndexName, tcState.returnPort)
-				// If the stale return port is on longer used by any other TrafficControls, uninstall the return flow for
-				// the port.
-				if shouldDeleteFlows {
-					if err = c.ofClient.UninstallTrafficControlReturnPortFlow(tcState.returnPort); err != nil {
+				// If the stale return port is deleted, uninstall the return flow for the return port.
+				if portDeleted {
+					if err = c.ofClient.UninstallTrafficControlReturnPortFlow(returnOFPort); err != nil {
 						return err
 					}
-					// If the stale return port is created by TrafficControl controller, delete the port.
-					if shouldDeletePort {
-						if err = c.deleteTrafficControlPort(tcState.returnPort); err != nil {
-							return err
-						}
-					}
 				}
-				tcUpdated = true
 			}
-		}
+			// Get or create the return port.
+			var returnOFPort uint32
+			var portCreated bool
+			if returnOFPort, portCreated, err = c.getOrCreateTrafficControlPort(tc.Spec.ReturnPort, returnPortName, tcName); err != nil {
+				return err
+			}
+			// Update return port name in state.
+			tcState.returnPortName = returnPortName
 
-		targetPort, _, err = c.getOrCreateTrafficControlPort(&tc.Spec.TargetPort)
-		if err != nil {
-			return err
-		}
-		// The target port of the TrafficControl is updated.
-		if tcState.targetPort != 0 && targetPort != tcState.targetPort {
-			_, shouldDeletePort := c.shouldDeleteFlowsAndPort(tcName, targetPortIndexName, tcState.targetPort)
-			// If the stale target port is no longer used by any other TrafficControls, delete the port.
-			if shouldDeletePort {
-				if err = c.deleteTrafficControlPort(tcState.targetPort); err != nil {
+			// If the return port is newly created, install a return flow for the return port.
+			if !portCreated {
+				if err = c.ofClient.InstallTrafficControlReturnPortFlow(returnOFPort); err != nil {
 					return err
 				}
+			}
+		}
+	}
+
+	// Get name of the return port.
+	targetPortName = c.getPortName(&tc.Spec.TargetPort)
+	// If the name is different from the cached name in the TrafficControl state, it could be caused by the target port
+	// update of the TrafficControl or the creation of the TrafficControl.
+	if targetPortName != tcState.targetPortName {
+		if tcState.targetPortName != "" {
+			// If the stale return port name cached in TrafficControl state is not empty, release the stale target port
+			// from the TrafficControl.
+			_, _, err = c.releaseTrafficControlPort(tcState.targetPortName, tcName)
+			if err != nil {
+				return err
 			}
 			tcUpdated = true
 		}
-
-		// Update the TrafficControl state and store it to installedTrafficControls.
-		tcState.targetPort = targetPort
-		tcState.returnPort = returnPort
-		c.installedTrafficControls.Update(tcState)
-
-		return nil
 	}
-
-	if err := syncFn(); err != nil {
+	// Get or create the target port.
+	targetOFPort, _, err := c.getOrCreateTrafficControlPort(&tc.Spec.TargetPort, targetPortName, tcName)
+	if err != nil {
 		return err
 	}
-	// If the TrafficControl is deleted, just return.
-	if tcDeleted {
-		return nil
-	}
+	// Update target port name in state.
+	tcState.targetPortName = targetPortName
 
-	// Update the state of the TrafficControl, these two fields are only relevant to the current worker goroutine.
+	// Update action and direction in state.
 	if tcState.action != tc.Spec.Action {
 		tcState.action = tc.Spec.Action
 		tcUpdated = true
@@ -876,23 +867,18 @@ func (c *Controller) syncTrafficControl(tcName string) error {
 	}
 
 	// Get the list of Pods applying to the TrafficControl.
-	var podObjects []*v1.Pod
-	var err error
-	if podObjects, err = c.filterPods(&tc.Spec.AppliedTo); err != nil {
+	var pods []*v1.Pod
+	if pods, err = c.filterPods(&tc.Spec.AppliedTo); err != nil {
 		return err
 	}
 
-	// Reserve the set of Pods in TrafficControl state as stale, and reinitialize the set in TrafficControl state.
-	stalePods := tcState.pods
-	tcState.pods = sets.NewString()
-	// Reserve the set of OF ports in TrafficControl state as old, and reinitialize the set in TrafficControl state.
-	oldOfPorts := tcState.ofPorts
-	tcState.ofPorts = sets.NewInt32()
-	// Iterate the list of Pods applying to the TrafficControl.
-	for _, pod := range podObjects {
+	stalePods := tcState.pods.Union(nil)
+	newPods := sets.NewString()
+	oldOfPorts := tcState.ofPorts.Union(nil)
+	newOfPorts := sets.NewInt32()
+	for _, pod := range pods {
 		podNN := k8s.NamespacedName(pod.Namespace, pod.Name)
-		// Insert the Pod to the reinitialized set in TrafficControl state and remove the Pod from the stale set.
-		tcState.pods.Insert(podNN)
+		newPods.Insert(podNN)
 		stalePods.Delete(podNN)
 
 		// If the TrafficControl is not the effective TrafficControl for the Pod, do nothing.
@@ -907,66 +893,58 @@ func (c *Controller) syncTrafficControl(tcName string) error {
 			klog.InfoS("Interfaces of Pod not found", "Pod", klog.KObj(pod))
 			continue
 		}
-		tcState.ofPorts.Insert(podInterfaces[0].OFPort)
+		newOfPorts.Insert(podInterfaces[0].OFPort)
 	}
 
 	// If the target port, direction and action of the TrafficControl is updated, the mark flows should be reinstalled.
 	// If the newly generated ofPort set is different from the stale ofPort set, the flows should be reinstalled, the mark
 	// flows should be also reinstalled.
-	if tcUpdated || len(utilsets.SymmetricDifferenceInt32(tcState.ofPorts, oldOfPorts)) != 0 {
+	if tcUpdated || !newOfPorts.Equal(oldOfPorts) {
 		var ofPorts []uint32
-		for _, port := range tcState.ofPorts.List() {
+		for _, port := range newOfPorts.List() {
 			ofPorts = append(ofPorts, uint32(port))
 		}
-		if err = c.ofClient.InstallTrafficControlMarkFlows(tc.Name, ofPorts, targetPort, tc.Spec.Direction, tc.Spec.Action); err != nil {
+		if err = c.ofClient.InstallTrafficControlMarkFlows(tc.Name, ofPorts, targetOFPort, tc.Spec.Direction, tc.Spec.Action); err != nil {
 			return err
 		}
 	}
+	tcState.pods = newPods
+	tcState.ofPorts = newOfPorts
+
 	if len(stalePods) != 0 {
 		// Resync the Pods applying to the TrafficControl to be deleted.
 		c.podsResync(stalePods, tcName)
 	}
 
-	c.installedTrafficControls.Update(tcState)
-
 	return nil
 }
 
-func (c *Controller) uninstallTrafficControl(tcState *trafficControlState) error {
-	tcName := tcState.name
-	var shouldDeleteFlows, shouldDeletePort bool
-
+func (c *Controller) uninstallTrafficControl(tcName string, tcState *trafficControlState) error {
 	// Uninstall the mark flows of the TrafficControl.
 	if err := c.ofClient.UninstallTrafficControlMarkFlows(tcName); err != nil {
 		return err
 	}
-	// If the target port is no longer used by any other TrafficControls and was created by TrafficControl controller,
-	// delete the target port.
-	_, shouldDeletePort = c.shouldDeleteFlowsAndPort(tcName, targetPortIndexName, tcState.targetPort)
-	if shouldDeletePort {
-		if err := c.deleteTrafficControlPort(tcState.targetPort); err != nil {
+
+	// Release the target port from the deleted TrafficControl.
+	if _, _, err := c.releaseTrafficControlPort(tcState.targetPortName, tcName); err != nil {
+		return err
+	}
+
+	if tcState.returnPortName != "" {
+		returnOFPort, portDeleted, err := c.releaseTrafficControlPort(tcState.returnPortName, tcName)
+		if err != nil {
 			return err
+		}
+		// If the return port is no longer used by any TrafficControl, uninstall the return flow for the return port.
+		// Note that, the return flow for the return port was installed when it was used by a TrafficControl firstly.
+		if portDeleted {
+			if err = c.ofClient.UninstallTrafficControlReturnPortFlow(returnOFPort); err != nil {
+				return err
+			}
 		}
 	}
 
-	if tcState.returnPort != 0 {
-		shouldDeleteFlows, shouldDeletePort = c.shouldDeleteFlowsAndPort(tcName, returnPortIndexName, tcState.returnPort)
-		if shouldDeleteFlows {
-			// If the return port is no longer used by any other TrafficControls, uninstall the return flow for the return
-			// port. Note that, the return flow for the return port was installed when it was used by a TrafficControl
-			// firstly.
-			if err := c.ofClient.UninstallTrafficControlReturnPortFlow(tcState.returnPort); err != nil {
-				return err
-			}
-			// If the return port is created by TrafficControl controller, delete the return port.
-			if shouldDeletePort {
-				if err := c.deleteTrafficControlPort(tcState.returnPort); err != nil {
-					return err
-				}
-			}
-		}
-	}
-	// Resync the Pods applying to the TrafficControl to be deleted.
+	// Resync the Pods applying to the deleted TrafficControl.
 	if len(tcState.pods) != 0 {
 		c.podsResync(tcState.pods, tcName)
 	}
@@ -986,21 +964,6 @@ func (c *Controller) podsResync(pods sets.String, tcName string) {
 	for tc := range newEffectiveTCs {
 		c.queue.Add(tc)
 	}
-}
-
-func (c *Controller) shouldDeleteFlowsAndPort(tcName string, indexName string, port uint32) (bool, bool) {
-	tcStates, _ := c.installedTrafficControls.ByIndex(indexName, strconv.Itoa(int(port)))
-	var shouldDeleteFlows, shouldDeletePort bool
-	// If the port is only used by the TrafficControl to be deleted, its related flows should be uninstalled.
-	if len(tcStates) == 1 && tcStates[0].(trafficControlState).name == tcName {
-		shouldDeleteFlows = true
-		// If the port is created by TrafficControl controller, then it should be deleted.
-		itf, _ := c.interfaceStore.GetInterfaceByOFPort(port)
-		if itf.Type == interfacestore.TrafficControlInterface {
-			shouldDeletePort = true
-		}
-	}
-	return shouldDeleteFlows, shouldDeletePort
 }
 
 // bindPodToTrafficControl binds the Pod with the TrafficControl and returns whether this TrafficControl is the effective

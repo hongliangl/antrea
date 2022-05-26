@@ -75,8 +75,7 @@ type TunnelInterfaceConfig struct {
 	PSK             string
 	// Whether options:csum is set for this tunnel interface.
 	// If true, encapsulation header UDP checksums will be computed on outgoing packets.
-	Csum         bool
-	ExtraOptions map[string]interface{}
+	Csum bool
 }
 
 type InterfaceConfig struct {
