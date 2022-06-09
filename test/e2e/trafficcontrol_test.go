@@ -310,7 +310,7 @@ func testRedirectToLocal(t *testing.T, data *TestData) {
 	targetPortName := "target1"
 	returnPortName := "return1"
 	tempPodName := "pod-to-create-veth-pair"
-	cmd := fmt.Sprintf(`ip link del dev %[1]s || true && \
+	cmd := fmt.Sprintf(`ip link del dev %[1]s ; \
 ip link add dev %[1]s type veth peer name %[2]s && \
 ip link set dev %[1]s up && \
 ip link set dev %[2]s up`, targetPortName, returnPortName)
@@ -321,9 +321,8 @@ ip link set dev %[2]s up`, targetPortName, returnPortName)
 		t.Fatalf("Failed to create Pod %s: %v", tempPodName, err)
 	}
 	require.NoError(t, data.podWaitForRunning(defaultTimeout, tempPodName, data.testNamespace))
-	_, stderr, err := data.RunCommandFromPod(data.testNamespace, tempPodName, agnhostContainerName, []string{"sh", "-c", cmd})
+	_, _, err := data.RunCommandFromPod(data.testNamespace, tempPodName, agnhostContainerName, []string{"sh", "-c", cmd})
 	require.NoError(t, err)
-	require.Equal(t, "", stderr)
 	defer data.RunCommandFromPod(data.testNamespace, tempPodName, agnhostContainerName, []string{"sh", "-c", fmt.Sprintf("ip link del dev %s", targetPortName)})
 
 	targetPort := &v1alpha2.NetworkDevice{Name: targetPortName}
