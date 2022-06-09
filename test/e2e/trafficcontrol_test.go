@@ -313,23 +313,17 @@ func testRedirectToLocal(t *testing.T, data *TestData) {
 	cmd := fmt.Sprintf(`ip link del dev %[1]s || true && \
 ip link add dev %[1]s type veth peer name %[2]s && \
 ip link set dev %[1]s up && \
-ip link set dev %[2]s up && \
-sleep 3600`, targetPortName, returnPortName)
-	if err := data.createPodOnNode(tempPodName, data.testNamespace, tcTestConfig.nodeName, agnhostImage, []string{"sh", "-c", cmd}, nil, nil, nil, true, func(pod *corev1.Pod) {
+ip link set dev %[2]s up`, targetPortName, returnPortName)
+	if err := data.createPodOnNode(tempPodName, data.testNamespace, tcTestConfig.nodeName, agnhostImage, []string{"sleep", "3600"}, nil, nil, nil, true, func(pod *corev1.Pod) {
 		privileged := true
 		pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{Privileged: &privileged}
 	}); err != nil {
 		t.Fatalf("Failed to create Pod %s: %v", tempPodName, err)
 	}
-	_, err := data.PodWaitFor(defaultTimeout, tempPodName, data.testNamespace, func(p *corev1.Pod) (bool, error) {
-		for _, condition := range p.Status.Conditions {
-			if condition.Type == corev1.PodReady {
-				return condition.Status == corev1.ConditionTrue, nil
-			}
-		}
-		return false, nil
-	})
+	require.NoError(t, data.podWaitForRunning(defaultTimeout, tempPodName, data.testNamespace))
+	_, stderr, err := data.RunCommandFromPod(data.testNamespace, tempPodName, agnhostContainerName, []string{"sh", "-c", cmd})
 	require.NoError(t, err)
+	require.Equal(t, "", stderr)
 	defer data.RunCommandFromPod(data.testNamespace, tempPodName, agnhostContainerName, []string{"sh", "-c", fmt.Sprintf("ip link del dev %s", targetPortName)})
 
 	targetPort := &v1alpha2.NetworkDevice{Name: targetPortName}
