@@ -112,10 +112,4 @@ func TestRouteOperation(t *testing.T) {
 	routes7, err := util.GetNetRoutes(gwLink, destCIDR2)
 	require.Nil(t, err)
 	assert.Equal(t, 0, len(routes7))
-
-	err = client.DeleteClusterIPRoute(svcIP1)
-	require.Nil(t, err)
-	routes8, err := util.GetNetRoutes(gwLink, svcIPNet1)
-	require.Nil(t, err)
-	assert.Equal(t, 0, len(routes8))
 }

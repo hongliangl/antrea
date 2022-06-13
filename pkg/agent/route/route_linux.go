@@ -1004,10 +1004,6 @@ func (c *Client) DeleteRoutes(podCIDR *net.IPNet) error {
 	return nil
 }
 
-func (c *Client) DeleteClusterIPRoute(svcIP net.IP) error {
-	return nil
-}
-
 // Join all words with spaces, terminate with newline and write to buf.
 func writeLine(buf *bytes.Buffer, words ...string) {
 	// We avoid strings.Join for performance reasons.
@@ -1201,11 +1197,9 @@ func (c *Client) AddClusterIPRoute(svcIP net.IP) error {
 	linkIndex := c.nodeConfig.GatewayConfig.LinkIndex
 	scope := netlink.SCOPE_UNIVERSE
 	curClusterIPCIDR := c.clusterIPv4CIDR
-	mask := ipv4AddrLength
 	gw := config.VirtualServiceIPv4
 	if isIPv6 {
 		curClusterIPCIDR = c.clusterIPv6CIDR
-		mask = ipv6AddrLength
 		gw = config.VirtualServiceIPv6
 	}
 
@@ -1226,7 +1220,7 @@ func (c *Client) AddClusterIPRoute(svcIP net.IP) error {
 	} else {
 		// If the route doesn't exist, generate a new destination CIDR with the ClusterIP. Note that, this is the first
 		// ClusterIP since the route doesn't exist.
-		newClusterIPCIDR = &net.IPNet{IP: svcIP, Mask: net.CIDRMask(mask, mask)}
+		newClusterIPCIDR = util.NewIPNet(svcIP)
 	}
 
 	// Generate a route with the new destination CIDR and install it.
@@ -1246,7 +1240,8 @@ func (c *Client) AddClusterIPRoute(svcIP net.IP) error {
 	// Collect stale routes.
 	var staleRoutes []*netlink.Route
 	if curClusterIPCIDR != nil {
-		// If current destination CIDR is not nil, the route with current destination CIDR should be uninstalled.
+		// If current destination CIDR is not nil, the route with current destination CIDR should be uninstalled since
+		// a new route with a newly calculated destination CIDR has been installed.
 		route.Dst = curClusterIPCIDR
 		staleRoutes = []*netlink.Route{route}
 	} else {
@@ -1268,7 +1263,11 @@ func (c *Client) AddClusterIPRoute(svcIP net.IP) error {
 	// Remove stale routes.
 	for _, rt := range staleRoutes {
 		if err = netlink.RouteDel(rt); err != nil {
-			return fmt.Errorf("failed to uninstall stale ClusterIP route %s: %w", rt.String(), err)
+			if err.Error() == "no such process" {
+				klog.InfoS("Failed to delete stale ClusterIP route since the route doesn't exist", "route", route)
+			} else {
+				return fmt.Errorf("failed to delete routing entry for ClusterIP %s: %w", svcIP.String(), err)
+			}
 		}
 		klog.V(4).InfoS("Uninstalled stale ClusterIP route successfully", "stale route", rt)
 	}
@@ -1314,10 +1313,10 @@ func (c *Client) addLoadBalancerIngressIPRoute(svcIPStr string) error {
 
 	route := generateRoute(svcIP, mask, gw, linkIndex, netlink.SCOPE_UNIVERSE)
 	if err := netlink.RouteReplace(route); err != nil {
-		return fmt.Errorf("failed to install routing entry for LoadBalancer ingress IP %s: %w", svcIP.String(), err)
+		return fmt.Errorf("failed to install routing entry for LoadBalancer ingress IP %s: %w", svcIPStr, err)
 	}
 	klog.V(4).InfoS("Added LoadBalancer ingress IP route", "route", route)
-	c.serviceRoutes.Store(svcIP.String(), route)
+	c.serviceRoutes.Store(svcIPStr, route)
 
 	return nil
 }
@@ -1341,13 +1340,13 @@ func (c *Client) deleteLoadBalancerIngressIPRoute(svcIPStr string) error {
 	route := generateRoute(svcIP, mask, gw, linkIndex, netlink.SCOPE_UNIVERSE)
 	if err := netlink.RouteDel(route); err != nil {
 		if err.Error() == "no such process" {
-			klog.InfoS("Failed to delete LoadBalancer ingress IP route since the route has been deleted", "route", route)
+			klog.InfoS("Failed to delete LoadBalancer ingress IP route since the route doesn't exist", "route", route)
 		} else {
-			return fmt.Errorf("failed to delete routing entry for LoadBalancer ingress IP %s: %w", svcIP.String(), err)
+			return fmt.Errorf("failed to delete routing entry for LoadBalancer ingress IP %s: %w", svcIPStr, err)
 		}
 	}
 	klog.V(4).InfoS("Deleted LoadBalancer ingress IP route", "route", route)
-	c.serviceRoutes.Delete(svcIP.String())
+	c.serviceRoutes.Delete(svcIPStr)
 
 	return nil
 }

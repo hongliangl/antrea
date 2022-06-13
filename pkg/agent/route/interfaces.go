@@ -61,10 +61,6 @@ type Interface interface {
 	// AddClusterIPRoute adds route on K8s node for Service ClusterIP.
 	AddClusterIPRoute(svcIP net.IP) error
 
-	// DeleteClusterIPRoute deletes route for a Service IP when AntreaProxy is configured to handle
-	// ClusterIP Service traffic from host network.
-	DeleteClusterIPRoute(svcIP net.IP) error
-
 	// AddLoadBalancer adds configurations when a LoadBalancer Service is created.
 	AddLoadBalancer(externalIPs []string) error
 
