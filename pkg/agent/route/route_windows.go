@@ -311,8 +311,8 @@ func (c *Client) AddClusterIPRoute(svcIP net.IP) error {
 
 func (c *Client) addVirtualNodePortDNATIPRoute(isIPv6 bool) error {
 	linkIndex := c.nodeConfig.GatewayConfig.LinkIndex
-	vIPNet := virtualServiceIPv4Net
-	vIP := config.VirtualServiceIPv4
+	vIPNet := virtualNodePortDNATIPv4Net
+	vIP := config.VirtualNodePortDNATIPv4
 	gw := config.VirtualServiceIPv4
 
 	route := generateRoute(vIPNet, gw, linkIndex, util.MetricHigh)
@@ -323,7 +323,7 @@ func (c *Client) addVirtualNodePortDNATIPRoute(isIPv6 bool) error {
 	klog.InfoS("Added virtual Service IP route", "route", route)
 
 	// For NodePort Service, a new NetNat for NetNatStaticMapping is needed.
-	if err := util.NewNetNat(antreaNatNodePort, virtualNodePortDNATIPv4Net); err != nil {
+	if err := util.NewNetNat(antreaNatNodePort, vIPNet); err != nil {
 		return err
 	}
 
