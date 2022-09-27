@@ -40,7 +40,6 @@ import (
 	"antrea.io/antrea/pkg/agent/interfacestore"
 	"antrea.io/antrea/pkg/agent/openflow"
 	"antrea.io/antrea/pkg/agent/types"
-	"antrea.io/antrea/pkg/agent/util"
 	"antrea.io/antrea/pkg/apis/crd/v1alpha2"
 	crdinformers "antrea.io/antrea/pkg/client/informers/externalversions/crd/v1alpha2"
 	crdlisters "antrea.io/antrea/pkg/client/listers/crd/v1alpha2"
@@ -590,13 +589,17 @@ func (c *Controller) createOVSInternalPort(portName string) (string, error) {
 		return "", err
 	}
 	if pollErr := wait.PollImmediate(time.Second, 5*time.Second, func() (bool, error) {
-		_, _, err := util.SetLinkUp(portName)
-		if err == nil {
-			return true, nil
-		}
-		if _, ok := err.(util.LinkNotFound); ok {
-			return false, nil
-		}
+		/*
+			_, _, err := util.SetLinkUp(portName)
+			if err == nil {
+				return true, nil
+			}
+
+			if _, ok := err.(util.LinkNotFound); ok {
+				return false, nil
+			}
+
+		*/
 		return false, err
 	}); pollErr != nil {
 		return "", pollErr
