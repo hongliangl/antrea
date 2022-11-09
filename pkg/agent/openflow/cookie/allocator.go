@@ -30,7 +30,7 @@ const (
 type Category uint64
 
 const (
-	Default Category = iota
+	Default Category = iota + 1
 	PodConnectivity
 	NetworkPolicy
 	Service
