@@ -203,6 +203,7 @@ func (f *featureNetworkPolicy) getRequiredTables() []*Table {
 		EgressRuleTable,
 		EgressDefaultTable,
 		EgressMetricTable,
+		TrafficControlTable,
 		IngressSecurityClassifierTable,
 		IngressRuleTable,
 		IngressDefaultTable,

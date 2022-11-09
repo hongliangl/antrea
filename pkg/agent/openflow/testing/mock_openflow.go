@@ -21,6 +21,7 @@ package testing
 
 import (
 	config "antrea.io/antrea/pkg/agent/config"
+	interfacestore "antrea.io/antrea/pkg/agent/interfacestore"
 	types "antrea.io/antrea/pkg/agent/types"
 	v1alpha2 "antrea.io/antrea/pkg/apis/crd/v1alpha2"
 	openflow "antrea.io/antrea/pkg/ovs/openflow"
@@ -255,18 +256,18 @@ func (mr *MockClientMockRecorder) InitialTLVMap() *gomock.Call {
 }
 
 // Initialize mocks base method
-func (m *MockClient) Initialize(arg0 types.RoundInfo, arg1 *config.NodeConfig, arg2 *config.NetworkConfig, arg3 *config.EgressConfig, arg4 *config.ServiceConfig) (<-chan struct{}, error) {
+func (m *MockClient) Initialize(arg0 types.RoundInfo, arg1 *config.NodeConfig, arg2 *config.NetworkConfig, arg3 *config.EgressConfig, arg4 *config.ServiceConfig, arg5 interfacestore.InterfaceStore) (<-chan struct{}, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Initialize", arg0, arg1, arg2, arg3, arg4)
+	ret := m.ctrl.Call(m, "Initialize", arg0, arg1, arg2, arg3, arg4, arg5)
 	ret0, _ := ret[0].(<-chan struct{})
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Initialize indicates an expected call of Initialize
-func (mr *MockClientMockRecorder) Initialize(arg0, arg1, arg2, arg3, arg4 interface{}) *gomock.Call {
+func (mr *MockClientMockRecorder) Initialize(arg0, arg1, arg2, arg3, arg4, arg5 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Initialize", reflect.TypeOf((*MockClient)(nil).Initialize), arg0, arg1, arg2, arg3, arg4)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Initialize", reflect.TypeOf((*MockClient)(nil).Initialize), arg0, arg1, arg2, arg3, arg4, arg5)
 }
 
 // InstallEndpointFlows mocks base method

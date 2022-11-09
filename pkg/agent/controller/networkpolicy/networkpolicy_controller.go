@@ -32,6 +32,7 @@ import (
 
 	"antrea.io/antrea/pkg/agent"
 	"antrea.io/antrea/pkg/agent/config"
+	"antrea.io/antrea/pkg/agent/controller/l7networkpolicy/suricata"
 	"antrea.io/antrea/pkg/agent/flowexporter/connections"
 	"antrea.io/antrea/pkg/agent/interfacestore"
 	"antrea.io/antrea/pkg/agent/openflow"
@@ -55,6 +56,18 @@ const (
 	// services to the workloads that have FQDN policy rules applied.
 	dnsInterceptRuleID = uint32(1)
 )
+
+var (
+	once sync.Once
+)
+
+type RuleEnforcer interface {
+	Run(stopCh <-chan struct{})
+
+	AddRule(name string, from v1beta2.GroupMemberSet, target v1beta2.GroupMemberSet, services []v1beta2.Service, protocols []v1beta2.L7Protocol) error
+
+	DeleteRule(name string) error
+}
 
 var emptyWatch = watch.NewEmptyWatch()
 
@@ -97,6 +110,9 @@ type Controller struct {
 	// reconciler provides interfaces to reconcile the desired state of
 	// NetworkPolicy rules with the actual state of Openflow entries.
 	reconciler Reconciler
+	// l7RuleEnforcer provides interfaces to reconcile the desired state of
+	// NetworkPolicy rules which have L7 rules with the actual state of Suricata signatures.
+	l7RuleEnforcer RuleEnforcer
 	// ofClient registers packetin for Antrea Policy logging.
 	ofClient           openflow.Client
 	antreaPolicyLogger *AntreaPolicyLogger
@@ -148,6 +164,7 @@ func NewNetworkPolicyController(antreaClientGetter agent.AntreaClientProvider,
 		loggingEnabled:       loggingEnabled,
 		gwPort:               gwPort,
 		tunPort:              tunPort,
+		l7RuleEnforcer:       suricata.NewEnforcer(),
 	}
 
 	if antreaPolicyEnabled {
@@ -488,6 +505,8 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 	if c.statusManagerEnabled {
 		go c.statusManager.Run(stopCh)
 	}
+	//TODO: remove this
+	go c.l7RuleEnforcer.Run(stopCh)
 
 	<-stopCh
 }
@@ -592,7 +611,10 @@ func (c *Controller) syncRule(key string) error {
 	}()
 	rule, effective, realizable := c.ruleCache.GetCompletedRule(key)
 	if !effective {
-		klog.V(2).InfoS("Rule was not effective, removing its flows", "ruleID", key)
+		klog.V(2).InfoS("Rule was not effective, removing it", "ruleID", key)
+		if err := c.l7RuleEnforcer.DeleteRule(key); err != nil {
+			return err
+		}
 		if err := c.reconciler.Forget(key); err != nil {
 			return err
 		}
@@ -608,6 +630,24 @@ func (c *Controller) syncRule(key string) error {
 	if !realizable {
 		klog.V(2).InfoS("Rule is not realizable, skipping", "ruleID", key)
 		return nil
+	}
+
+	if len(rule.L7Protocols) != 0 {
+		once.Do(func() {
+			//TODO: how to exit suricata gracefully.
+			go c.l7RuleEnforcer.Run(make(chan struct{}))
+		})
+
+		// Resolve named ports.
+		resolvedServices := make([]v1beta2.Service, len(rule.Services))
+		for _, member := range rule.TargetMembers {
+			for i := range rule.Services {
+				resolvedServices[i] = *resolveService(&rule.Services[i], member)
+			}
+		}
+		if err := c.l7RuleEnforcer.AddRule(key, rule.FromAddresses, rule.TargetMembers, resolvedServices, rule.L7Protocols); err != nil {
+			return err
+		}
 	}
 	err := c.reconciler.Reconcile(rule)
 	if c.fqdnController != nil {

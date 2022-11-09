@@ -137,6 +137,7 @@ func run(o *Options) error {
 
 	ovsDatapathType := ovsconfig.OVSDatapathType(o.config.OVSDatapathType)
 	ovsBridgeClient := ovsconfig.NewOVSBridge(o.config.OVSBridge, ovsDatapathType, ovsdbConnection)
+	ovsCtlClient := ovsctl.NewClient(o.config.OVSBridge)
 	ovsBridgeMgmtAddr := ofconfig.GetMgmtAddress(o.config.OVSRunDir, o.config.OVSBridge)
 	multicastEnabled := features.DefaultFeatureGate.Enabled(features.Multicast)
 	ofClient := openflow.NewClient(o.config.OVSBridge, ovsBridgeMgmtAddr,
@@ -232,6 +233,7 @@ func run(o *Options) error {
 		k8sClient,
 		crdClient,
 		ovsBridgeClient,
+		ovsCtlClient,
 		ofClient,
 		routeClient,
 		ifaceStore,
@@ -645,7 +647,7 @@ func run(o *Options) error {
 		tcController := trafficcontrol.NewTrafficControlController(ofClient,
 			ifaceStore,
 			ovsBridgeClient,
-			ovsctl.NewClient(o.config.OVSBridge),
+			ovsCtlClient,
 			trafficControlInformer,
 			localPodInformer,
 			namespaceInformer,

@@ -26,6 +26,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"antrea.io/antrea/pkg/agent/config"
+	"antrea.io/antrea/pkg/agent/interfacestore"
 	"antrea.io/antrea/pkg/agent/openflow/cookie"
 	"antrea.io/antrea/pkg/agent/types"
 	"antrea.io/antrea/pkg/agent/util"
@@ -48,7 +49,8 @@ type Client interface {
 		config *config.NodeConfig,
 		networkConfig *config.NetworkConfig,
 		egressConfig *config.EgressConfig,
-		serviceConfig *config.ServiceConfig) (<-chan struct{}, error)
+		serviceConfig *config.ServiceConfig,
+		ifaceStore interfacestore.InterfaceStore) (<-chan struct{}, error)
 
 	// InstallNodeFlows should be invoked when a connection to a remote Node is going to be set
 	// up. The hostname is used to identify the added flows. When IPsec tunnel is enabled,
@@ -745,12 +747,14 @@ func (c *client) Initialize(roundInfo types.RoundInfo,
 	nodeConfig *config.NodeConfig,
 	networkConfig *config.NetworkConfig,
 	egressConfig *config.EgressConfig,
-	serviceConfig *config.ServiceConfig) (<-chan struct{}, error) {
+	serviceConfig *config.ServiceConfig,
+	ifaceStore interfacestore.InterfaceStore) (<-chan struct{}, error) {
 	c.nodeConfig = nodeConfig
 	c.networkConfig = networkConfig
 	c.egressConfig = egressConfig
 	c.serviceConfig = serviceConfig
 	c.nodeType = nodeConfig.Type
+	c.ifaceStore = ifaceStore
 
 	if networkConfig.IPv4Enabled {
 		c.ipProtocols = append(c.ipProtocols, binding.ProtocolIP)
@@ -831,6 +835,7 @@ func (c *client) generatePipelines() {
 	c.featureNetworkPolicy = newFeatureNetworkPolicy(c.cookieAllocator,
 		c.ipProtocols,
 		c.bridge,
+		c.ifaceStore,
 		c.ovsMetersAreSupported,
 		c.enableDenyTracking,
 		c.enableAntreaPolicy,

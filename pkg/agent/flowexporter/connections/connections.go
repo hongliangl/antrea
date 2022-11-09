@@ -123,7 +123,8 @@ func (cs *connectionStore) fillPodInfo(conn *flowexporter.Connection) {
 
 func (cs *connectionStore) fillServiceInfo(conn *flowexporter.Connection, serviceStr string) {
 	// resolve destination Service information
-	if cs.antreaProxier != nil {
+	if cs.antreaProxier !=
+		nil {
 		servicePortName, exists := cs.antreaProxier.GetServiceByIP(serviceStr)
 		if !exists {
 			klog.Warningf("Could not retrieve the Service info from antrea-agent-proxier for the serviceStr: %s", serviceStr)

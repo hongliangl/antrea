@@ -22,6 +22,11 @@ import (
 )
 
 const (
+	L7NPTrafficControlTargetPort = "antrea-tap0"
+	L7NPTrafficControlReturnPort = "antrea-tap1"
+)
+
+const (
 	// Invalid ofport_request number is in range 1 to 65,279. For ofport_request number not in the range, OVS
 	// ignore the it and automatically assign a port number.
 	// Here we use an invalid port number "0" to request for automatically port allocation.

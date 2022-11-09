@@ -474,3 +474,7 @@ func (i *Initializer) installVMInitialFlows() error {
 	}
 	return nil
 }
+
+func (i *Initializer) setupTrafficControlInterfaces() error {
+	return nil
+}

@@ -312,3 +312,49 @@ func (i *Initializer) prepareOVSBridgeForVM() error {
 func (i *Initializer) installVMInitialFlows() error {
 	return nil
 }
+
+// setupTrafficControlInterfaces creates a pair of interfaces which are internal ports on OVS. These two ports are for
+// Suricata engine to do traffic redirect.
+func (i *Initializer) setupTrafficControlInterfaces() error {
+	trafficControlPortExternalIDs := map[string]interface{}{
+		interfacestore.AntreaInterfaceTypeKey: interfacestore.AntreaTrafficControl,
+	}
+
+	for _, portName := range []string{config.L7NPTrafficControlTargetPort, config.L7NPTrafficControlReturnPort} {
+		_, portExists := i.ifaceStore.GetInterface(portName)
+		if !portExists {
+			// Create the port if it doesn't exist.
+			portUUID, err := i.ovsBridgeClient.CreateInternalPort(portName, 0, "", trafficControlPortExternalIDs)
+			if err != nil {
+				return err
+			}
+			// Set the port up.
+			if pollErr := wait.PollImmediate(time.Second, 5*time.Second, func() (bool, error) {
+				_, _, err := util.SetLinkUp(portName)
+				if err == nil {
+					return true, nil
+				}
+				if _, ok := err.(util.LinkNotFound); ok {
+					return false, nil
+				}
+				return false, err
+			}); pollErr != nil {
+				return pollErr
+			}
+
+			ofPort, err := i.ovsBridgeClient.GetOFPort(portName, false)
+			if err != nil {
+				return err
+			}
+			// Set the port with no-flood to reject ARP flood packets.
+			if err := i.ovsCtlClient.SetPortNoFlood(int(ofPort)); err != nil {
+				return fmt.Errorf("failed to set port %s with no-flood config: %w", portName, err)
+			}
+			// Store the port information.
+			itf := interfacestore.NewTrafficControlInterface(portName)
+			itf.OVSPortConfig = &interfacestore.OVSPortConfig{PortUUID: portUUID, OFPort: ofPort}
+		}
+	}
+
+	return nil
+}

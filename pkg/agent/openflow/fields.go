@@ -188,6 +188,10 @@ var (
 	// CTMark[6]: Mark to indicate the connection is hairpin.
 	// This CT mark is used in CtZone / CtZoneV6 and SNATCtZone / SNATCtZoneV6.
 	HairpinCTMark = binding.NewOneBitCTMark(6)
+
+	// CTMark[7]: Mark to indicate the connection should be redirected.
+	// This CT mark is used in CtZone / CtZoneV6 and SNATCtZone / SNATCtZoneV6.
+	TrafficControlRedirectCTMark = binding.NewOneBitCTMark(7)
 )
 
 // Fields using CT label.

@@ -29,6 +29,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	"antrea.io/antrea/pkg/agent/config"
+	"antrea.io/antrea/pkg/agent/interfacestore"
 	"antrea.io/antrea/pkg/agent/metrics"
 	"antrea.io/antrea/pkg/agent/openflow/cookie"
 	"antrea.io/antrea/pkg/agent/types"
@@ -447,6 +448,8 @@ type client struct {
 	ipProtocols []binding.Protocol
 	// ovsctlClient is the interface for executing OVS "ovs-ofctl" and "ovs-appctl" commands.
 	ovsctlClient ovsctl.OVSCtlClient
+
+	ifaceStore interfacestore.InterfaceStore
 }
 
 func (c *client) GetTunnelVirtualMAC() net.HardwareAddr {
@@ -1727,7 +1730,7 @@ func (f *featurePodConnectivity) ipv6Flows() []binding.Flow {
 
 // For normal traffic, conjunctionActionFlow generates the flow to jump to a specific table if policyRuleConjunction ID is matched. Priority of
 // conjunctionActionFlow is created at priorityLow for k8s network policies, and *priority assigned by PriorityAssigner for AntreaPolicy.
-func (f *featureNetworkPolicy) conjunctionActionFlow(conjunctionID uint32, table binding.Table, nextTable uint8, priority *uint16, enableLogging bool) []binding.Flow {
+func (f *featureNetworkPolicy) conjunctionActionFlow(conjunctionID uint32, table binding.Table, nextTable uint8, priority *uint16, enableLogging bool, hasL7Protocols bool) []binding.Flow {
 	tableID := table.GetID()
 	cookieID := f.cookieAllocator.Request(f.category).Raw()
 	var ofPriority uint16
@@ -1754,12 +1757,35 @@ func (f *featureNetworkPolicy) conjunctionActionFlow(conjunctionID uint32, table
 			if f.ovsMetersAreSupported {
 				fb = fb.Action().Meter(PacketInMeterIDNP)
 			}
+			if hasL7Protocols {
+				return fb.
+					Action().LoadToRegField(conjReg, conjunctionID).                           // Traceflow.
+					Action().LoadRegMark(DispositionAllowRegMark, CustomReasonLoggingRegMark). // AntreaPolicy, Enable logging.
+					Action().SendToController(uint8(PacketInReasonNP)).
+					Action().CT(true, nextTable, ctZone, f.ctZoneSrcField). // CT action requires commit flag if actions other than NAT without arguments are specified.
+					LoadToLabelField(uint64(conjunctionID), labelField).
+					LoadToCtMark(TrafficControlRedirectCTMark).
+					CTDone().
+					Cookie(cookieID).
+					Done()
+			}
 			return fb.
 				Action().LoadToRegField(conjReg, conjunctionID).                           // Traceflow.
 				Action().LoadRegMark(DispositionAllowRegMark, CustomReasonLoggingRegMark). // AntreaPolicy, Enable logging.
 				Action().SendToController(uint8(PacketInReasonNP)).
 				Action().CT(true, nextTable, ctZone, f.ctZoneSrcField). // CT action requires commit flag if actions other than NAT without arguments are specified.
 				LoadToLabelField(uint64(conjunctionID), labelField).
+				CTDone().
+				Cookie(cookieID).
+				Done()
+		}
+		if hasL7Protocols {
+			table.BuildFlow(ofPriority).MatchProtocol(proto).
+				MatchConjID(conjunctionID).
+				Action().LoadToRegField(conjReg, conjunctionID).        // Traceflow.
+				Action().CT(true, nextTable, ctZone, f.ctZoneSrcField). // CT action requires commit flag if actions other than NAT without arguments are specified.
+				LoadToLabelField(uint64(conjunctionID), labelField).
+				LoadToCtMark(TrafficControlRedirectCTMark).
 				CTDone().
 				Cookie(cookieID).
 				Done()

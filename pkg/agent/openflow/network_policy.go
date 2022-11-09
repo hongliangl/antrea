@@ -26,6 +26,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"antrea.io/antrea/pkg/agent/config"
+	"antrea.io/antrea/pkg/agent/interfacestore"
 	"antrea.io/antrea/pkg/agent/openflow/cookie"
 	"antrea.io/antrea/pkg/agent/types"
 	"antrea.io/antrea/pkg/apis/controlplane/v1beta2"
@@ -1136,7 +1137,7 @@ func (f *featureNetworkPolicy) calculateActionFlowChangesForRule(rule *types.Pol
 			actionFlows = append(actionFlows, f.conjunctionActionPassFlow(ruleOfID, ruleTable, rule.Priority, rule.EnableLogging))
 		} else {
 			metricFlows = append(metricFlows, f.allowRulesMetricFlows(ruleOfID, isIngress, rule.TableID)...)
-			actionFlows = append(actionFlows, f.conjunctionActionFlow(ruleOfID, ruleTable, dropTable.GetNext(), rule.Priority, rule.EnableLogging)...)
+			actionFlows = append(actionFlows, f.conjunctionActionFlow(ruleOfID, ruleTable, dropTable.GetNext(), rule.Priority, rule.EnableLogging, rule.L7Protocols != nil)...)
 		}
 		conj.actionFlows = actionFlows
 		conj.metricFlows = metricFlows
@@ -1998,6 +1999,7 @@ type featureNetworkPolicy struct {
 	// For example, if a flow has multiple actions, setting it to true can get consistent flow.
 	// Enabling it may carry a performance impact. It's disabled by default and should only be used in testing.
 	deterministic bool
+	ifaceStore    interfacestore.InterfaceStore
 
 	category cookie.Category
 }
@@ -2010,6 +2012,7 @@ func newFeatureNetworkPolicy(
 	cookieAllocator cookie.Allocator,
 	ipProtocols []binding.Protocol,
 	bridge binding.Bridge,
+	ifaceStore interfacestore.InterfaceStore,
 	ovsMetersAreSupported,
 	enableDenyTracking,
 	enableAntreaPolicy bool,
@@ -2022,6 +2025,7 @@ func newFeatureNetworkPolicy(
 		ipProtocols:              ipProtocols,
 		bridge:                   bridge,
 		nodeType:                 nodeType,
+		ifaceStore:               ifaceStore,
 		globalConjMatchFlowCache: make(map[string]*conjMatchFlowContext),
 		policyCache:              cache.NewIndexer(policyConjKeyFunc, cache.Indexers{priorityIndex: priorityIndexFunc}),
 		enableMulticast:          enableMulticast,
@@ -2047,6 +2051,7 @@ func (f *featureNetworkPolicy) initFlows() []binding.Flow {
 		flows = append(flows, f.ingressClassifierFlows()...)
 	}
 	flows = append(flows, f.skipPolicyRuleCheckFlows()...)
+	flows = append(flows, f.l7NPTrafficControlFlows()...)
 	return flows
 }
 
@@ -2097,4 +2102,36 @@ func (f *featureNetworkPolicy) skipPolicyRuleCheckFlows() []binding.Flow {
 		)
 	}
 	return flows
+}
+
+func (f *featureNetworkPolicy) l7NPTrafficControlFlows() []binding.Flow {
+	targetPortConfig, _ := f.ifaceStore.GetInterface(config.L7NPTrafficControlTargetPort)
+	returnPortConfig, _ := f.ifaceStore.GetInterface(config.L7NPTrafficControlReturnPort)
+	cookieID := f.cookieAllocator.Request(f.category).Raw()
+	return []binding.Flow{
+		// This generates the flow to output the packets to be redirected to the L7 engine via target port.
+		L2ForwardingOutTable.ofTable.BuildFlow(priorityHigh + 1).
+			Cookie(cookieID).
+			MatchRegMark(OFPortFoundRegMark).
+			MatchCTMark(TrafficControlRedirectCTMark).
+			Action().Output(uint32(targetPortConfig.OFPort)).
+			Done(),
+		// This generates the flow to mark the packets from L7 engine via return port and forward the packets to stageRouting
+		// directly. Note that, for the packets which are originally to be output to a tunnel port, value of NXM_NX_TUN_IPV4_DST
+		// for the returned packets needs to be loaded in stageRouting.
+		ClassifierTable.ofTable.BuildFlow(priorityNormal).
+			Cookie(f.cookieAllocator.Request(f.category).Raw()).
+			MatchInPort(uint32(returnPortConfig.OFPort)).
+			Action().LoadRegMark(FromTCReturnRegMark).
+			Action().GotoStage(stageRouting).
+			Done(),
+		// This generates the flow to forward the returned packets (with FromTCReturnRegMark) to stageOutput directly
+		// after loading output port number to reg1 in L2ForwardingCalcTable.
+		TrafficControlTable.ofTable.BuildFlow(priorityHigh).
+			Cookie(cookieID).
+			MatchRegMark(OFPortFoundRegMark, FromTCReturnRegMark).
+			Action().GotoStage(stageOutput).
+			Done(),
+	}
+
 }
