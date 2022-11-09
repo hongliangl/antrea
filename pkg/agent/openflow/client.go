@@ -278,9 +278,6 @@ type Client interface {
 	AddAddressToDNSConjunction(id uint32, addrs []types.Address) error
 	// DeleteAddressFromDNSConjunction removes addresses from the toAddresses of the dns packetIn conjunction.
 	DeleteAddressFromDNSConjunction(id uint32, addrs []types.Address) error
-	// InstallMulticastInitialFlows installs OpenFlow to packetIn the IGMP messages and output the Multicast traffic to
-	// antrea-gw0 so that local Pods could access external Multicast servers.
-	InstallMulticastInitialFlows(pktInReason uint8) error
 
 	// InstallMulticastFlows installs the flow to forward Multicast traffic normally, and output it to antrea-gw0
 	// to ensure it can be forwarded to the external addresses.
@@ -625,11 +622,11 @@ func (c *client) InstallServiceGroup(groupID binding.GroupIDType, withSessionAff
 	group := c.featureService.serviceEndpointGroup(groupID, withSessionAffinity, endpoints...)
 	_, installed := c.featureService.groupCache.Load(groupID)
 	if !installed {
-		if err := group.Add(); err != nil {
+		if err := c.ofEntryOperations.AddOFEntries([]binding.OFEntry{group}); err != nil {
 			return fmt.Errorf("error when installing Service Endpoints Group %d: %w", groupID, err)
 		}
 	} else {
-		if err := group.Modify(); err != nil {
+		if err := c.ofEntryOperations.ModifyOFEntries([]binding.OFEntry{group}); err != nil {
 			return fmt.Errorf("error when modifying Service Endpoints Group %d: %w", groupID, err)
 		}
 	}
@@ -640,10 +637,14 @@ func (c *client) InstallServiceGroup(groupID binding.GroupIDType, withSessionAff
 func (c *client) UninstallServiceGroup(groupID binding.GroupIDType) error {
 	c.replayMutex.RLock()
 	defer c.replayMutex.RUnlock()
-	if err := c.bridge.DeleteGroup(groupID); err != nil {
-		return fmt.Errorf("error when deleting Service Endpoints Group %d: %w", groupID, err)
+	groupCache, ok := c.featureService.groupCache.Load(groupID)
+	if ok {
+		if err := c.ofEntryOperations.DeleteOFEntries([]binding.OFEntry{groupCache.(binding.Group)}); err != nil {
+			return fmt.Errorf("error when deleting Service Endpoints Group %d: %w", groupID, err)
+		}
+		c.featureService.groupCache.Delete(groupID)
 	}
-	c.featureService.groupCache.Delete(groupID)
+
 	return nil
 }
 
@@ -1104,7 +1105,7 @@ func setBasePacketOutBuilder(packetOutBuilder binding.PacketOutBuilder, srcMAC s
 	return packetOutBuilder, nil
 }
 
-// SendTCPReject generates TCP packet as a packet-out and sends it to OVS.
+// SendTCPPacketOut generates TCP packet as a packet-out and sends it to OVS.
 func (c *client) SendTCPPacketOut(
 	srcMAC string,
 	dstMAC string,
@@ -1143,7 +1144,7 @@ func (c *client) SendTCPPacketOut(
 	return c.bridge.SendPacketOut(packetOutObj)
 }
 
-// SendICMPReject generates ICMP packet as a packet-out and send it to OVS.
+// SendICMPPacketOut generates ICMP packet as a packet-out and send it to OVS.
 func (c *client) SendICMPPacketOut(
 	srcMAC string,
 	dstMAC string,
@@ -1215,19 +1216,6 @@ func (c *client) SendUDPPacketOut(
 
 	packetOutObj := packetOutBuilder.Done()
 	return c.bridge.SendPacketOut(packetOutObj)
-}
-
-func (c *client) InstallMulticastInitialFlows(pktInReason uint8) error {
-	flows := c.featureMulticast.igmpPktInFlows(pktInReason)
-	flows = append(flows, c.featureMulticast.externalMulticastReceiverFlow())
-	flows = append(flows, c.featureMulticast.multicastSkipIGMPMetricFlows()...)
-	if c.enableAntreaPolicy {
-		flows = append(flows, c.featureMulticast.igmpEgressFlow())
-	}
-	cacheKey := "multicast"
-	c.replayMutex.RLock()
-	defer c.replayMutex.RUnlock()
-	return c.addFlows(c.featureMulticast.cachedFlows, cacheKey, flows)
 }
 
 func (c *client) InstallMulticastFlows(multicastIP net.IP, groupID binding.GroupIDType) error {
@@ -1325,22 +1313,34 @@ func (c *client) SendIGMPRemoteReportPacketOut(
 func (c *client) InstallMulticastGroup(groupID binding.GroupIDType, localReceivers []uint32, remoteNodeReceivers []net.IP) error {
 	c.replayMutex.RLock()
 	defer c.replayMutex.RUnlock()
-	table := MulticastOutputTable
+	nextTable := MulticastOutputTable.GetID()
 	if c.enableAntreaPolicy {
-		table = MulticastIngressRuleTable
+		nextTable = MulticastIngressRuleTable.GetID()
 	}
 
-	if err := c.featureMulticast.multicastReceiversGroup(groupID, table.GetID(), localReceivers, remoteNodeReceivers); err != nil {
-		return err
+	group := c.featureMulticast.multicastReceiversGroup(groupID, nextTable, localReceivers, remoteNodeReceivers)
+	_, installed := c.featureMulticast.groupCache.Load(groupID)
+	if !installed {
+		if err := c.ofEntryOperations.AddOFEntries([]binding.OFEntry{group}); err != nil {
+			return fmt.Errorf("error when installing Multicast receiver Group %d: %w", groupID, err)
+		}
+	} else {
+		if err := c.ofEntryOperations.ModifyOFEntries([]binding.OFEntry{group}); err != nil {
+			return fmt.Errorf("error when modifying Multicast receiver Group %d: %w", groupID, err)
+		}
 	}
+	c.featureMulticast.groupCache.Store(groupID, group)
 	return nil
 }
 
 func (c *client) UninstallMulticastGroup(groupID binding.GroupIDType) error {
 	c.replayMutex.RLock()
 	defer c.replayMutex.RUnlock()
-	if err := c.bridge.DeleteGroup(groupID); err != nil {
-		return fmt.Errorf("error when deleting Multicast receiver Group %d: %w", groupID, err)
+	groupCache, ok := c.featureMulticast.groupCache.Load(groupID)
+	if ok {
+		if err := c.ofEntryOperations.DeleteOFEntries([]binding.OFEntry{groupCache.(binding.Group)}); err != nil {
+			return fmt.Errorf("error when deleting Multicast receiver Group %d: %w", groupID, err)
+		}
 	}
 	c.featureMulticast.groupCache.Delete(groupID)
 	return nil
