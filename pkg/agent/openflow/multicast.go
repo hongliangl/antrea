@@ -15,7 +15,6 @@
 package openflow
 
 import (
-	"fmt"
 	"net"
 	"sync"
 
@@ -73,8 +72,14 @@ func multicastPipelineClassifyFlow(cookieID uint64, pipeline binding.Pipeline) b
 }
 
 func (f *featureMulticast) initFlows() []binding.Flow {
-	cookieID := f.cookieAllocator.Request(f.category).Raw()
-	return f.multicastOutputFlows(cookieID)
+	flows := f.igmpPktInFlows(uint8(PacketInReasonMC))
+	flows = append(flows, f.externalMulticastReceiverFlow())
+	flows = append(flows, f.multicastSkipIGMPMetricFlows()...)
+	if f.enableAntreaPolicy {
+		flows = append(flows, f.igmpEgressFlow())
+	}
+	flows = append(flows, f.multicastOutputFlows()...)
+	return flows
 }
 
 func (f *featureMulticast) replayFlows() []binding.Flow {
@@ -82,7 +87,7 @@ func (f *featureMulticast) replayFlows() []binding.Flow {
 	return getCachedFlows(f.cachedFlows)
 }
 
-func (f *featureMulticast) multicastReceiversGroup(groupID binding.GroupIDType, tableID uint8, ports []uint32, remoteIPs []net.IP) error {
+func (f *featureMulticast) multicastReceiversGroup(groupID binding.GroupIDType, tableID uint8, ports []uint32, remoteIPs []net.IP) binding.Group {
 	group := f.bridge.CreateGroupTypeAll(groupID).ResetBuckets()
 	for i := range ports {
 		group = group.Bucket().
@@ -99,22 +104,11 @@ func (f *featureMulticast) multicastReceiversGroup(groupID binding.GroupIDType, 
 			ResubmitToTable(MulticastOutputTable.GetID()).
 			Done()
 	}
-
-	_, installed := f.groupCache.Load(groupID)
-	if !installed {
-		if err := group.Add(); err != nil {
-			return fmt.Errorf("error when installing Multicast receiver Group %d: %w", groupID, err)
-		}
-	} else {
-		if err := group.Modify(); err != nil {
-			return fmt.Errorf("error when modifying Multicast receiver Group %d: %w", groupID, err)
-		}
-	}
-	f.groupCache.Store(groupID, group)
-	return nil
+	return group
 }
 
-func (f *featureMulticast) multicastOutputFlows(cookieID uint64) []binding.Flow {
+func (f *featureMulticast) multicastOutputFlows() []binding.Flow {
+	cookieID := f.cookieAllocator.Request(f.category).Raw()
 	flows := []binding.Flow{
 		MulticastOutputTable.ofTable.BuildFlow(priorityNormal).
 			Cookie(cookieID).
