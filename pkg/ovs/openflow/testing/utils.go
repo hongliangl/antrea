@@ -553,7 +553,7 @@ func actionOutputToString(action openflow15.Action) string {
 	var actionStr string
 	switch a.Port {
 	case openflow15.P_IN_PORT:
-		actionStr = "INPORT"
+		actionStr = "IN_PORT"
 	case openflow15.P_NORMAL:
 		actionStr = "NORMAL"
 	default:

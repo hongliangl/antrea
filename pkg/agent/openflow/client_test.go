@@ -48,6 +48,21 @@ const bridgeName = "dummy-br"
 
 var (
 	bridgeMgmtAddr = binding.GetMgmtAddress(ovsconfig.DefaultOVSRunDir, bridgeName)
+
+	fakeGatewayMAC, _ = net.ParseMAC("00:00:10:10:00:01")
+	fakeUplinkMAC, _  = net.ParseMAC("19:21:16:87:71:00")
+
+	fakeGatewayIPv4, fakePodIPv4CIDR, _ = net.ParseCIDR("10.10.0.1/24")
+	fakeNodeIPv4, fakeNodeIPv4Addr, _   = net.ParseCIDR("192.168.77.100/24")
+
+	fakeGatewayIPv6, fakePodIPv6CIDR, _ = net.ParseCIDR("fec0:10:10::1/80")
+	fakeNodeIPv6, fakeNodeIPv6Addr, _   = net.ParseCIDR("fec0:192:168:77::100/80")
+
+	_, fakeServiceIPv4CIDR, _ = net.ParseCIDR("10.96.0.0/16")
+	_, fakeServiceIPv6CIDR, _ = net.ParseCIDR("fec0:10:96::/64")
+
+	_, fakeEgressExceptIPv4CIDR, _ = net.ParseCIDR("192.168.78.0/24")
+	_, fakeEgressExceptIPv6CIDR, _ = net.ParseCIDR("fec0:192:168:78::/80")
 )
 
 func skipTest(tb testing.TB, skipLinux, skipWindows bool) {
@@ -75,10 +90,6 @@ type clientOptionsFn func(*clientOptions)
 func enableProxyAll(o *clientOptions) {
 	o.enableProxy = true
 	o.proxyAll = true
-}
-
-func disableProxyAll(o *clientOptions) {
-	o.proxyAll = false
 }
 
 func enableProxy(o *clientOptions) {
@@ -304,7 +315,7 @@ func newFakeClient(mockOFEntryOperations *oftest.MockOFEntryOperations,
 		enableProxy:           true,
 		enableAntreaPolicy:    true,
 		enableEgress:          true,
-		proxyAll:              true,
+		proxyAll:              false,
 		connectUplinkToBridge: false,
 		enableMulticast:       false,
 		enableTrafficControl:  false,
@@ -327,70 +338,57 @@ func newFakeClient(mockOFEntryOperations *oftest.MockOFEntryOperations,
 		o.enableMulticluster)
 	client := cli.(*client)
 
-	var gwIPv4, gwIPv6 net.IP
-	gwMAC, _ := net.ParseMAC("00:00:10:10:00:01")
-	uplinkMAC, _ := net.ParseMAC("19:21:16:87:71:00")
-	var podIPv4CIDR, podIPv6CIDR *net.IPNet
-	var nodeIPv4Addr, nodeIPv6Addr *net.IPNet
 	var egressExceptCIDRs []net.IPNet
 	var serviceIPv4CIDR, serviceIPv6CIDR *net.IPNet
 	var nodePortAddressesIPv4, nodePortAddressesIPv6 []net.IP
 	var ipProtocols []binding.Protocol
 
 	if enableIPv4 {
-		var nodeIPv4 net.IP
-		gwIPv4, podIPv4CIDR, _ = net.ParseCIDR("10.10.0.1/24")
-		nodeIPv4, nodeIPv4Addr, _ = net.ParseCIDR("192.168.77.100/24")
-		nodeIPv4Addr.IP = nodeIPv4
+		fakeNodeIPv4Addr.IP = fakeNodeIPv4
 		if o.enableEgress {
-			_, ipv4CIDR, _ := net.ParseCIDR("192.168.78.0/24")
-			egressExceptCIDRs = append(egressExceptCIDRs, *ipv4CIDR)
+			egressExceptCIDRs = append(egressExceptCIDRs, *fakeEgressExceptIPv4CIDR)
 		}
 		if !o.enableProxy {
-			_, serviceIPv4CIDR, _ = net.ParseCIDR("10.96.0.0/16")
+			serviceIPv4CIDR = fakeServiceIPv4CIDR
 		}
 		if o.enableProxy && o.proxyAll {
-			nodePortAddressesIPv4 = []net.IP{nodeIPv4, net.ParseIP("127.0.0.1")}
+			nodePortAddressesIPv4 = []net.IP{fakeNodeIPv4, net.ParseIP("127.0.0.1")}
 		}
 		ipProtocols = append(ipProtocols, binding.ProtocolIP)
 	}
 	if enableIPv6 {
-		var nodeIPv6 net.IP
-		gwIPv6, podIPv6CIDR, _ = net.ParseCIDR("fec0:10:10::1/80")
-		nodeIPv6, nodeIPv6Addr, _ = net.ParseCIDR("fec0:192:168:77::100/80")
-		nodeIPv6Addr.IP = nodeIPv6
+		fakeNodeIPv6Addr.IP = fakeNodeIPv6
 		if o.enableEgress {
-			_, ipv6CIDR, _ := net.ParseCIDR("fec0:192:168:78::/80")
-			egressExceptCIDRs = append(egressExceptCIDRs, *ipv6CIDR)
+			egressExceptCIDRs = append(egressExceptCIDRs, *fakeEgressExceptIPv6CIDR)
 		}
 		if !o.enableProxy {
-			_, serviceIPv6CIDR, _ = net.ParseCIDR("fec0:10:96::/64")
+			serviceIPv6CIDR = fakeServiceIPv6CIDR
 		}
 		if o.enableProxy && o.proxyAll {
-			nodePortAddressesIPv6 = []net.IP{nodeIPv6, net.ParseIP("::1")}
+			nodePortAddressesIPv6 = []net.IP{fakeNodeIPv6, net.ParseIP("::1")}
 		}
 		ipProtocols = append(ipProtocols, binding.ProtocolIPv6)
 	}
 	gatewayConfig := &config.GatewayConfig{
-		IPv4:   gwIPv4,
-		IPv6:   gwIPv6,
-		MAC:    gwMAC,
+		IPv4:   fakeGatewayIPv4,
+		IPv6:   fakeGatewayIPv6,
+		MAC:    fakeGatewayMAC,
 		OFPort: uint32(2),
 	}
 	nodeConfig := &config.NodeConfig{
 		GatewayConfig:         gatewayConfig,
 		TunnelOFPort:          uint32(1),
 		WireGuardConfig:       &config.WireGuardConfig{},
-		PodIPv4CIDR:           podIPv4CIDR,
-		PodIPv6CIDR:           podIPv6CIDR,
-		NodeIPv4Addr:          nodeIPv4Addr,
-		NodeIPv6Addr:          nodeIPv6Addr,
-		NodeTransportIPv4Addr: nodeIPv4Addr,
-		NodeTransportIPv6Addr: nodeIPv6Addr,
+		PodIPv4CIDR:           fakePodIPv4CIDR,
+		PodIPv6CIDR:           fakePodIPv6CIDR,
+		NodeIPv4Addr:          fakeNodeIPv4Addr,
+		NodeIPv6Addr:          fakeNodeIPv6Addr,
+		NodeTransportIPv4Addr: fakeNodeIPv4Addr,
+		NodeTransportIPv6Addr: fakeNodeIPv6Addr,
 		Type:                  nodeType,
 		HostInterfaceOFPort:   uint32(4294967294),
 		UplinkNetConfig: &config.AdapterNetConfig{
-			MAC:    uplinkMAC,
+			MAC:    fakeUplinkMAC,
 			OFPort: uint32(4),
 		},
 	}
@@ -496,7 +494,7 @@ func Test_client_InstallNodeFlows(t *testing.T) {
 			ipsecTunOFPort:   uint32(100),
 			trafficEncapMode: config.TrafficEncapModeEncap,
 			expectedFlows: []string{
-				"cookie=0x1010000000000, table=ARPResponder, priority=200,arp,arp_tpa=10.10.1.1,arp_op=1 actions=move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],set_field:aa:bb:cc:dd:ee:ff->eth_src,set_field:2->arp_op,move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[],set_field:aa:bb:cc:dd:ee:ff->arp_sha,move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[],set_field:10.10.1.1->arp_spa,INPORT",
+				"cookie=0x1010000000000, table=ARPResponder, priority=200,arp,arp_tpa=10.10.1.1,arp_op=1 actions=move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],set_field:aa:bb:cc:dd:ee:ff->eth_src,set_field:2->arp_op,move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[],set_field:aa:bb:cc:dd:ee:ff->arp_sha,move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[],set_field:10.10.1.1->arp_spa,IN_PORT",
 				"cookie=0x1010000000000, table=Classifier, priority=200,in_port=100 actions=set_field:0x1/0xf->reg0,set_field:0x200/0x200->reg0,goto_table:UnSNAT",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ip,nw_dst=10.10.1.0/24 actions=set_field:00:00:10:10:00:01->eth_src,set_field:aa:bb:cc:dd:ee:ff->eth_dst,set_field:192.168.77.101->tun_dst,set_field:0x10/0xf0->reg0,goto_table:L3DecTTL",
 				"cookie=0x1040000000000, table=EgressMark, priority=210,ip,nw_dst=192.168.77.101 actions=set_field:0x20/0xf0->reg0,goto_table:L2ForwardingCalc",
@@ -525,7 +523,7 @@ func Test_client_InstallNodeFlows(t *testing.T) {
 			tunnelPeerIPs:    &utilip.DualStackIPs{},
 			trafficEncapMode: config.TrafficEncapModeNoEncap,
 			expectedFlows: []string{
-				"cookie=0x1010000000000, table=ARPResponder, priority=200,arp,arp_tpa=10.10.1.1,arp_op=1 actions=move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],set_field:aa:bb:cc:dd:ee:ff->eth_src,set_field:2->arp_op,move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[],set_field:aa:bb:cc:dd:ee:ff->arp_sha,move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[],set_field:10.10.1.1->arp_spa,INPORT",
+				"cookie=0x1010000000000, table=ARPResponder, priority=200,arp,arp_tpa=10.10.1.1,arp_op=1 actions=move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],set_field:aa:bb:cc:dd:ee:ff->eth_src,set_field:2->arp_op,move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[],set_field:aa:bb:cc:dd:ee:ff->arp_sha,move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[],set_field:10.10.1.1->arp_spa,IN_PORT",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ip,reg4=0x0/0x100000,nw_dst=10.10.1.0/24 actions=set_field:00:00:10:10:00:01->eth_dst,set_field:0x20/0xf0->reg0,goto_table:L3DecTTL",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ip,reg4=0x100000/0x100000,reg8=0x0/0xfff,nw_dst=10.10.1.0/24 actions=set_field:00:00:10:10:01:01->eth_dst,set_field:0x40/0xf0->reg0,goto_table:L3DecTTL",
 			},
@@ -539,7 +537,7 @@ func Test_client_InstallNodeFlows(t *testing.T) {
 			tunnelPeerIPs:    &utilip.DualStackIPs{},
 			trafficEncapMode: config.TrafficEncapModeNoEncap,
 			expectedFlows: []string{
-				"cookie=0x1010000000000, table=ARPResponder, priority=200,arp,arp_tpa=10.10.1.1,arp_op=1 actions=move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],set_field:aa:bb:cc:dd:ee:ff->eth_src,set_field:2->arp_op,move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[],set_field:aa:bb:cc:dd:ee:ff->arp_sha,move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[],set_field:10.10.1.1->arp_spa,INPORT",
+				"cookie=0x1010000000000, table=ARPResponder, priority=200,arp,arp_tpa=10.10.1.1,arp_op=1 actions=move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],set_field:aa:bb:cc:dd:ee:ff->eth_src,set_field:2->arp_op,move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[],set_field:aa:bb:cc:dd:ee:ff->arp_sha,move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[],set_field:10.10.1.1->arp_spa,IN_PORT",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ip,reg4=0x0/0x100000,nw_dst=10.10.1.0/24 actions=set_field:00:00:10:10:00:01->eth_dst,set_field:0x20/0xf0->reg0,goto_table:L3DecTTL",
 				"cookie=0x1010000000000, table=L3Forwarding, priority=200,ip,reg4=0x100000/0x100000,reg8=0x0/0xfff,nw_dst=10.10.1.0/24 actions=set_field:00:00:10:10:01:01->eth_dst,set_field:0x40/0xf0->reg0,goto_table:L3DecTTL",
 			},
@@ -797,8 +795,8 @@ func Test_client_GetPodFlowKeys(t *testing.T) {
 		"table=1,arp,in_port=11,arp_sha=00:00:10:10:00:11,arp_spa=10.10.0.11",
 		"table=3,in_port=11",
 		"table=4,ip,in_port=11,dl_src=00:00:10:10:00:11,nw_src=10.10.0.11",
-		"table=18,ip,reg0=0x200/0x200,nw_dst=10.10.0.11",
-		"table=23,dl_dst=00:00:10:10:00:11",
+		"table=17,ip,reg0=0x200/0x200,nw_dst=10.10.0.11",
+		"table=22,dl_dst=00:00:10:10:00:11",
 	}
 	assert.ElementsMatch(t, expectedFlowKeys, flowKeys)
 }
@@ -1144,11 +1142,11 @@ func Test_client_GetServiceFlowKeys(t *testing.T) {
 	assert.NoError(t, fc.InstallEndpointFlows(bindingProtocol, endpoints))
 	flowKeys := fc.GetServiceFlowKeys(svcIP, svcPort, bindingProtocol, endpoints)
 	expectedFlowKeys := []string{
-		"table=12,tcp,tp_dst=0x50,nw_dst=10.96.0.224,reg4=0x10000/0x70000",
-		"table=12,tcp,reg4=0x30000/0x70000,nw_dst=10.96.0.224,tp_dst=0x50",
-		"table=13,tcp,reg4=0x20050/0x7ffff,reg3=0xa0a000b",
-		"table=13,tcp,reg4=0x20050/0x7ffff,reg3=0xa0a000c",
-		"table=21,ip,nw_src=10.10.0.12,nw_dst=10.10.0.12,ct_state=+new+trk",
+		"table=11,tcp,tp_dst=0x50,nw_dst=10.96.0.224,reg4=0x10000/0x70000",
+		"table=11,tcp,reg4=0x30000/0x70000,nw_dst=10.96.0.224,tp_dst=0x50",
+		"table=12,tcp,reg4=0x20050/0x7ffff,reg3=0xa0a000b",
+		"table=12,tcp,reg4=0x20050/0x7ffff,reg3=0xa0a000c",
+		"table=20,ip,nw_src=10.10.0.12,nw_dst=10.10.0.12,ct_state=+new+trk",
 	}
 	assert.ElementsMatch(t, expectedFlowKeys, flowKeys)
 }
@@ -2106,7 +2104,7 @@ func Test_client_InstallMulticlusterClassifierFlows(t *testing.T) {
 	expectedFlows := []string{
 		"cookie=0x1060000000000, table=Classifier, priority=210,in_port=200,dl_dst=aa:bb:cc:dd:ee:f0 actions=set_field:0x1/0xf->reg0,set_field:0x200/0x200->reg0,goto_table:UnSNAT",
 		"cookie=0x1010000000000, table=L2ForwardingCalc, priority=200,dl_dst=aa:bb:cc:dd:ee:f0 actions=set_field:0xc8->reg1,set_field:0x100/0x100->reg0,goto_table:IngressSecurityClassifier",
-		"cookie=0x1060000000000, table=Output, priority=210,reg1=0xc8,in_port=200 actions=INPORT",
+		"cookie=0x1060000000000, table=Output, priority=210,reg1=0xc8,in_port=200 actions=IN_PORT",
 	}
 
 	m.EXPECT().AddAll(gomock.Any()).Return(nil).Times(1)

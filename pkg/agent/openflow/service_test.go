@@ -33,7 +33,7 @@ func Test_featureService_initFlows(t *testing.T) {
 		{
 			name:          "IPv4,Proxy",
 			enableIPv4:    true,
-			clientOptions: []clientOptionsFn{enableProxy, disableProxyAll},
+			clientOptions: []clientOptionsFn{enableProxy},
 			expectedFlows: []string{
 				"cookie=0x1030000000000, table=UnSNAT, priority=200,ip,nw_dst=169.254.0.253 actions=ct(table=ConntrackZone,zone=65521,exec(nat))",
 				"cookie=0x1030000000000, table=UnSNAT, priority=200,ip,nw_dst=10.10.0.1 actions=ct(table=ConntrackZone,zone=65521,exec(nat))",
@@ -48,13 +48,13 @@ func Test_featureService_initFlows(t *testing.T) {
 				"cookie=0x1030000000000, table=SNAT, priority=200,ct_state=+new+trk,ct_mark=0x40/0x40,ip,reg0=0x3/0xf actions=ct(commit,table=L2ForwardingCalc,zone=65521,exec(nat(src=10.10.0.1),set_field:0x10/0x10->ct_mark,set_field:0x40/0x40->ct_mark))",
 				"cookie=0x1030000000000, table=SNAT, priority=190,ct_state=+new+trk,ct_mark=0x20/0x20,ip,reg0=0x2/0xf actions=ct(commit,table=L2ForwardingCalc,zone=65521,exec(nat(src=10.10.0.1),set_field:0x10/0x10->ct_mark))",
 				"cookie=0x1030000000000, table=SNAT, priority=200,ct_state=-new-rpl+trk,ct_mark=0x20/0x20,ip actions=ct(table=L2ForwardingCalc,zone=65521,exec(nat))",
-				"cookie=0x1030000000000, table=Output, priority=210,ct_mark=0x40/0x40 actions=INPORT",
+				"cookie=0x1030000000000, table=Output, priority=210,ct_mark=0x40/0x40 actions=IN_PORT",
 			},
 		},
 		{
 			name:          "IPv6,Proxy",
 			enableIPv6:    true,
-			clientOptions: []clientOptionsFn{enableProxy, disableProxyAll},
+			clientOptions: []clientOptionsFn{enableProxy},
 			expectedFlows: []string{
 				"cookie=0x1030000000000, table=UnSNAT, priority=200,ipv6,ipv6_dst=fc01::aabb:ccdd:eeff actions=ct(table=ConntrackZone,zone=65511,exec(nat))",
 				"cookie=0x1030000000000, table=UnSNAT, priority=200,ipv6,ipv6_dst=fec0:10:10::1 actions=ct(table=ConntrackZone,zone=65511,exec(nat))",
@@ -69,7 +69,7 @@ func Test_featureService_initFlows(t *testing.T) {
 				"cookie=0x1030000000000, table=SNAT, priority=200,ct_state=+new+trk,ct_mark=0x40/0x40,ipv6,reg0=0x3/0xf actions=ct(commit,table=L2ForwardingCalc,zone=65511,exec(nat(src=fec0:10:10::1),set_field:0x10/0x10->ct_mark,set_field:0x40/0x40->ct_mark))",
 				"cookie=0x1030000000000, table=SNAT, priority=200,ct_state=-new-rpl+trk,ct_mark=0x20/0x20,ipv6 actions=ct(table=L2ForwardingCalc,zone=65511,exec(nat))",
 				"cookie=0x1030000000000, table=SNAT, priority=190,ct_state=+new+trk,ct_mark=0x20/0x20,ipv6,reg0=0x2/0xf actions=ct(commit,table=L2ForwardingCalc,zone=65511,exec(nat(src=fec0:10:10::1),set_field:0x10/0x10->ct_mark))",
-				"cookie=0x1030000000000, table=Output, priority=210,ct_mark=0x40/0x40 actions=INPORT",
+				"cookie=0x1030000000000, table=Output, priority=210,ct_mark=0x40/0x40 actions=IN_PORT",
 			},
 		},
 		{
@@ -93,7 +93,7 @@ func Test_featureService_initFlows(t *testing.T) {
 				"cookie=0x1030000000000, table=SNAT, priority=200,ct_state=+new+trk,ct_mark=0x40/0x40,ip,reg0=0x3/0xf actions=ct(commit,table=L2ForwardingCalc,zone=65521,exec(nat(src=10.10.0.1),set_field:0x10/0x10->ct_mark,set_field:0x40/0x40->ct_mark))",
 				"cookie=0x1030000000000, table=SNAT, priority=190,ct_state=+new+trk,ct_mark=0x20/0x20,ip,reg0=0x2/0xf actions=ct(commit,table=L2ForwardingCalc,zone=65521,exec(nat(src=10.10.0.1),set_field:0x10/0x10->ct_mark))",
 				"cookie=0x1030000000000, table=SNAT, priority=200,ct_state=-new-rpl+trk,ct_mark=0x20/0x20,ip actions=ct(table=L2ForwardingCalc,zone=65521,exec(nat))",
-				"cookie=0x1030000000000, table=Output, priority=210,ct_mark=0x40/0x40 actions=INPORT",
+				"cookie=0x1030000000000, table=Output, priority=210,ct_mark=0x40/0x40 actions=IN_PORT",
 			},
 		},
 		{
@@ -117,7 +117,7 @@ func Test_featureService_initFlows(t *testing.T) {
 				"cookie=0x1030000000000, table=SNAT, priority=200,ct_state=+new+trk,ct_mark=0x40/0x40,ipv6,reg0=0x3/0xf actions=ct(commit,table=L2ForwardingCalc,zone=65511,exec(nat(src=fec0:10:10::1),set_field:0x10/0x10->ct_mark,set_field:0x40/0x40->ct_mark))",
 				"cookie=0x1030000000000, table=SNAT, priority=200,ct_state=-new-rpl+trk,ct_mark=0x20/0x20,ipv6 actions=ct(table=L2ForwardingCalc,zone=65511,exec(nat))",
 				"cookie=0x1030000000000, table=SNAT, priority=190,ct_state=+new+trk,ct_mark=0x20/0x20,ipv6,reg0=0x2/0xf actions=ct(commit,table=L2ForwardingCalc,zone=65511,exec(nat(src=fec0:10:10::1),set_field:0x10/0x10->ct_mark))",
-				"cookie=0x1030000000000, table=Output, priority=210,ct_mark=0x40/0x40 actions=INPORT",
+				"cookie=0x1030000000000, table=Output, priority=210,ct_mark=0x40/0x40 actions=IN_PORT",
 			},
 		},
 		{
