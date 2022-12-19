@@ -92,6 +92,7 @@ pushd $THIS_DIR > /dev/null
 
 OVS_VERSION=$(head -n 1 ../deps/ovs-version)
 CNI_BINARIES_VERSION=$(head -n 1 ../deps/cni-binaries-version)
+SURICATA_VERSION=$(head -n 1 ../deps/suricata-version)
 
 if $PULL; then
     if [[ ${DOCKER_REGISTRY} == "" ]]; then
@@ -139,7 +140,8 @@ if [ "$DISTRO" == "ubuntu" ]; then
            --cache-from antrea/base-ubuntu:$OVS_VERSION \
            -t antrea/base-ubuntu:$OVS_VERSION \
            --build-arg CNI_BINARIES_VERSION=$CNI_BINARIES_VERSION \
-           --build-arg OVS_VERSION=$OVS_VERSION .
+           --build-arg SURICATA_VERSION=$SURICATA_VERSION \
+           --build-arg BUILD_TAG=$BUILD_TAG .
 elif [ "$DISTRO" == "ubi" ]; then
     docker build $PLATFORM_ARG \
            --cache-from antrea/cni-binaries:$CNI_BINARIES_VERSION \
@@ -147,7 +149,8 @@ elif [ "$DISTRO" == "ubi" ]; then
            -t antrea/base-ubi:$OVS_VERSION \
            -f Dockerfile.ubi \
            --build-arg CNI_BINARIES_VERSION=$CNI_BINARIES_VERSION \
-           --build-arg OVS_VERSION=$OVS_VERSION .
+           --build-arg SURICATA_VERSION=$SURICATA_VERSION \
+           --build-arg BUILD_TAG=$BUILD_TAG .
 fi
 
 if $PUSH; then
