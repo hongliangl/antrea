@@ -278,7 +278,16 @@ func (r *Reconciler) addBindingSuricataTenant(vlanID uint32, rulesPath string) e
 	// If the tenant config file exists, it means that this tenant has been added, just reload the tenant to load the
 	// updated rules.
 	if exists {
-		resp, err := r.reloadSuricataTenant(vlanID, tenantConfigPath)
+		conn, err := newSuricataSC()
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		if err = conn.connect(); err != nil {
+			return err
+		}
+
+		resp, err := conn.sendCommand(reloadSuricataTenant(vlanID, tenantConfigPath))
 		if err != nil {
 			return err
 		}
@@ -308,9 +317,18 @@ rule-files:
 		}
 	}()
 
+	conn, err := newSuricataSC()
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err = conn.connect(); err != nil {
+		return err
+	}
+
 	// Register the tenant with the config file. Note that, to be simple, use the VLAN id as the tenant ID.
 	if !r.suricataTenantCache.has(vlanID) {
-		resp, err := r.registerSuricataTenant(vlanID, tenantConfigPath)
+		resp, err := conn.sendCommand(registerSuricataTenant(vlanID, tenantConfigPath))
 		if err != nil {
 			return err
 		}
@@ -323,7 +341,7 @@ rule-files:
 
 	// Register the tenant handler by mapping the tenant to the allocated VLAN ID.
 	if !r.suricataTenantHandlerCache.has(vlanID) {
-		resp, err := r.registerSuricataTenantHandler(vlanID, vlanID)
+		resp, err := conn.sendCommand(registerSuricataTenantHandler(vlanID, vlanID))
 		if err != nil {
 			return err
 		}
@@ -340,9 +358,26 @@ rule-files:
 }
 
 func (r *Reconciler) deleteBindingSuricataTenant(vlanID uint32) error {
+	// Delete the tenant config file.
+	configPath := generateTenantConfigPath(vlanID)
+	if err := defaultFS.Remove(configPath); err != nil {
+		if err != afero.ErrFileNotFound {
+			return fmt.Errorf("failed to delete config file %s: %w", configPath, err)
+		}
+	}
+
+	conn, err := newSuricataSC()
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err = conn.connect(); err != nil {
+		return err
+	}
+
 	// Unregister the tenant handler.
 	if r.suricataTenantHandlerCache.has(vlanID) {
-		resp, err := r.unregisterSuricataTenantHandler(vlanID, vlanID)
+		resp, err := conn.sendCommand(unregisterSuricataTenantHandler(vlanID, vlanID))
 		if err != nil {
 			return err
 		}
@@ -355,7 +390,7 @@ func (r *Reconciler) deleteBindingSuricataTenant(vlanID uint32) error {
 
 	// Unregister the tenant.
 	if r.suricataTenantCache.has(vlanID) {
-		resp, err := r.unregisterSuricataTenant(vlanID)
+		resp, err := conn.sendCommand(unregisterSuricataTenant(vlanID))
 		if err != nil {
 			return err
 		}
@@ -366,13 +401,6 @@ func (r *Reconciler) deleteBindingSuricataTenant(vlanID uint32) error {
 		r.suricataTenantCache.delete(vlanID)
 	}
 
-	// Delete the tenant config file.
-	configPath := generateTenantConfigPath(vlanID)
-	if err := defaultFS.Remove(configPath); err != nil {
-		if err != afero.ErrFileNotFound {
-			return fmt.Errorf("failed to delete config file %s: %w", configPath, err)
-		}
-	}
 	return nil
 }
 
@@ -430,6 +458,62 @@ func (r *Reconciler) unregisterSuricataTenantHandler(tenantID, vlanID uint32) (*
 		},
 	}
 	return r.suricataSCFn(cmd)
+}
+
+func reloadSuricataTenant(tenantID uint32, tenantConfigPath string) *scCmd {
+	cmd := &scCmd{
+		Command: scCmdReloadTenant,
+		Arguments: scCmdArguments{
+			ID:       tenantID,
+			Filename: tenantConfigPath,
+		},
+	}
+	return cmd
+}
+
+func registerSuricataTenant(tenantID uint32, tenantConfigPath string) *scCmd {
+	cmd := &scCmd{
+		Command: scCmdRegisterTenant,
+		Arguments: scCmdArguments{
+			ID:       tenantID,
+			Filename: tenantConfigPath,
+		},
+	}
+	return cmd
+}
+
+func unregisterSuricataTenant(tenantID uint32) *scCmd {
+	cmd := &scCmd{
+		Command: scCmdUnregisterTenant,
+		Arguments: scCmdArguments{
+			ID: tenantID,
+		},
+	}
+	return cmd
+}
+
+func registerSuricataTenantHandler(tenantID, vlanID uint32) *scCmd {
+	cmd := &scCmd{
+		Command: scCmdRegisterTenantHandler,
+		Arguments: scCmdArguments{
+			ID:   tenantID,
+			Type: "vlan",
+			Args: vlanID,
+		},
+	}
+	return cmd
+}
+
+func unregisterSuricataTenantHandler(tenantID, vlanID uint32) *scCmd {
+	cmd := &scCmd{
+		Command: scCmdUnregisterTenantHandler,
+		Arguments: scCmdArguments{
+			ID:   tenantID,
+			Type: "vlan",
+			Args: vlanID,
+		},
+	}
+	return cmd
 }
 
 func (r *Reconciler) startSuricata() {
@@ -537,7 +621,7 @@ func newSuricataSC() (*suricataSC, error) {
 		conn, err = net.Dial("unix", suricataCommandSocket)
 		if err != nil {
 			klog.V(4).ErrorS(err, "failed to dial to Suricata socket file")
-			time.Sleep(time.Duration(timeOut) * time.Second)
+			time.Sleep(time.Duration(timeOut) * time.Millisecond * 10)
 			timeOut = timeOut * 2
 			continue
 		}
