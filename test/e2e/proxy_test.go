@@ -122,7 +122,10 @@ func probeHostnameFromPod(data *TestData, pod, container string, baseUrl string)
 	} else {
 		hostname, stderr, err = data.RunCommandFromPod(data.testNamespace, pod, container, []string{"wget", "-O", "-", url, "-T", "5"})
 	}
-	return hostname, fmt.Errorf("std err: %v, err %v", stderr, err)
+	if stderr != "" {
+		fmt.Println("===================stderrXXXXXXx ", stderr)
+	}
+	return hostname, err
 }
 
 func probeClientIPFromPod(data *TestData, pod, container string, baseUrl string) (string, error) {
