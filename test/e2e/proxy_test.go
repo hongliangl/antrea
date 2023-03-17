@@ -116,13 +116,13 @@ func probeFromPod(data *TestData, pod, container string, url string) error {
 func probeHostnameFromPod(data *TestData, pod, container string, baseUrl string) (string, error) {
 	url := fmt.Sprintf("%s/%s", baseUrl, "hostname")
 	var err error
-	var hostname string
+	var hostname, stderr string
 	if container == busyboxContainerName {
-		hostname, _, err = data.runWgetCommandOnBusyboxWithRetry(pod, data.testNamespace, url, 5)
+		hostname, stderr, err = data.runWgetCommandOnBusyboxWithRetry(pod, data.testNamespace, url, 5)
 	} else {
-		hostname, _, err = data.RunCommandFromPod(data.testNamespace, pod, container, []string{"wget", "-O", "-", url, "-T", "5"})
+		hostname, stderr, err = data.RunCommandFromPod(data.testNamespace, pod, container, []string{"wget", "-O", "-", url, "-T", "5"})
 	}
-	return hostname, err
+	return hostname, fmt.Errorf("std err: %v, err %v", stderr, err)
 }
 
 func probeClientIPFromPod(data *TestData, pod, container string, baseUrl string) (string, error) {
