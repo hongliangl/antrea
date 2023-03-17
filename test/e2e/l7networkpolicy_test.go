@@ -207,7 +207,7 @@ func testL7NetworkPolicyHTTP(t *testing.T, data *TestData) {
 		// selector labels.
 		createL7NetworkPolicy(t, data, true, policyAllowPathHostname, 1, clientPodLabels, serverPodLabels, ProtocolTCP, 8080, l7ProtocolAllowsPathHostname)
 		createL7NetworkPolicy(t, data, true, policyAllowAnyPath, 2, clientPodLabels, serverPodLabels, ProtocolTCP, 8080, l7ProtocolAllowsAnyPath)
-		time.Sleep(networkPolicyDelay*2)
+		time.Sleep(networkPolicyDelay/2)
 
 		// HTTP path 'hostname' is allowed by the first L7 NetworkPolicy, and the priority of the second L7 NetworkPolicy
 		// is lower than the first L7 NetworkPolicy. Since they have the appliedTo labels and Pod selector labels and
@@ -218,7 +218,7 @@ func testL7NetworkPolicyHTTP(t *testing.T, data *TestData) {
 
 		// Delete the first L7 NetworkPolicy that only allows HTTP path 'hostname'.
 		data.crdClient.CrdV1alpha1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policyAllowPathHostname, metav1.DeleteOptions{})
-		time.Sleep(networkPolicyDelay*2)
+		time.Sleep(networkPolicyDelay/2)
 
 		// Since the fist L7 NetworkPolicy has been deleted, corresponding packets will be matched by the second L7 NetworkPolicy,
 		// and the second L7 NetworkPolicy allows any HTTP path, then both path 'hostname' and 'clientip' are allowed.
@@ -227,14 +227,14 @@ func testL7NetworkPolicyHTTP(t *testing.T, data *TestData) {
 		data.crdClient.CrdV1alpha1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policyAllowAnyPath, metav1.DeleteOptions{})
 	})
 
-	time.Sleep(networkPolicyDelay)
+	time.Sleep(networkPolicyDelay/2)
 	t.Run("Egress", func(t *testing.T) {
 		// Create two L7 NetworkPolicies, one allows HTTP path 'hostname', the other allows any HTTP path. Note that,
 		// the priority of the first one is higher than the second one, and they have the same appliedTo labels and Pod
 		// selector labels.
 		createL7NetworkPolicy(t, data, false, policyAllowPathHostname, 1, serverPodLabels, clientPodLabels, ProtocolTCP, 8080, l7ProtocolAllowsPathHostname)
 		createL7NetworkPolicy(t, data, false, policyAllowAnyPath, 2, serverPodLabels, clientPodLabels, ProtocolTCP, 8080, l7ProtocolAllowsAnyPath)
-		time.Sleep(networkPolicyDelay*2)
+		time.Sleep(networkPolicyDelay/2)
 
 		// HTTP path 'hostname' is allowed by the first L7 NetworkPolicy, and the priority of the second L7 NetworkPolicy
 		// is lower than the first L7 NetworkPolicy. Since they have the appliedTo labels and Pod selector labels and
@@ -245,7 +245,7 @@ func testL7NetworkPolicyHTTP(t *testing.T, data *TestData) {
 
 		// Delete the first L7 NetworkPolicy that only allows HTTP path 'hostname'.
 		data.crdClient.CrdV1alpha1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policyAllowPathHostname, metav1.DeleteOptions{})
-		time.Sleep(networkPolicyDelay*2)
+		time.Sleep(networkPolicyDelay/2)
 
 		// Since the fist L7 NetworkPolicy has been deleted, corresponding packets will be matched by the second L7 NetworkPolicy,
 		// and the second L7 NetworkPolicy allows any HTTP path, then both path 'hostname' and 'clientip' are allowed.
