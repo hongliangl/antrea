@@ -100,16 +100,22 @@ func TestAddAndDeleteExternalIPRoute(t *testing.T) {
 		nodeConfig:    nodeConfig,
 		serviceRoutes: &sync.Map{},
 	}
-	externalIPs := []net.IP{net.ParseIP("1.1.1.1"), net.ParseIP("1.1.1.2")}
-	for _, externalIP := range externalIPs {
-		assert.NoError(t, c.AddExternalIPRoute(externalIP))
-		externalIPNet := util.NewIPNet(externalIP)
-		routes, err := util.GetNetRoutes(gwLink, externalIPNet)
-		require.Nil(t, err)
-		assert.Equal(t, 1, len(routes))
+	externalIP := net.ParseIP("1.1.1.1")
 
-		route, ok := c.serviceRoutes.Load(externalIP.String())
-		assert.True(t, ok)
-		assert.Equal(t, routes[0], route.(*util.Route))
-	}
+	assert.NoError(t, c.AddExternalIPRoute(externalIP))
+	externalIPNet := util.NewIPNet(externalIP)
+	routes, err := util.GetNetRoutes(gwLink, externalIPNet)
+	require.Nil(t, err)
+	assert.Equal(t, 1, len(routes))
+
+	route, ok := c.serviceRoutes.Load(externalIP.String())
+	assert.True(t, ok)
+	assert.EqualValues(t, routes[0], route.(util.Route))
+
+	assert.NoError(t, c.DeleteExternalIPRoute(externalIP))
+	routes, err = util.GetNetRoutes(gwLink, externalIPNet)
+	require.Nil(t, err)
+	assert.Equal(t, 0, len(routes))
+	_, ok = c.serviceRoutes.Load(externalIP.String())
+	assert.False(t, ok)
 }
