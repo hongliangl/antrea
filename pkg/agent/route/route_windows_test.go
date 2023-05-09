@@ -144,7 +144,7 @@ func TestAddAndDeleteExternalIPRoute(t *testing.T) {
 				require.Nil(t, err)
 				assert.Equal(t, 1, len(routes))
 
-				route, ok := c.serviceRoutes.Load(externalIPNet)
+				route, ok := c.serviceRoutes.Load(externalIP)
 				assert.True(t, ok)
 				assert.Equal(t, routes[0], route.(*util.Route))
 			}
