@@ -29,6 +29,25 @@ import (
 	"antrea.io/antrea/pkg/agent/util"
 )
 
+var (
+	nodeConfig = &config.NodeConfig{GatewayConfig: &config.GatewayConfig{LinkIndex: 10}}
+
+	externalIPv4Addr1 = "1.1.1.1"
+	externalIPv4Addr2 = "1.1.1.2"
+	externalIPv6Addr1 = "fd00:1234:5678:dead:beaf::1"
+	externalIPv6Addr2 = "fd00:1234:5678:dead:beaf::a"
+
+	_, externalIPv4NetAddr1, _ = net.ParseCIDR(externalIPv4Addr1)
+	_, externalIPv4NetAddr2, _ = net.ParseCIDR(externalIPv4Addr2)
+	_, externalIPv6NetAddr1, _ = net.ParseCIDR(externalIPv6Addr1)
+	_, externalIPv6NetAddr2, _ = net.ParseCIDR(externalIPv6Addr2)
+
+	ipv4Route1 = generateRoute(externalIPv4NetAddr1, config.VirtualServiceIPv4, 10, 256)
+	ipv4Route2 = generateRoute(externalIPv4NetAddr2, config.VirtualServiceIPv4, 10, 256)
+	ipv6Route1 = generateRoute(externalIPv6NetAddr1, config.VirtualServiceIPv6, 10, 256)
+	ipv6Route2 = generateRoute(externalIPv6NetAddr2, config.VirtualServiceIPv6, 10, 256)
+)
+
 func getNetLinkIndex(dev string) int {
 	link, err := net.InterfaceByName(dev)
 	if err != nil {
@@ -90,4 +109,39 @@ func TestRouteOperation(t *testing.T) {
 	routes7, err := util.GetNetRoutes(gwLink, destCIDR2)
 	require.Nil(t, err)
 	assert.Equal(t, 0, len(routes7))
+}
+
+func TestAddExternalIPRoute(t *testing.T) {
+	tests := []struct {
+		name          string
+		externalIPs   []string
+		serviceRoutes map[string]*util.Route
+	}{
+		{
+			name: "IPv4",
+			serviceRoutes: map[string]*util.Route{
+				externalIPv4Addr1: ipv4Route1,
+				externalIPv4Addr2: ipv4Route2,
+			},
+			externalIPs: []string{externalIPv4Addr1, externalIPv4Addr2},
+		},
+		{
+			name: "IPv6",
+			serviceRoutes: map[string]*util.Route{
+				externalIPv6Addr1: ipv6Route1,
+				externalIPv6Addr2: ipv6Route2,
+			},
+			externalIPs: []string{externalIPv6Addr1, externalIPv6Addr2},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &Client{
+				nodeConfig: nodeConfig,
+			}
+			for _, externalIP := range tt.externalIPs {
+				assert.NoError(t, c.AddExternalIPRoute(net.ParseIP(externalIP)))
+			}
+		})
+	}
 }

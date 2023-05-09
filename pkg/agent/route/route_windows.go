@@ -520,9 +520,6 @@ func (c *Client) AddExternalIPRoute(externalIP net.IP) error {
 
 	route := generateRoute(svcIPNet, gw, linkIndex, metric)
 	if err := util.ReplaceNetRoute(route); err != nil {
-		return err
-	}
-	if err := util.ReplaceNetRoute(route); err != nil {
 		return fmt.Errorf("failed to install route for external IP %s: %w", externalIPStr, err)
 	}
 	c.serviceRoutes.Store(externalIPStr, route)
