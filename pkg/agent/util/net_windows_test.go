@@ -83,7 +83,7 @@ func TestIsVirtualAdapter(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer MockRunCommand(t, []string{
+			defer mockRunCommand(t, []string{
 				fmt.Sprintf(`Get-NetAdapter -InterfaceAlias "%s" | Select-Object -Property Virtual | Format-Table -HideTableHeaders`, adapter),
 			}, tc.commandOut, tc.commandErr, true)()
 			gotIsVirtual, err := IsVirtualAdapter(adapter)
@@ -133,7 +133,7 @@ func TestSetLinkUp(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer MockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, false)()
+			defer mockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, false)()
 			defer mockNetInterfaceByName(tc.gwInterface, tc.gwInterfaceErr)()
 			gotMac, gotIndex, err := SetLinkUp(testName)
 			assert.Equal(t, tc.gwInterface.HardwareAddr, gotMac)
@@ -213,7 +213,7 @@ func TestConfigureLinkAddresses(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer MockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, true)()
+			defer mockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, true)()
 			defer mockNetInterfaceByIndex(&testNetInterface, tc.testNetInterfaceErr)()
 			defer mockNetInterfaceAddrs(testNetInterface, tc.testNetAddrsErr)()
 			gotErr := ConfigureLinkAddresses(0, tc.ipNets)
@@ -242,7 +242,7 @@ func TestSetAdapterMACAddress(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer MockRunCommand(t, []string{
+			defer mockRunCommand(t, []string{
 				fmt.Sprintf(`Set-NetAdapterAdvancedProperty -Name "%s" -RegistryKeyword NetworkAddress -RegistryValue "%s"`,
 					"test-adapter", strings.Replace(testMACAddr.String(), ":", "", -1)),
 			}, tc.commandOut, tc.commandErr, true)()
@@ -391,7 +391,7 @@ func TestPrepareHNSNetwork(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer MockRunCommand(t, tc.wantCmds, testAdapterName, tc.commandErr, true)()
+			defer mockRunCommand(t, tc.wantCmds, testAdapterName, tc.commandErr, true)()
 			defer mockNetInterfaceGet(testNetInterfaces, tc.testNetInterfaceErr)()
 			defer mockNetInterfaceAddrsMultiple(testNetInterfaces, tc.ipFound, nil)()
 			defer mockHNSNetworkRequest(nil, tc.hnsNetworkRequestError)()
@@ -427,7 +427,7 @@ func TestInterfaceIndexing(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer MockRunCommand(t, []string{
+			defer mockRunCommand(t, []string{
 				fmt.Sprintf("$(Get-NetRoute -InterfaceIndex %d -DestinationPrefix 0.0.0.0/0 ).NextHop", testIndex),
 				fmt.Sprintf("$(Get-DnsClientServerAddress -InterfaceIndex %d -AddressFamily IPv4).ServerAddresses", testIndex),
 			}, tc.commandOut, tc.commandErr, true)()
@@ -478,7 +478,7 @@ func TestHostInterfaceExists(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer MockRunCommand(t, tc.wantCmds, "success", tc.commandErr, true)()
+			defer mockRunCommand(t, tc.wantCmds, "success", tc.commandErr, true)()
 			defer mockNetInterfaceByName(&net.Interface{}, tc.testNetInterfaceErr)()
 			gotExists := HostInterfaceExists(tc.testNetInterfaceName)
 			assert.Equal(t, tc.wantExists, gotExists)
@@ -506,7 +506,7 @@ func TestSetInterfaceMTU(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer MockRunCommand(t, []string{
+			defer mockRunCommand(t, []string{
 				fmt.Sprintf("Set-NetIPInterface -IncludeAllCompartments -InterfaceAlias \"%s\" -NlMtuBytes %d",
 					"test", 1),
 			}, tc.commandOut, tc.commandErr, true)()
@@ -581,7 +581,7 @@ func TestReplaceNetRoute(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer MockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, true)()
+			defer mockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, true)()
 			gotErr := ReplaceNetRoute(tc.route)
 			if tc.wantErrStr == "" {
 				require.NoError(t, gotErr)
@@ -635,7 +635,7 @@ func TestNewNetNat(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer MockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, true)()
+			defer mockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, true)()
 			gotErr := NewNetNat(testNetNat, testSubnetCIDR)
 			assert.Equal(t, tc.wantErr, gotErr)
 		})
@@ -702,7 +702,7 @@ func TestReplaceNetNatStaticMapping(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer MockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, true)()
+			defer mockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, true)()
 			gotErr := ReplaceNetNatStaticMapping(testNetNat)
 			assert.Equal(t, tc.wantErr, gotErr)
 		})
@@ -751,7 +751,7 @@ func TestRemoveNetNatStaticMapping(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer MockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, false)()
+			defer mockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, false)()
 			gotErr := RemoveNetNatStaticMapping(testNetNat)
 			assert.Equal(t, tc.wantErr, gotErr)
 			gotErr = RemoveNetNatStaticMappingByNPLTuples(testNetNat)
@@ -816,7 +816,7 @@ func TestReplaceNetNeighbor(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer MockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, true)()
+			defer mockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, true)()
 			gotErr := ReplaceNetNeighbor(testNeighbor)
 			assert.Equal(t, tc.wantErr, gotErr)
 		})
@@ -883,7 +883,7 @@ func TestGetInterfaceConfig(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer MockRunCommand(t, tc.wantCmds, tc.commandOut, nil, true)()
+			defer mockRunCommand(t, tc.wantCmds, tc.commandOut, nil, true)()
 			defer mockNetInterfaceByName(&testNetInterface, tc.testNetInterfaceErr)()
 			defer mockNetInterfaceAddrs(testNetInterface, nil)()
 			gotInterface, gotAddrs, gotRoutes, gotErr := GetInterfaceConfig("0")
@@ -920,7 +920,7 @@ func TestRenameInterface(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer MockRunCommand(t, []string{
+			defer mockRunCommand(t, []string{
 				fmt.Sprintf(`Get-NetAdapter -Name "%s" | Rename-NetAdapter -NewName "%s"`, "test1", "test2"),
 			}, tc.commandOut, tc.commandErr, false)()
 			gotErr := RenameInterface("test1", "test2")
@@ -976,7 +976,7 @@ func TestCreateVMSwitch(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer MockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, true)()
+			defer mockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, true)()
 			gotErr := CreateVMSwitch(testSwitchName)
 			assert.Equal(t, tc.wantErr, gotErr)
 		})
@@ -1010,7 +1010,7 @@ func TestGetVMSwitchInterfaceName(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer MockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, true)()
+			defer mockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, true)()
 			gotName, gotErr := GetVMSwitchInterfaceName()
 			assert.Equal(t, tc.wantName, gotName)
 			assert.Equal(t, tc.wantErr, gotErr)
@@ -1043,7 +1043,7 @@ func TestRemoveVMSwitch(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer MockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, true)()
+			defer mockRunCommand(t, tc.wantCmds, tc.commandOut, tc.commandErr, true)()
 			gotErr := RemoveVMSwitch()
 			assert.Equal(t, tc.wantErr, gotErr)
 		})
@@ -1063,12 +1063,12 @@ func createTestRoutes(routes []Route) []interface{} {
 	return testRoutes
 }
 
-// MockRunCommand mocks runCommand with a custom command output and error message.
+// mockRunCommand mocks runCommand with a custom command output and error message.
 // If exactMatch is enabled, this function asserts that the executed commands are
 // exactly the same with wantCmds in terms of order and value. Otherwise, for tests
 // with retry functions, the commands will be executed multiple times. This function
 // asserts that wantCmds is strictly a subset of these executed commands.
-func MockRunCommand(t *testing.T, wantCmds []string, commandOut string, err error, exactMatch bool) func() {
+func mockRunCommand(t *testing.T, wantCmds []string, commandOut string, err error, exactMatch bool) func() {
 	originalRunCommand := runCommand
 	actCmds := make([]string, 0)
 	runCommand = func(cmd string) (string, error) {

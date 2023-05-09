@@ -30,7 +30,16 @@ import (
 )
 
 var (
-	nodeConfig = &config.NodeConfig{GatewayConfig: &config.GatewayConfig{LinkIndex: 10}}
+	// Leverage loopback interface for testing.
+	hostGateway = "Loopback Pseudo-Interface 1"
+	gwLink      = getNetLinkIndex("Loopback Pseudo-Interface 1")
+	nodeConfig  = &config.NodeConfig{
+		OVSBridge: "Loopback Pseudo-Interface 1",
+		GatewayConfig: &config.GatewayConfig{
+			Name:      hostGateway,
+			LinkIndex: gwLink,
+		},
+	}
 
 	externalIPv4Addr1 = "1.1.1.1"
 	externalIPv4Addr2 = "1.1.1.2"
@@ -57,10 +66,6 @@ func getNetLinkIndex(dev string) int {
 }
 
 func TestRouteOperation(t *testing.T) {
-	// Leverage loopback interface for testing.
-	hostGateway := "Loopback Pseudo-Interface 1"
-	gwLink := getNetLinkIndex("Loopback Pseudo-Interface 1")
-
 	peerNodeIP1 := net.ParseIP("10.0.0.2")
 	peerNodeIP2 := net.ParseIP("10.0.0.3")
 	gwIP1 := net.ParseIP("192.168.2.1")
@@ -72,13 +77,6 @@ func TestRouteOperation(t *testing.T) {
 	client, err := NewClient(&config.NetworkConfig{}, true, false, false, false, nil)
 
 	require.Nil(t, err)
-	nodeConfig := &config.NodeConfig{
-		OVSBridge: "Loopback Pseudo-Interface 1",
-		GatewayConfig: &config.GatewayConfig{
-			Name:      hostGateway,
-			LinkIndex: gwLink,
-		},
-	}
 	called := false
 	err = client.Initialize(nodeConfig, func() { called = true })
 	require.Nil(t, err)
@@ -111,7 +109,7 @@ func TestRouteOperation(t *testing.T) {
 	assert.Equal(t, 0, len(routes7))
 }
 
-func TestAddExternalIPRoute(t *testing.T) {
+func TestAddAndDeleteExternalIPRoute(t *testing.T) {
 	tests := []struct {
 		name          string
 		externalIPs   []string
@@ -141,6 +139,14 @@ func TestAddExternalIPRoute(t *testing.T) {
 			}
 			for _, externalIP := range tt.externalIPs {
 				assert.NoError(t, c.AddExternalIPRoute(net.ParseIP(externalIP)))
+				_, externalIPNet, _ := net.ParseCIDR(externalIP)
+				routes, err := util.GetNetRoutes(gwLink, externalIPNet)
+				require.Nil(t, err)
+				assert.Equal(t, 1, len(routes))
+
+				route, ok := c.serviceRoutes.Load(externalIPNet)
+				assert.True(t, ok)
+				assert.Equal(t, routes[0], route.(*util.Route))
 			}
 		})
 	}
