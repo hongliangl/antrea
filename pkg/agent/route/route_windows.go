@@ -516,7 +516,7 @@ func (c *Client) AddExternalIPRoute(externalIP net.IP) error {
 	linkIndex := c.nodeConfig.GatewayConfig.LinkIndex
 	gw := config.VirtualServiceIPv4
 	metric := util.MetricHigh
-	_, svcIPNet, _ := net.ParseCIDR(externalIPStr)
+	svcIPNet := util.NewIPNet(externalIP)
 
 	route := generateRoute(svcIPNet, gw, linkIndex, metric)
 	if err := util.ReplaceNetRoute(route); err != nil {

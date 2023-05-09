@@ -45,16 +45,6 @@ var (
 	externalIPv4Addr2 = "1.1.1.2"
 	externalIPv6Addr1 = "fd00:1234:5678:dead:beaf::1"
 	externalIPv6Addr2 = "fd00:1234:5678:dead:beaf::a"
-
-	_, externalIPv4NetAddr1, _ = net.ParseCIDR(externalIPv4Addr1)
-	_, externalIPv4NetAddr2, _ = net.ParseCIDR(externalIPv4Addr2)
-	_, externalIPv6NetAddr1, _ = net.ParseCIDR(externalIPv6Addr1)
-	_, externalIPv6NetAddr2, _ = net.ParseCIDR(externalIPv6Addr2)
-
-	ipv4Route1 = generateRoute(externalIPv4NetAddr1, config.VirtualServiceIPv4, 10, 256)
-	ipv4Route2 = generateRoute(externalIPv4NetAddr2, config.VirtualServiceIPv4, 10, 256)
-	ipv6Route1 = generateRoute(externalIPv6NetAddr1, config.VirtualServiceIPv6, 10, 256)
-	ipv6Route2 = generateRoute(externalIPv6NetAddr2, config.VirtualServiceIPv6, 10, 256)
 )
 
 func getNetLinkIndex(dev string) int {
@@ -111,24 +101,15 @@ func TestRouteOperation(t *testing.T) {
 
 func TestAddAndDeleteExternalIPRoute(t *testing.T) {
 	tests := []struct {
-		name          string
-		externalIPs   []string
-		serviceRoutes map[string]*util.Route
+		name        string
+		externalIPs []string
 	}{
 		{
 			name: "IPv4",
-			serviceRoutes: map[string]*util.Route{
-				externalIPv4Addr1: ipv4Route1,
-				externalIPv4Addr2: ipv4Route2,
-			},
 			externalIPs: []string{externalIPv4Addr1, externalIPv4Addr2},
 		},
 		{
 			name: "IPv6",
-			serviceRoutes: map[string]*util.Route{
-				externalIPv6Addr1: ipv6Route1,
-				externalIPv6Addr2: ipv6Route2,
-			},
 			externalIPs: []string{externalIPv6Addr1, externalIPv6Addr2},
 		},
 	}
@@ -139,7 +120,7 @@ func TestAddAndDeleteExternalIPRoute(t *testing.T) {
 			}
 			for _, externalIP := range tt.externalIPs {
 				assert.NoError(t, c.AddExternalIPRoute(net.ParseIP(externalIP)))
-				_, externalIPNet, _ := net.ParseCIDR(externalIP)
+				externalIPNet := util.NewIPNet(net.ParseIP(externalIP))
 				routes, err := util.GetNetRoutes(gwLink, externalIPNet)
 				require.Nil(t, err)
 				assert.Equal(t, 1, len(routes))
