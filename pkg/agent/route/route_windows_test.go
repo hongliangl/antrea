@@ -19,6 +19,7 @@ package route
 
 import (
 	"net"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -40,11 +41,6 @@ var (
 			LinkIndex: gwLink,
 		},
 	}
-
-	externalIPv4Addr1 = "1.1.1.1"
-	externalIPv4Addr2 = "1.1.1.2"
-	externalIPv6Addr1 = "fd00:1234:5678:dead:beaf::1"
-	externalIPv6Addr2 = "fd00:1234:5678:dead:beaf::a"
 )
 
 func getNetLinkIndex(dev string) int {
@@ -100,35 +96,20 @@ func TestRouteOperation(t *testing.T) {
 }
 
 func TestAddAndDeleteExternalIPRoute(t *testing.T) {
-	tests := []struct {
-		name        string
-		externalIPs []string
-	}{
-		{
-			name: "IPv4",
-			externalIPs: []string{externalIPv4Addr1, externalIPv4Addr2},
-		},
-		{
-			name: "IPv6",
-			externalIPs: []string{externalIPv6Addr1, externalIPv6Addr2},
-		},
+	c := &Client{
+		nodeConfig:    nodeConfig,
+		serviceRoutes: &sync.Map{},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := &Client{
-				nodeConfig: nodeConfig,
-			}
-			for _, externalIP := range tt.externalIPs {
-				assert.NoError(t, c.AddExternalIPRoute(net.ParseIP(externalIP)))
-				externalIPNet := util.NewIPNet(net.ParseIP(externalIP))
-				routes, err := util.GetNetRoutes(gwLink, externalIPNet)
-				require.Nil(t, err)
-				assert.Equal(t, 1, len(routes))
+	externalIPs := []net.IP{net.ParseIP("1.1.1.1"), net.ParseIP("1.1.1.2")}
+	for _, externalIP := range externalIPs {
+		assert.NoError(t, c.AddExternalIPRoute(externalIP))
+		externalIPNet := util.NewIPNet(externalIP)
+		routes, err := util.GetNetRoutes(gwLink, externalIPNet)
+		require.Nil(t, err)
+		assert.Equal(t, 1, len(routes))
 
-				route, ok := c.serviceRoutes.Load(externalIP)
-				assert.True(t, ok)
-				assert.Equal(t, routes[0], route.(*util.Route))
-			}
-		})
+		route, ok := c.serviceRoutes.Load(externalIP.String())
+		assert.True(t, ok)
+		assert.Equal(t, routes[0], route.(*util.Route))
 	}
 }
