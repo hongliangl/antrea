@@ -192,19 +192,19 @@ func (p *proxier) removeServiceFlows(svcInfo *types.ServiceInfo) bool {
 
 	if p.proxyAll {
 		// Remove NodePort flows and configurations.
-		if err := p.uninstallNodePortService(uint16(svcInfo.NodePort()), svcInfo.OFProtocol); err != nil {
+		if err := p.uninstallNodePortService(uint16(svcInfo.NodePort()), svcInfo.OFProtocol, svcInfo.ExternalPolicyLocal()); err != nil {
 			klog.ErrorS(err, "Error when uninstalling NodePort flows and configurations for Service", "ServiceInfo", svcInfoStr)
 			return false
 		}
 		// Remove ExternalIP flows and configurations.
-		if err := p.uninstallExternalIPService(svcInfoStr, svcInfo.ExternalIPStrings(), uint16(svcInfo.Port()), svcInfo.OFProtocol); err != nil {
+		if err := p.uninstallExternalIPService(svcInfoStr, svcInfo.ExternalIPStrings(), uint16(svcInfo.Port()), svcInfo.OFProtocol, svcInfo.ExternalPolicyLocal()); err != nil {
 			klog.ErrorS(err, "Error when uninstalling ExternalIP flows and configurations for Service", "ServiceInfo", svcInfoStr)
 			return false
 		}
 	}
 	// Remove LoadBalancer flows and configurations.
 	if p.proxyLoadBalancerIPs {
-		if err := p.uninstallLoadBalancerService(svcInfoStr, svcInfo.LoadBalancerIPStrings(), uint16(svcInfo.Port()), svcInfo.OFProtocol); err != nil {
+		if err := p.uninstallLoadBalancerService(svcInfoStr, svcInfo.LoadBalancerIPStrings(), uint16(svcInfo.Port()), svcInfo.OFProtocol, svcInfo.ExternalPolicyLocal()); err != nil {
 			klog.ErrorS(err, "Error when uninstalling LoadBalancer flows and configurations for Service", "ServiceInfo", svcInfoStr)
 			return false
 		}
@@ -357,7 +357,7 @@ func smallSliceDifference(s1, s2 []string) []string {
 	return diff
 }
 
-func (p *proxier) installNodePortService(groupID binding.GroupIDType, svcPort uint16, protocol binding.Protocol, affinityTimeout uint16) error {
+func (p *proxier) installNodePortService(externalGroupID, shortCircuitingGroupID binding.GroupIDType, svcPort uint16, protocol binding.Protocol, affinityTimeout uint16, nodeLocalExternal bool) error {
 	if svcPort == 0 {
 		return nil
 	}
@@ -365,16 +365,21 @@ func (p *proxier) installNodePortService(groupID binding.GroupIDType, svcPort ui
 	if p.isIPv6 {
 		svcIP = agentconfig.VirtualNodePortDNATIPv6
 	}
-	if err := p.ofClient.InstallServiceFlows(groupID, svcIP, svcPort, protocol, affinityTimeout, true, false); err != nil {
+	if err := p.ofClient.InstallServiceFlows(externalGroupID, svcIP, svcPort, protocol, affinityTimeout, true, false); err != nil {
 		return fmt.Errorf("failed to install NodePort load balancing flows: %w", err)
 	}
 	if err := p.routeClient.AddNodePort(p.nodePortAddresses, svcPort, protocol); err != nil {
 		return fmt.Errorf("failed to install NodePort traffic redirecting rules: %w", err)
 	}
+	if nodeLocalExternal {
+		if err := p.ofClient.InstallServiceShortCircuitingFlows(shortCircuitingGroupID, svcIP, svcPort, protocol, affinityTimeout); err != nil {
+			return fmt.Errorf("failed to install NodePort short-circuiting load balancing flows: %w", err)
+		}
+	}
 	return nil
 }
 
-func (p *proxier) uninstallNodePortService(svcPort uint16, protocol binding.Protocol) error {
+func (p *proxier) uninstallNodePortService(svcPort uint16, protocol binding.Protocol, nodeLocalExternal bool) error {
 	if svcPort == 0 {
 		return nil
 	}
@@ -388,47 +393,65 @@ func (p *proxier) uninstallNodePortService(svcPort uint16, protocol binding.Prot
 	if err := p.routeClient.DeleteNodePort(p.nodePortAddresses, svcPort, protocol); err != nil {
 		return fmt.Errorf("failed to remove NodePort traffic redirecting rules: %w", err)
 	}
+	if nodeLocalExternal {
+		if err := p.ofClient.UninstallServiceShortCircuitingFlows(svcIP, svcPort, protocol); err != nil {
+			return fmt.Errorf("failed to remove NodePort short-circuiting load balancing flows: %w", err)
+		}
+	}
 	return nil
 }
 
-func (p *proxier) installExternalIPService(svcInfoStr string, groupID binding.GroupIDType, externalIPStrings []string, svcPort uint16, protocol binding.Protocol, affinityTimeout uint16) error {
+func (p *proxier) installExternalIPService(svcInfoStr string, externalGroupID, shortCircuitingGroupID binding.GroupIDType, externalIPStrings []string, svcPort uint16, protocol binding.Protocol, affinityTimeout uint16, nodeLocalExternal bool) error {
 	for _, externalIP := range externalIPStrings {
 		ip := net.ParseIP(externalIP)
-		if err := p.ofClient.InstallServiceFlows(groupID, ip, svcPort, protocol, affinityTimeout, true, false); err != nil {
+		if err := p.ofClient.InstallServiceFlows(externalGroupID, ip, svcPort, protocol, affinityTimeout, true, false); err != nil {
 			return fmt.Errorf("failed to install ExternalIP load balancing flows: %w", err)
 		}
 		if err := p.addRouteForServiceIP(svcInfoStr, ip, p.routeClient.AddExternalIPRoute); err != nil {
 			return fmt.Errorf("failed to install ExternalIP traffic redirecting routes: %w", err)
 		}
-	}
-	return nil
-}
-
-func (p *proxier) uninstallExternalIPService(svcInfoStr string, externalIPStrings []string, svcPort uint16, protocol binding.Protocol) error {
-	for _, externalIP := range externalIPStrings {
-		if externalIP != "" {
-			ip := net.ParseIP(externalIP)
-			if err := p.ofClient.UninstallServiceFlows(ip, svcPort, protocol); err != nil {
-				return fmt.Errorf("failed to remove ExternalIP load balancing flows: %w", err)
-			}
-			if err := p.deleteRouteForServiceIP(svcInfoStr, ip, p.routeClient.DeleteExternalIPRoute); err != nil {
-				return fmt.Errorf("failed to remove ExternalIP traffic redirecting routes: %w", err)
+		if nodeLocalExternal {
+			if err := p.ofClient.InstallServiceShortCircuitingFlows(shortCircuitingGroupID, ip, svcPort, protocol, affinityTimeout); err != nil {
+				return fmt.Errorf("failed to install ExternalIP short-circuiting load balancing flows: %w", err)
 			}
 		}
 	}
 	return nil
 }
 
-func (p *proxier) installLoadBalancerService(svcInfoStr string, groupID binding.GroupIDType, loadBalancerIPStrings []string, svcPort uint16, protocol binding.Protocol, affinityTimeout uint16) error {
+func (p *proxier) uninstallExternalIPService(svcInfoStr string, externalIPStrings []string, svcPort uint16, protocol binding.Protocol, nodeLocalExternal bool) error {
+	for _, externalIP := range externalIPStrings {
+		ip := net.ParseIP(externalIP)
+		if err := p.ofClient.UninstallServiceFlows(ip, svcPort, protocol); err != nil {
+			return fmt.Errorf("failed to remove ExternalIP load balancing flows: %w", err)
+		}
+		if err := p.deleteRouteForServiceIP(svcInfoStr, ip, p.routeClient.DeleteExternalIPRoute); err != nil {
+			return fmt.Errorf("failed to remove ExternalIP traffic redirecting routes: %w", err)
+		}
+		if nodeLocalExternal {
+			if err := p.ofClient.UninstallServiceShortCircuitingFlows(ip, svcPort, protocol); err != nil {
+				return fmt.Errorf("failed to remove ExternalIP short-circuiting load balancing flows: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func (p *proxier) installLoadBalancerService(svcInfoStr string, externalGroupID, shortCircuitingGroupID binding.GroupIDType, loadBalancerIPStrings []string, svcPort uint16, protocol binding.Protocol, affinityTimeout uint16, nodeLocalExternal bool) error {
 	for _, ingress := range loadBalancerIPStrings {
 		if ingress != "" {
 			ip := net.ParseIP(ingress)
-			if err := p.ofClient.InstallServiceFlows(groupID, ip, svcPort, protocol, affinityTimeout, true, false); err != nil {
+			if err := p.ofClient.InstallServiceFlows(externalGroupID, ip, svcPort, protocol, affinityTimeout, true, false); err != nil {
 				return fmt.Errorf("failed to install LoadBalancer load balancing flows: %w", err)
 			}
 			if p.proxyAll {
 				if err := p.addRouteForServiceIP(svcInfoStr, ip, p.routeClient.AddExternalIPRoute); err != nil {
 					return fmt.Errorf("failed to install LoadBalancer traffic redirecting routes: %w", err)
+				}
+				if nodeLocalExternal {
+					if err := p.ofClient.InstallServiceShortCircuitingFlows(shortCircuitingGroupID, ip, svcPort, protocol, affinityTimeout); err != nil {
+						return fmt.Errorf("failed to install LoadBalancer short-circuiting load balancing flows: %w", err)
+					}
 				}
 			}
 		}
@@ -453,7 +476,7 @@ func (p *proxier) addRouteForServiceIP(svcInfoStr string, ip net.IP, addRouteFn 
 	return nil
 }
 
-func (p *proxier) uninstallLoadBalancerService(svcInfoStr string, loadBalancerIPStrings []string, svcPort uint16, protocol binding.Protocol) error {
+func (p *proxier) uninstallLoadBalancerService(svcInfoStr string, loadBalancerIPStrings []string, svcPort uint16, protocol binding.Protocol, nodeLocalExternal bool) error {
 	for _, ingress := range loadBalancerIPStrings {
 		if ingress != "" {
 			ip := net.ParseIP(ingress)
@@ -463,6 +486,11 @@ func (p *proxier) uninstallLoadBalancerService(svcInfoStr string, loadBalancerIP
 			if p.proxyAll {
 				if err := p.deleteRouteForServiceIP(svcInfoStr, ip, p.routeClient.DeleteExternalIPRoute); err != nil {
 					return fmt.Errorf("failed to remove LoadBalancer traffic redirecting routes: %w", err)
+				}
+				if nodeLocalExternal {
+					if err := p.ofClient.UninstallServiceShortCircuitingFlows(ip, svcPort, protocol); err != nil {
+						return fmt.Errorf("failed to remove LoadBalancer short-circuiting load balancing flows: %w", err)
+					}
 				}
 			}
 		}
@@ -541,27 +569,46 @@ func (p *proxier) installServices() {
 		}
 
 		withSessionAffinity := svcInfo.SessionAffinityType() == corev1.ServiceAffinityClientIP
-		var internalGroupID, externalGroupID binding.GroupIDType
+		internalPolicyLocal := svcInfo.InternalPolicyLocal()
+		externalPolicyLocal := svcInfo.ExternalPolicyLocal()
+		var internalGroupID, externalGroupID, shortCircuitingGroupID binding.GroupIDType
 		// Ensure a group for internal traffic exist.
-		if internalGroupID, ok = p.installServiceGroup(svcPortName, needUpdateEndpoints, svcInfo.InternalPolicyLocal(), withSessionAffinity, localEndpoints, clusterEndpoints); !ok {
+		if internalGroupID, ok = p.installServiceGroup(svcPortName, needUpdateEndpoints, internalPolicyLocal, withSessionAffinity, localEndpoints, clusterEndpoints); !ok {
 			continue
 		}
 		// Ensure a group for external traffic exist if it's externally accessible, and remove the unneeded group.
 		if svcInfo.ExternallyAccessible() {
-			if svcInfo.ExternalPolicyLocal() != svcInfo.InternalPolicyLocal() {
-				if externalGroupID, ok = p.installServiceGroup(svcPortName, needUpdateEndpoints, svcInfo.ExternalPolicyLocal(), withSessionAffinity, localEndpoints, clusterEndpoints); !ok {
+			if externalPolicyLocal != internalPolicyLocal {
+				if externalGroupID, ok = p.installServiceGroup(svcPortName, needUpdateEndpoints, externalPolicyLocal, withSessionAffinity, localEndpoints, clusterEndpoints); !ok {
 					continue
+				}
+				// When the externalTrafficPolicy is set to "Local", the selection of endpoints should be limited to only
+				// those that are local, for clients coming from outside the cluster. Clients within the local Pod CIDR
+				// should always work, regardless of the externalTrafficPolicy (this is called "short-circuiting"). To
+				// enable short-circuiting, a group containing all endpoints should exist. If the internalPolicyPolicy
+				// and externalTrafficPolicy differ, the group containing all endpoints should still be used for short-circuiting.
+				if externalPolicyLocal {
+					shortCircuitingGroupID = internalGroupID
 				}
 			} else {
 				externalGroupID = internalGroupID
-				// Ensure the other group is removed as ExternalTrafficPolicy is the same as InternalTrafficPolicy.
-				if !p.removeServiceGroup(svcPortName, !svcInfo.InternalPolicyLocal()) {
-					continue
+				// When the externalTrafficPolicy is set to "Local", to enable short-circuiting, a group containing all
+				// endpoints should exist. If the internalPolicyPolicy and externalTrafficPolicy are the same, the group
+				// containing all endpoints should be created.
+				if externalPolicyLocal {
+					if shortCircuitingGroupID, ok = p.installServiceGroup(svcPortName, needUpdateEndpoints, false, withSessionAffinity, nil, clusterEndpoints); !ok {
+						continue
+					}
+				} else {
+					// Ensure the other group is removed as ExternalTrafficPolicy is the same as InternalTrafficPolicy.
+					if !p.removeServiceGroup(svcPortName, !internalPolicyLocal) {
+						continue
+					}
 				}
 			}
 		} else {
 			// Ensure the other group is removed as we only need a group for internal traffic.
-			if !p.removeServiceGroup(svcPortName, !svcInfo.InternalPolicyLocal()) {
+			if !p.removeServiceGroup(svcPortName, !internalPolicyLocal) {
 				continue
 			}
 		}
@@ -573,11 +620,11 @@ func (p *proxier) installServices() {
 					continue
 				}
 			}
-			if !p.installServiceFlows(svcInfo, internalGroupID, externalGroupID) {
+			if !p.installServiceFlows(svcInfo, internalGroupID, externalGroupID, shortCircuitingGroupID) {
 				continue
 			}
 		} else if needUpdateServiceExternalAddresses {
-			if !p.updateServiceExternalAddresses(pSvcInfo, svcInfo, externalGroupID) {
+			if !p.updateServiceExternalAddresses(pSvcInfo, svcInfo, externalGroupID, shortCircuitingGroupID) {
 				continue
 			}
 		}
@@ -608,9 +655,12 @@ func getAffinityTimeout(svcInfo *types.ServiceInfo) uint16 {
 	return uint16(affinityTimeout)
 }
 
-func (p *proxier) installServiceFlows(svcInfo *types.ServiceInfo, internalGroupID, externalGroupID binding.GroupIDType) bool {
+func (p *proxier) installServiceFlows(svcInfo *types.ServiceInfo, internalGroupID, externalGroupID, shortCircuitingGroupID binding.GroupIDType) bool {
 	svcInfoStr := svcInfo.String()
+	svcPort := uint16(svcInfo.Port())
+	svcProto := svcInfo.OFProtocol
 	affinityTimeout := getAffinityTimeout(svcInfo)
+	externalPolicyLocal := svcInfo.ExternalPolicyLocal()
 
 	var isNestedService bool
 	if p.supportNestedService {
@@ -620,24 +670,25 @@ func (p *proxier) installServiceFlows(svcInfo *types.ServiceInfo, internalGroupI
 	}
 
 	// Install ClusterIP flows.
-	if err := p.ofClient.InstallServiceFlows(internalGroupID, svcInfo.ClusterIP(), uint16(svcInfo.Port()), svcInfo.OFProtocol, affinityTimeout, false, isNestedService); err != nil {
+	if err := p.ofClient.InstallServiceFlows(internalGroupID, svcInfo.ClusterIP(), svcPort, svcProto, affinityTimeout, false, isNestedService); err != nil {
 		klog.ErrorS(err, "Error when installing ClusterIP flows for Service", "ServiceInfo", svcInfoStr)
 		return false
 	}
 	if p.proxyAll {
-		if err := p.installNodePortService(externalGroupID, uint16(svcInfo.NodePort()), svcInfo.OFProtocol, affinityTimeout); err != nil {
+		// Install NodePort flows and configurations.
+		if err := p.installNodePortService(externalGroupID, shortCircuitingGroupID, uint16(svcInfo.NodePort()), svcProto, affinityTimeout, externalPolicyLocal); err != nil {
 			klog.ErrorS(err, "Error when installing NodePort flows and configurations for Service", "ServiceInfo", svcInfoStr)
 			return false
 		}
 		// Install ExternalIP flows and configurations.
-		if err := p.installExternalIPService(svcInfoStr, externalGroupID, svcInfo.ExternalIPStrings(), uint16(svcInfo.Port()), svcInfo.OFProtocol, affinityTimeout); err != nil {
+		if err := p.installExternalIPService(svcInfoStr, externalGroupID, shortCircuitingGroupID, svcInfo.ExternalIPStrings(), svcPort, svcProto, affinityTimeout, externalPolicyLocal); err != nil {
 			klog.ErrorS(err, "Error when installing ExternalIP flows and configurations for Service", "ServiceInfo", svcInfoStr)
 			return false
 		}
 	}
 	// Install LoadBalancer flows and configurations.
 	if p.proxyLoadBalancerIPs {
-		if err := p.installLoadBalancerService(svcInfoStr, externalGroupID, svcInfo.LoadBalancerIPStrings(), uint16(svcInfo.Port()), svcInfo.OFProtocol, affinityTimeout); err != nil {
+		if err := p.installLoadBalancerService(svcInfoStr, externalGroupID, shortCircuitingGroupID, svcInfo.LoadBalancerIPStrings(), svcPort, svcProto, affinityTimeout, externalPolicyLocal); err != nil {
 			klog.ErrorS(err, "Error when installing LoadBalancer flows and configurations for Service", "ServiceInfo", svcInfoStr)
 			return false
 		}
@@ -645,29 +696,37 @@ func (p *proxier) installServiceFlows(svcInfo *types.ServiceInfo, internalGroupI
 	return true
 }
 
-func (p *proxier) updateServiceExternalAddresses(pSvcInfo, svcInfo *types.ServiceInfo, externalGroupID binding.GroupIDType) bool {
+func (p *proxier) updateServiceExternalAddresses(pSvcInfo, svcInfo *types.ServiceInfo, externalGroupID, shortCircuitGroupID binding.GroupIDType) bool {
 	pSvcInfoStr := pSvcInfo.String()
 	svcInfoStr := svcInfo.String()
+	pSvcPort := uint16(pSvcInfo.Port())
+	svcPort := uint16(svcInfo.Port())
+	pSvcNodePort := uint16(pSvcInfo.NodePort())
+	svcNodePort := uint16(svcInfo.NodePort())
+	pSvcProto := pSvcInfo.OFProtocol
+	svcProto := svcInfo.OFProtocol
 	affinityTimeout := getAffinityTimeout(svcInfo)
+	pExternalPolicyLocal := pSvcInfo.ExternalPolicyLocal()
+	externalPolicyLocal := svcInfo.ExternalPolicyLocal()
 
 	if p.proxyAll {
-		if pSvcInfo.NodePort() != svcInfo.NodePort() {
-			if err := p.uninstallNodePortService(uint16(pSvcInfo.NodePort()), pSvcInfo.OFProtocol); err != nil {
+		if pSvcNodePort != svcNodePort {
+			if err := p.uninstallNodePortService(pSvcNodePort, pSvcProto, externalPolicyLocal); err != nil {
 				klog.ErrorS(err, "Error when uninstalling NodePort flows and configurations for Service", "ServiceInfo", pSvcInfoStr)
 				return false
 			}
-			if err := p.installNodePortService(externalGroupID, uint16(svcInfo.NodePort()), svcInfo.OFProtocol, affinityTimeout); err != nil {
+			if err := p.installNodePortService(externalGroupID, shortCircuitGroupID, svcNodePort, svcProto, affinityTimeout, externalPolicyLocal); err != nil {
 				klog.ErrorS(err, "Error when installing NodePort flows and configurations for Service", "ServiceInfo", svcInfoStr)
 				return false
 			}
 		}
 		deletedExternalIPs := smallSliceDifference(pSvcInfo.ExternalIPStrings(), svcInfo.ExternalIPStrings())
 		addedExternalIPs := smallSliceDifference(svcInfo.ExternalIPStrings(), pSvcInfo.ExternalIPStrings())
-		if err := p.uninstallExternalIPService(pSvcInfoStr, deletedExternalIPs, uint16(pSvcInfo.Port()), pSvcInfo.OFProtocol); err != nil {
+		if err := p.uninstallExternalIPService(pSvcInfoStr, deletedExternalIPs, pSvcPort, pSvcProto, pExternalPolicyLocal); err != nil {
 			klog.ErrorS(err, "Error when uninstalling ExternalIP flows and configurations for Service", "ServiceInfo", pSvcInfoStr)
 			return false
 		}
-		if err := p.installExternalIPService(svcInfoStr, externalGroupID, addedExternalIPs, uint16(svcInfo.Port()), svcInfo.OFProtocol, affinityTimeout); err != nil {
+		if err := p.installExternalIPService(svcInfoStr, externalGroupID, shortCircuitGroupID, addedExternalIPs, svcPort, svcProto, affinityTimeout, externalPolicyLocal); err != nil {
 			klog.ErrorS(err, "Error when installing ExternalIP flows and configurations for Service", "ServiceInfo", svcInfoStr)
 			return false
 		}
@@ -675,11 +734,11 @@ func (p *proxier) updateServiceExternalAddresses(pSvcInfo, svcInfo *types.Servic
 	if p.proxyLoadBalancerIPs {
 		deletedLoadBalancerIPs := smallSliceDifference(pSvcInfo.LoadBalancerIPStrings(), svcInfo.LoadBalancerIPStrings())
 		addedLoadBalancerIPs := smallSliceDifference(svcInfo.LoadBalancerIPStrings(), pSvcInfo.LoadBalancerIPStrings())
-		if err := p.uninstallLoadBalancerService(pSvcInfoStr, deletedLoadBalancerIPs, uint16(pSvcInfo.Port()), pSvcInfo.OFProtocol); err != nil {
+		if err := p.uninstallLoadBalancerService(pSvcInfoStr, deletedLoadBalancerIPs, pSvcPort, pSvcProto, pExternalPolicyLocal); err != nil {
 			klog.ErrorS(err, "Error when uninstalling LoadBalancer flows and configurations for Service", "ServiceInfo", pSvcInfoStr)
 			return false
 		}
-		if err := p.installLoadBalancerService(svcInfoStr, externalGroupID, addedLoadBalancerIPs, uint16(svcInfo.Port()), svcInfo.OFProtocol, affinityTimeout); err != nil {
+		if err := p.installLoadBalancerService(svcInfoStr, externalGroupID, shortCircuitGroupID, addedLoadBalancerIPs, svcPort, svcProto, affinityTimeout, externalPolicyLocal); err != nil {
 			klog.ErrorS(err, "Error when installing LoadBalancer flows and configurations for Service", "ServiceInfo", svcInfoStr)
 			return false
 		}

@@ -493,6 +493,20 @@ func (mr *MockClientMockRecorder) InstallServiceGroup(arg0, arg1, arg2 interface
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InstallServiceGroup", reflect.TypeOf((*MockClient)(nil).InstallServiceGroup), arg0, arg1, arg2)
 }
 
+// InstallServiceShortCircuitingFlows mocks base method
+func (m *MockClient) InstallServiceShortCircuitingFlows(arg0 openflow.GroupIDType, arg1 net.IP, arg2 uint16, arg3 openflow.Protocol, arg4 uint16) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "InstallServiceShortCircuitingFlows", arg0, arg1, arg2, arg3, arg4)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// InstallServiceShortCircuitingFlows indicates an expected call of InstallServiceShortCircuitingFlows
+func (mr *MockClientMockRecorder) InstallServiceShortCircuitingFlows(arg0, arg1, arg2, arg3, arg4 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InstallServiceShortCircuitingFlows", reflect.TypeOf((*MockClient)(nil).InstallServiceShortCircuitingFlows), arg0, arg1, arg2, arg3, arg4)
+}
+
 // InstallTraceflowFlows mocks base method
 func (m *MockClient) InstallTraceflowFlows(arg0 byte, arg1, arg2, arg3 bool, arg4 *openflow.Packet, arg5 uint32, arg6 uint16) error {
 	m.ctrl.T.Helper()
@@ -976,6 +990,20 @@ func (m *MockClient) UninstallServiceGroup(arg0 openflow.GroupIDType) error {
 func (mr *MockClientMockRecorder) UninstallServiceGroup(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UninstallServiceGroup", reflect.TypeOf((*MockClient)(nil).UninstallServiceGroup), arg0)
+}
+
+// UninstallServiceShortCircuitingFlows mocks base method
+func (m *MockClient) UninstallServiceShortCircuitingFlows(arg0 net.IP, arg1 uint16, arg2 openflow.Protocol) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UninstallServiceShortCircuitingFlows", arg0, arg1, arg2)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UninstallServiceShortCircuitingFlows indicates an expected call of UninstallServiceShortCircuitingFlows
+func (mr *MockClientMockRecorder) UninstallServiceShortCircuitingFlows(arg0, arg1, arg2 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UninstallServiceShortCircuitingFlows", reflect.TypeOf((*MockClient)(nil).UninstallServiceShortCircuitingFlows), arg0, arg1, arg2)
 }
 
 // UninstallTraceflowFlows mocks base method

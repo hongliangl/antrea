@@ -106,6 +106,14 @@ type Client interface {
 	// UninstallServiceFlows removes flows installed by InstallServiceFlows.
 	UninstallServiceFlows(svcIP net.IP, svcPort uint16, protocol binding.Protocol) error
 
+	// InstallServiceShortCircuitingFlows installs flows for accessing Service NodePort, LoadBalancer and ExternalIP from
+	// local Node or Pod when their externalTrafficPolicy is Local. It also installs the flow that uses the group/bucket
+	// to do Service LB, similar to InstallServiceFlows. Note that the group includes all Endpoints, while the flow
+	// selectively matches traffic originating from the local Pod CIDR.
+	InstallServiceShortCircuitingFlows(groupID binding.GroupIDType, svcIP net.IP, svcPort uint16, protocol binding.Protocol, affinityTimeout uint16) error
+	// UninstallServiceShortCircuitingFlows removes flows installed by InstallServiceShortCircuitingFlows.
+	UninstallServiceShortCircuitingFlows(svcIP net.IP, svcPort uint16, protocol binding.Protocol) error
+
 	// GetFlowTableStatus should return an array of flow table status, all existing flow tables should be included in the list.
 	GetFlowTableStatus() []binding.TableStatus
 
@@ -712,6 +720,10 @@ func generateServicePortFlowCacheKey(svcIP net.IP, svcPort uint16, protocol bind
 	return fmt.Sprintf("S%s%s%x", svcIP, protocol, svcPort)
 }
 
+func generateServicePortShortCircuitingFlowCacheKey(svcIP net.IP, svcPort uint16, protocol binding.Protocol) string {
+	return fmt.Sprintf("S%s%s%x_short_circuiting", svcIP, protocol, svcPort)
+}
+
 func (c *client) InstallEndpointFlows(protocol binding.Protocol, endpoints []proxy.Endpoint) error {
 	c.replayMutex.RLock()
 	defer c.replayMutex.RUnlock()
@@ -757,7 +769,7 @@ func (c *client) InstallServiceFlows(groupID binding.GroupIDType, svcIP net.IP, 
 	defer c.replayMutex.RUnlock()
 	var flows []binding.Flow
 	nodePortAddress := svcIP.Equal(config.VirtualNodePortDNATIPv4) || svcIP.Equal(config.VirtualNodePortDNATIPv6)
-	flows = append(flows, c.featureService.serviceLBFlow(groupID, svcIP, svcPort, protocol, affinityTimeout != 0, externalAddress, nodePortAddress, nested))
+	flows = append(flows, c.featureService.serviceLBFlow(groupID, svcIP, svcPort, protocol, affinityTimeout != 0, externalAddress, nodePortAddress, nested, false))
 	if affinityTimeout != 0 {
 		flows = append(flows, c.featureService.serviceLearnFlow(groupID, svcIP, svcPort, protocol, affinityTimeout, externalAddress, nodePortAddress))
 	}
@@ -775,9 +787,27 @@ func (c *client) UninstallServiceFlows(svcIP net.IP, svcPort uint16, protocol bi
 	return c.deleteFlows(c.featureService.cachedFlows, cacheKey)
 }
 
+func (c *client) InstallServiceShortCircuitingFlows(groupID binding.GroupIDType, svcIP net.IP, svcPort uint16, protocol binding.Protocol, affinityTimeout uint16) error {
+	c.replayMutex.RLock()
+	defer c.replayMutex.RUnlock()
+	isNodePortSvc := svcIP.Equal(config.VirtualNodePortDNATIPv4) || svcIP.Equal(config.VirtualNodePortDNATIPv6)
+	flows := []binding.Flow{c.featureService.serviceLBFlow(groupID, svcIP, svcPort, protocol, affinityTimeout != 0, true, isNodePortSvc, false, true)}
+	cacheKey := generateServicePortShortCircuitingFlowCacheKey(svcIP, svcPort, protocol)
+	return c.addFlows(c.featureService.cachedFlows, cacheKey, flows)
+}
+
+func (c *client) UninstallServiceShortCircuitingFlows(svcIP net.IP, svcPort uint16, protocol binding.Protocol) error {
+	c.replayMutex.RLock()
+	defer c.replayMutex.RUnlock()
+	cacheKey := generateServicePortShortCircuitingFlowCacheKey(svcIP, svcPort, protocol)
+	return c.deleteFlows(c.featureService.cachedFlows, cacheKey)
+}
+
 func (c *client) GetServiceFlowKeys(svcIP net.IP, svcPort uint16, protocol binding.Protocol, endpoints []proxy.Endpoint) []string {
 	cacheKey := generateServicePortFlowCacheKey(svcIP, svcPort, protocol)
 	flowKeys := c.getFlowKeysFromCache(c.featureService.cachedFlows, cacheKey)
+	cacheKey = generateServicePortShortCircuitingFlowCacheKey(svcIP, svcPort, protocol)
+	flowKeys = append(flowKeys, c.getFlowKeysFromCache(c.featureService.cachedFlows, cacheKey)...)
 	for _, ep := range endpoints {
 		epPort, _ := ep.Port()
 		cacheKey = generateEndpointFlowCacheKey(ep.IP(), epPort, protocol)

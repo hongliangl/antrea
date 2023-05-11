@@ -2377,11 +2377,21 @@ func (f *featureService) serviceLBFlow(groupID binding.GroupIDType,
 	withSessionAffinity bool,
 	externalAddress bool,
 	nodePortAddress bool,
-	nested bool) binding.Flow {
-	flowBuilder := ServiceLBTable.ofTable.BuildFlow(priorityNormal).
+	nested bool,
+	isShortCircuiting bool) binding.Flow {
+	priority := priorityNormal
+	// For short-circuiting flow, priority should be higher since an extra match condition is added.
+	if isShortCircuiting {
+		priority = priorityHigh
+	}
+	flowBuilder := ServiceLBTable.ofTable.BuildFlow(priority).
 		Cookie(f.cookieAllocator.Request(f.category).Raw()).
 		MatchProtocol(protocol).
 		MatchDstPort(svcPort, nil)
+	// For short-circuiting flow, an extra match condition matching packet from local Pod CIDR is added.
+	if isShortCircuiting {
+		flowBuilder = flowBuilder.MatchSrcIPNet(f.localCIDRs[getIPProtocol(svcIP)])
+	}
 
 	// EpToSelectRegMark is required to match the packets that haven't undergone Endpoint selection yet.
 	regMarksToMatch := []*binding.RegMark{EpToSelectRegMark}

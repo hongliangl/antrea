@@ -1191,6 +1191,82 @@ func Test_client_InstallServiceFlows(t *testing.T) {
 	}
 }
 
+func Test_client_InstallServiceShortCircuitingFlows(t *testing.T) {
+	groupID := binding.GroupIDType(100)
+	svcIPv4 := net.ParseIP("10.96.0.100")
+	svcIPv6 := net.ParseIP("fec0:10:96::100")
+	port := uint16(80)
+
+	testCases := []struct {
+		name            string
+		protocol        binding.Protocol
+		svcIP           net.IP
+		affinityTimeout uint16
+		expectedFlows   []string
+	}{
+		{
+			name:            "Service NodePort,SessionAffinity",
+			protocol:        binding.ProtocolUDP,
+			svcIP:           config.VirtualNodePortDNATIPv4,
+			affinityTimeout: uint16(100),
+			expectedFlows: []string{
+				"cookie=0x1030000000000, table=ServiceLB, priority=210,udp,reg4=0x90000/0xf0000,nw_src=10.10.0.0/24,tp_dst=80 actions=set_field:0x200/0x200->reg0,set_field:0x30000/0x70000->reg4,set_field:0x200000/0x200000->reg4,set_field:0x64->reg7,group:100",
+			},
+		},
+		{
+			name:            "Service NodePort,SessionAffinity,IPv6",
+			protocol:        binding.ProtocolUDPv6,
+			svcIP:           config.VirtualNodePortDNATIPv6,
+			affinityTimeout: uint16(100),
+			expectedFlows: []string{
+				"cookie=0x1030000000000, table=ServiceLB, priority=210,udp6,reg4=0x90000/0xf0000,ipv6_src=fec0:10:10::/80,tp_dst=80 actions=set_field:0x200/0x200->reg0,set_field:0x30000/0x70000->reg4,set_field:0x200000/0x200000->reg4,set_field:0x64->reg7,group:100",
+			},
+		},
+		{
+			name:            "Service LoadBalancer,SessionAffinity",
+			protocol:        binding.ProtocolSCTP,
+			svcIP:           svcIPv4,
+			affinityTimeout: uint16(100),
+			expectedFlows: []string{
+				"cookie=0x1030000000000, table=ServiceLB, priority=210,sctp,reg4=0x10000/0x70000,nw_src=10.10.0.0/24,nw_dst=10.96.0.100,tp_dst=80 actions=set_field:0x200/0x200->reg0,set_field:0x30000/0x70000->reg4,set_field:0x200000/0x200000->reg4,set_field:0x64->reg7,group:100",
+			},
+		},
+		{
+			name:            "Service LoadBalancer,SessionAffinity,IPv6",
+			protocol:        binding.ProtocolSCTPv6,
+			svcIP:           svcIPv6,
+			affinityTimeout: uint16(100),
+			expectedFlows: []string{
+				"cookie=0x1030000000000, table=ServiceLB, priority=210,sctp6,reg4=0x10000/0x70000,ipv6_src=fec0:10:10::/80,ipv6_dst=fec0:10:96::100,tp_dst=80 actions=set_field:0x200/0x200->reg0,set_field:0x30000/0x70000->reg4,set_field:0x200000/0x200000->reg4,set_field:0x64->reg7,group:100",
+			},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+			m := oftest.NewMockOFEntryOperations(ctrl)
+
+			fc := newFakeClient(m, true, true, config.K8sNode, config.TrafficEncapModeEncap)
+			defer resetPipelines()
+
+			m.EXPECT().AddAll(gomock.Any()).Return(nil).Times(1)
+			m.EXPECT().DeleteAll(gomock.Any()).Return(nil).Times(1)
+
+			cacheKey := generateServicePortShortCircuitingFlowCacheKey(tc.svcIP, port, tc.protocol)
+
+			assert.NoError(t, fc.InstallServiceShortCircuitingFlows(groupID, tc.svcIP, port, tc.protocol, tc.affinityTimeout))
+			fCacheI, ok := fc.featureService.cachedFlows.Load(cacheKey)
+			require.True(t, ok)
+			assert.ElementsMatch(t, tc.expectedFlows, getFlowStrings(fCacheI))
+
+			assert.NoError(t, fc.UninstallServiceShortCircuitingFlows(tc.svcIP, port, tc.protocol))
+			_, ok = fc.featureService.cachedFlows.Load(cacheKey)
+			require.False(t, ok)
+		})
+	}
+}
+
 func Test_client_GetServiceFlowKeys(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
