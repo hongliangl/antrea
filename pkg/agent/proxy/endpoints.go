@@ -16,12 +16,14 @@ package proxy
 
 import (
 	"fmt"
+
 	"net"
 	"reflect"
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	discovery "k8s.io/api/discovery/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	apimachinerytypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 
@@ -52,12 +54,15 @@ type endpointsChangesTracker struct {
 	// changes contains endpoints changes since the last checkoutChanges call.
 	changes    map[apimachinerytypes.NamespacedName]*endpointsChange
 	sliceCache *EndpointSliceCache
+
+	endpointsLabelSelector labels.Selector
 }
 
-func newEndpointsChangesTracker(hostname string, enableEndpointSlice bool, isIPv6 bool) *endpointsChangesTracker {
+func newEndpointsChangesTracker(hostname string, enableEndpointSlice bool, isIPv6 bool, endpointsLabelSelector labels.Selector) *endpointsChangesTracker {
 	tracker := &endpointsChangesTracker{
-		hostname: hostname,
-		changes:  map[apimachinerytypes.NamespacedName]*endpointsChange{},
+		hostname:               hostname,
+		changes:                map[apimachinerytypes.NamespacedName]*endpointsChange{},
+		endpointsLabelSelector: endpointsLabelSelector,
 	}
 
 	if enableEndpointSlice {
@@ -118,6 +123,10 @@ func (t *endpointsChangesTracker) OnEndpointSliceUpdate(endpointSlice *discovery
 		klog.Error("Nil EndpointSlice passed to EndpointSliceUpdate")
 		return false
 	}
+	// Skip proxying if the Endpoints label doesn't match the endpointsLabelSelector.
+	if !t.endpointsLabelSelector.Matches(labels.Set(endpointSlice.Labels)) {
+		return false
+	}
 
 	if _, has := supportedEndpointSliceAddressTypes[endpointSlice.AddressType]; !has {
 		klog.V(4).Infof("EndpointSlice address type is not supported: %s", endpointSlice.AddressType)
@@ -171,6 +180,10 @@ func (t *endpointsChangesTracker) Synced() bool {
 // This function is used for incremental update of EndpointsMap.
 func (t *endpointsChangesTracker) endpointsToEndpointsMap(endpoints *corev1.Endpoints) types.EndpointsMap {
 	if endpoints == nil {
+		return nil
+	}
+	// Skip proxying if the Endpoints label doesn't match the endpointsLabelSelector.
+	if !t.endpointsLabelSelector.Matches(labels.Set(endpoints.Labels)) {
 		return nil
 	}
 	endpointsMap := make(types.EndpointsMap)
