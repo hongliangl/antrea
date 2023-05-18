@@ -16,14 +16,11 @@ package e2e
 
 import (
 	"fmt"
-	"net"
-	"strings"
-	"testing"
-	"time"
-
+	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
+	"net"
+	"testing"
 )
 
 func TestClusterIPv4(t *testing.T) {
@@ -78,7 +75,7 @@ func (data *TestData) testClusterIP(t *testing.T, isIPv6 bool, clientNamespace, 
 	_, _, cleanupFunc := createAndWaitForPod(t, data, data.createNginxPodOnNode, nginx, nodeName(0), serverNamespace, false)
 	defer cleanupFunc()
 	t.Run("Non-HostNetwork Endpoints", func(t *testing.T) {
-		testClusterIPCases(t, data, url, clients, hostNetworkClients, clientNamespace)
+		testClusterIPCases(t, data, url, clients, hostNetworkClients, clientNamespace, Connected)
 	})
 
 	require.NoError(t, data.DeletePod(serverNamespace, nginx))
@@ -86,43 +83,47 @@ func (data *TestData) testClusterIP(t *testing.T, isIPv6 bool, clientNamespace, 
 	defer cleanupFunc()
 	t.Run("HostNetwork Endpoints", func(t *testing.T) {
 		skipIfNamespaceIsNotEqual(t, serverNamespace, data.testNamespace)
-		testClusterIPCases(t, data, url, clients, hostNetworkClients, clientNamespace)
+		testClusterIPCases(t, data, url, clients, hostNetworkClients, clientNamespace, Connected)
+	})
+
+	require.NoError(t, data.DeletePod(serverNamespace, hostNginx))
+	t.Run("No Endpoint", func(t *testing.T) {
+		skipIfNamespaceIsNotEqual(t, serverNamespace, data.testNamespace)
+		testClusterIPCases(t, data, url, clients, hostNetworkClients, clientNamespace, Rejected)
 	})
 }
 
-func testClusterIPCases(t *testing.T, data *TestData, url string, clients, hostNetworkClients map[string]string, namespace string) {
-	t.Run("All Nodes can access Service ClusterIP", func(t *testing.T) {
+func testClusterIPCases(t *testing.T, data *TestData, url string, clients, hostNetworkClients map[string]string, namespace string, expectedConnectivity PodConnectivityMark) {
+	t.Run("Connect to Service ClusterIP from Node", func(t *testing.T) {
 		skipIfProxyAllDisabled(t, data)
 		skipIfKubeProxyEnabled(t, data)
 		skipIfNamespaceIsNotEqual(t, namespace, data.testNamespace)
 		for node, pod := range hostNetworkClients {
-			testClusterIPFromPod(t, data, url, node, pod, true, namespace)
+			testClusterIPFromPod(t, data, url, node, pod, true, namespace, expectedConnectivity)
 		}
 	})
-	t.Run("Pods from all Nodes can access Service ClusterIP", func(t *testing.T) {
+	t.Run("Connect to Service ClusterIP from Pod", func(t *testing.T) {
 		for node, pod := range clients {
-			testClusterIPFromPod(t, data, url, node, pod, false, namespace)
+			testClusterIPFromPod(t, data, url, node, pod, false, namespace, expectedConnectivity)
 		}
 	})
 }
 
-func testClusterIPFromPod(t *testing.T, data *TestData, url, nodeName, podName string, hostNetwork bool, namespace string) {
-	cmd := []string{"/agnhost", "connect", url, "--timeout=1s", "--protocol=tcp"}
-	err := wait.PollImmediate(1*time.Second, 5*time.Second, func() (bool, error) {
-		t.Logf(strings.Join(cmd, " "))
-		stdout, stderr, err := data.RunCommandFromPod(namespace, podName, agnhostContainerName, cmd)
-		t.Logf("stdout: %s - stderr: %s - err: %v", stdout, stderr, err)
-		if err == nil {
-			return true, nil
+func testClusterIPFromPod(t *testing.T, data *TestData, url, nodeName, podName string, hostNetwork bool, namespace string, expectedConnectivity PodConnectivityMark) {
+	cmd := fmt.Sprintf("for i in $(seq 1 3); do ip netns exec %s /agnhost connect %s --timeout=1s --protocol=tcp; done;", namespace, url)
+	stdout, stderr, err := data.RunCommandFromPod(namespace, podName, agnhostContainerName, []string{"sh", "-c", cmd})
+	connectivity := Connected
+	if err != nil || stderr != "" {
+		// log this error as trace since may be an expected failure
+		log.Tracef("Pod '%s' on Node '%s' (hostNetwork: %t) to %s: error when running command: err - %v /// stdout - %s /// stderr - %s", podName, nodeName, hostNetwork, url, err, stdout, stderr)
+		// If err != nil and stderr == "", then it means this probe failed because of
+		// the command instead of connectivity. For example, container name doesn't exist.
+		if stderr == "" {
+			connectivity = Error
 		}
-		return false, nil
-	})
-	if err != nil {
-		t.Errorf(
-			"Pod '%s' on Node '%s' (hostNetwork: %t) should be able to connect to Service ClusterIP",
-			podName, nodeName, hostNetwork,
-		)
+		connectivity = DecideProbeResult(stderr, 3)
 	}
+	require.Equal(t, expectedConnectivity, connectivity)
 }
 
 // TestNodePortWindows tests NodePort Service on Windows Node. It is a temporary test to replace upstream Kubernetes one:
