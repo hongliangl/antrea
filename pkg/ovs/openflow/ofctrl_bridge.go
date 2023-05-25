@@ -464,9 +464,9 @@ func (b *OFBridge) IsConnected() bool {
 	return sw.IsReady()
 }
 
-func (b *OFBridge) AddFlowsInBundle(addflows, modFlows, delFlows []*openflow15.FlowMod) error {
+func (b *OFBridge) AddFlowsInBundle(addFlows, modFlows, delFlows []*openflow15.FlowMod) error {
 	// If no Openflow entries are requested to be added or modified or deleted on the OVS bridge, return immediately.
-	if len(addflows) == 0 && len(modFlows) == 0 && len(delFlows) == 0 {
+	if len(addFlows) == 0 && len(modFlows) == 0 && len(delFlows) == 0 {
 		klog.V(2).Info("No Openflow entries need to be synced to the OVS bridge, returning")
 		return nil
 	}
@@ -497,7 +497,7 @@ func (b *OFBridge) AddFlowsInBundle(addflows, modFlows, delFlows []*openflow15.F
 	}
 
 	// Install new Openflow entries with the opened bundle.
-	if err := syncFlows(addflows, openflow15.FC_ADD); err != nil {
+	if err := syncFlows(addFlows, openflow15.FC_ADD); err != nil {
 		return err
 	}
 	// Modify existing Openflow entries with the opened bundle.
@@ -513,7 +513,7 @@ func (b *OFBridge) AddFlowsInBundle(addflows, modFlows, delFlows []*openflow15.F
 	count, err := tx.Complete()
 	if err != nil {
 		return err
-	} else if count != len(addflows)+len(modFlows)+len(delFlows) {
+	} else if count != len(addFlows)+len(modFlows)+len(delFlows) {
 		// This case should not be possible if all the calls to "tx.AddFlow" returned nil. This is just a sanity check.
 		tx.Abort()
 		return errors.New("failed to add all Openflow entries in one transaction, cancelling it")
@@ -526,7 +526,7 @@ func (b *OFBridge) AddFlowsInBundle(addflows, modFlows, delFlows []*openflow15.F
 	}
 
 	// Update TableStatus after the transaction is committed successfully.
-	for _, message := range addflows {
+	for _, message := range addFlows {
 		table := b.tableCache[message.TableId]
 		table.UpdateStatus(1)
 	}

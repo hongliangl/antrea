@@ -20,11 +20,16 @@ import (
 
 	"antrea.io/libOpenflow/openflow15"
 	"k8s.io/klog/v2"
+	netutils "k8s.io/utils/net"
 
 	"antrea.io/antrea/pkg/agent/config"
 	"antrea.io/antrea/pkg/agent/openflow/cookie"
+	"antrea.io/antrea/pkg/agent/util/sysctl"
 	binding "antrea.io/antrea/pkg/ovs/openflow"
+	"antrea.io/antrea/third_party/proxy"
 )
+
+const defaultUDPStreamTimeout = 120
 
 type featureService struct {
 	cookieAllocator cookie.Allocator
@@ -51,6 +56,8 @@ type featureService struct {
 	proxyAll              bool
 	connectUplinkToBridge bool
 	ctZoneSrcField        *binding.RegField
+
+	udpStreamTimeout uint16
 
 	category cookie.Category
 }
@@ -107,6 +114,11 @@ func newFeatureService(
 			}
 		}
 	}
+	udpTimeoutStream, err := sysctl.GetSysctlNet("netfilter/nf_conntrack_udp_timeout_stream")
+	if err != nil {
+		klog.ErrorS(err, "Failed to get UDP stream timeout, using default value", "defaultUDPStreamTimeout", defaultUDPStreamTimeout)
+		udpTimeoutStream = defaultUDPStreamTimeout
+	}
 
 	return &featureService{
 		cookieAllocator:        cookieAllocator,
@@ -130,6 +142,7 @@ func newFeatureService(
 		proxyAll:               proxyAll,
 		connectUplinkToBridge:  connectUplinkToBridge,
 		ctZoneSrcField:         getZoneSrcField(connectUplinkToBridge),
+		udpStreamTimeout:       uint16(udpTimeoutStream),
 		category:               cookie.Service,
 	}
 }
@@ -141,6 +154,43 @@ func (f *featureService) serviceNoEndpointFlow() binding.Flow {
 		MatchRegMark(SvcNoEpRegMark).
 		Action().SendToController([]byte{uint8(PacketInCategorySvcReject)}, false).
 		Done()
+}
+
+func (f *featureService) serviceInvalidUDPEndpointResetFlows(svcIPs []net.IP, svcPorts []uint16, endpoints map[string]proxy.Endpoint) []binding.Flow {
+	var flows []binding.Flow
+	cookieID := f.cookieAllocator.Request(f.category).Raw()
+	for i := 0; i < len(svcIPs); i++ {
+		protocol := binding.ProtocolUDP
+		isIPv6 := netutils.IsIPv6(svcIPs[i])
+		if isIPv6 {
+			protocol = binding.ProtocolUDPv6
+		}
+		for _, endpoint := range endpoints {
+			endpointIP := net.ParseIP(endpoint.IP())
+			endpointPort, _ := endpoint.Port()
+			flows = append(flows, ConntrackStateTable.ofTable.BuildFlow(priorityNormal+1).
+				Cookie(cookieID).
+				SetHardTimeout(f.udpStreamTimeout).
+				MatchCTStateEst(true).
+				MatchCTStateTrk(true).
+				MatchProtocol(protocol).
+				MatchCTDstIP(svcIPs[i]).
+				MatchCTDstPort(svcPorts[i]).
+				MatchDstIP(endpointIP).
+				MatchDstPort(uint16(endpointPort), nil).
+				Action().Learn(UnSNATTable.GetID(), priorityNormal, 0, f.udpStreamTimeout, cookieID).
+				DeleteLearned().
+				MatchEthernetProtocol(isIPv6).
+				MatchIPProtocol(protocol).
+				MatchLearnedSrcIP(isIPv6).
+				MatchLearnedCtDstIP(isIPv6).
+				MatchLearnedSrcPort(protocol).
+				MatchLearnedDstPort(protocol).
+				Done().
+				Done())
+		}
+	}
+	return flows
 }
 
 func (f *featureService) initFlows() []*openflow15.FlowMod {

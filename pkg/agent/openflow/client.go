@@ -109,6 +109,8 @@ type Client interface {
 	// UninstallServiceFlows removes flows installed by InstallServiceFlows.
 	UninstallServiceFlows(svcIP net.IP, svcPort uint16, protocol binding.Protocol) error
 
+	InstallUDPServiceResetFlows(svcIPs []net.IP, svcPorts []uint16, endpoints map[string]proxy.Endpoint) error
+
 	// GetFlowTableStatus should return an array of flow table status, all existing flow tables should be included in the list.
 	GetFlowTableStatus() []binding.TableStatus
 
@@ -774,6 +776,15 @@ func (c *client) UninstallServiceFlows(svcIP net.IP, svcPort uint16, protocol bi
 	defer c.replayMutex.RUnlock()
 	cacheKey := generateServicePortFlowCacheKey(svcIP, svcPort, protocol)
 	return c.deleteFlows(c.featureService.cachedFlows, cacheKey)
+}
+
+func (c *client) InstallUDPServiceResetFlows(svcIPs []net.IP, svcPorts []uint16, endpoints map[string]proxy.Endpoint) error {
+	flows := c.featureService.serviceInvalidUDPEndpointResetFlows(svcIPs, svcPorts, endpoints)
+	var adds []*openflow15.FlowMod
+	for _, flow := range flows {
+		adds = append(adds, getFlowModMessage(flow, binding.AddMessage))
+	}
+	return c.ofEntryOperations.BundleOps(adds, nil, nil)
 }
 
 func (c *client) GetServiceFlowKeys(svcIP net.IP, svcPort uint16, protocol binding.Protocol, endpoints []proxy.Endpoint) []string {
