@@ -242,6 +242,9 @@ func (f *featureService) getRequiredTables() []*Table {
 		return []*Table{DNATTable}
 	}
 	tables := []*Table{
+		ConntrackStateClassifierTable,
+		ServiceUDPConnResetMarkTable,
+		ServiceUDPConnResetTable,
 		UnSNATTable,
 		PreRoutingClassifierTable,
 		SessionAffinityTable,

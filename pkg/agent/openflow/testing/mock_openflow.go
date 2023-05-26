@@ -524,6 +524,20 @@ func (mr *MockClientMockRecorder) InstallTrafficControlReturnPortFlow(arg0 inter
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InstallTrafficControlReturnPortFlow", reflect.TypeOf((*MockClient)(nil).InstallTrafficControlReturnPortFlow), arg0)
 }
 
+// InstallUDPServiceResetFlows mocks base method
+func (m *MockClient) InstallUDPServiceResetFlows(arg0 []net.IP, arg1 []uint16, arg2 map[string]proxy.Endpoint) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "InstallUDPServiceResetFlows", arg0, arg1, arg2)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// InstallUDPServiceResetFlows indicates an expected call of InstallUDPServiceResetFlows
+func (mr *MockClientMockRecorder) InstallUDPServiceResetFlows(arg0, arg1, arg2 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InstallUDPServiceResetFlows", reflect.TypeOf((*MockClient)(nil).InstallUDPServiceResetFlows), arg0, arg1, arg2)
+}
+
 // InstallVMUplinkFlows mocks base method
 func (m *MockClient) InstallVMUplinkFlows(arg0 string, arg1, arg2 int32) error {
 	m.ctrl.T.Helper()

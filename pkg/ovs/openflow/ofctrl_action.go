@@ -594,6 +594,20 @@ func (a *ofLearnAction) MatchLearnedDstIP(isIPv6 bool) LearnAction {
 	return a
 }
 
+// MatchLearnedCtDstIP makes the learned flow to match the nw_dst of current IP packet.
+func (a *ofLearnAction) MatchLearnedCtDstIP(isIPv6 bool) LearnAction {
+	regName := NxmFieldDstIPv4
+	learnedRegName := NxmFieldCtDstIPv4
+	learnBits := uint16(4 * 8)
+	if isIPv6 {
+		regName = NxmFieldDstIPv6
+		learnedRegName = NxmFieldCtDstIPv6
+		learnBits = 16 * 8
+	}
+	a.nxLearn.AddMatch(&ofctrl.LearnField{Name: regName}, learnBits, &ofctrl.LearnField{Name: learnedRegName}, nil)
+	return a
+}
+
 func (a *ofLearnAction) MatchRegMark(marks ...*RegMark) LearnAction {
 	for _, mark := range marks {
 		toField := &ofctrl.LearnField{Name: mark.field.GetNXFieldName(), Start: uint16(mark.field.rng[0])}

@@ -124,6 +124,8 @@ var (
 	// reg4[24]: Mark to indicate that whether the Service is backed by Service IPs of other Services.
 	NestedServiceRegMark = binding.NewOneBitRegMark(4, 24)
 
+	ServiceUDPConnResetRegMark = binding.NewOneBitRegMark(4, 25)
+
 	// reg5(NXM_NX_REG5)
 	// Field to cache the Egress conjunction ID hit by TraceFlow packet.
 	TFEgressConjIDField = binding.NewRegField(5, 0, 31)

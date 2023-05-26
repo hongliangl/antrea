@@ -130,9 +130,12 @@ var (
 	PipelineIPClassifierTable = newTable("PipelineIPClassifier", stageValidation, pipelineIP)
 
 	// Tables in stageConntrackState:
-	UnSNATTable         = newTable("UnSNAT", stageConntrackState, pipelineIP)
-	ConntrackTable      = newTable("ConntrackZone", stageConntrackState, pipelineIP)
-	ConntrackStateTable = newTable("ConntrackState", stageConntrackState, pipelineIP)
+	ConntrackStateClassifierTable = newTable("ConntrackStateClassifier", stageConntrackState, pipelineIP)
+	ServiceUDPConnResetMarkTable  = newTable("ServiceUDPConnResetMark", stageConntrackState, pipelineIP)
+	ServiceUDPConnResetTable      = newTable("ServiceUDPConnReset", stageConntrackState, pipelineIP)
+	UnSNATTable                   = newTable("UnSNAT", stageConntrackState, pipelineIP)
+	ConntrackTable                = newTable("ConntrackZone", stageConntrackState, pipelineIP)
+	ConntrackStateTable           = newTable("ConntrackState", stageConntrackState, pipelineIP)
 
 	// Tables in stagePreRouting:
 	// When proxy is enabled.

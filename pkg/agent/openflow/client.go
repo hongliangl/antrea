@@ -109,6 +109,8 @@ type Client interface {
 	// UninstallServiceFlows removes flows installed by InstallServiceFlows.
 	UninstallServiceFlows(svcIP net.IP, svcPort uint16, protocol binding.Protocol) error
 
+	InstallUDPServiceResetFlows(svcIPs []net.IP, svcPorts []uint16, endpoints map[string]proxy.Endpoint) error
+
 	// GetFlowTableStatus should return an array of flow table status, all existing flow tables should be included in the list.
 	GetFlowTableStatus() []binding.TableStatus
 
@@ -776,6 +778,15 @@ func (c *client) UninstallServiceFlows(svcIP net.IP, svcPort uint16, protocol bi
 	return c.deleteFlows(c.featureService.cachedFlows, cacheKey)
 }
 
+func (c *client) InstallUDPServiceResetFlows(svcIPs []net.IP, svcPorts []uint16, endpoints map[string]proxy.Endpoint) error {
+	flows := c.featureService.serviceInvalidUDPEndpointResetFlows(svcIPs, svcPorts, endpoints)
+	var adds []*openflow15.FlowMod
+	for _, flow := range flows {
+		adds = append(adds, getFlowModMessage(flow, binding.AddMessage))
+	}
+	return c.ofEntryOperations.BundleOps(adds, nil, nil)
+}
+
 func (c *client) GetServiceFlowKeys(svcIP net.IP, svcPort uint16, protocol binding.Protocol, endpoints []proxy.Endpoint) []string {
 	cacheKey := generateServicePortFlowCacheKey(svcIP, svcPort, protocol)
 	flowKeys := c.getFlowKeysFromCache(c.featureService.cachedFlows, cacheKey)
@@ -891,6 +902,7 @@ func (c *client) generatePipelines() {
 			c.connectUplinkToBridge)
 		c.activatedFeatures = append(c.activatedFeatures, c.featureService)
 		c.traceableFeatures = append(c.traceableFeatures, c.featureService)
+		c.RegisterPacketInHandler(uint8(PacketInServiceUDPConnReset), c)
 	}
 
 	if c.nodeType == config.ExternalNode {
@@ -1551,4 +1563,44 @@ func GetFlowModMessages(flows []binding.Flow, op binding.OFOperation) []*openflo
 func getFlowModMessage(flow binding.Flow, op binding.OFOperation) *openflow15.FlowMod {
 	messages := GetFlowModMessages([]binding.Flow{flow}, op)
 	return messages[0]
+}
+
+func (c *client) HandlePacketIn(pktIn *ofctrl.PacketIn) error {
+	// Get Ethernet data.
+	ethernetPkt, err := GetEthernetPacket(pktIn)
+	if err != nil {
+		return err
+	}
+	var (
+		srcIP, dstIP     net.IP
+		proto            binding.Protocol
+		srcPort, dstPort uint16
+	)
+	switch ipPkt := ethernetPkt.Data.(type) {
+	case *protocol.IPv4:
+		srcIP = ipPkt.NWDst
+		dstIP = ipPkt.NWSrc
+		proto = binding.ProtocolUDP
+		udpPkt := ipPkt.Data.(*protocol.UDP)
+		srcPort = udpPkt.PortSrc
+		dstPort = udpPkt.PortDst
+	case *protocol.IPv6:
+		srcIP = ipPkt.NWDst
+		dstIP = ipPkt.NWSrc
+		proto = binding.ProtocolUDPv6
+		udpPkt := ipPkt.Data.(*protocol.UDP)
+		srcPort = udpPkt.PortSrc
+		dstPort = udpPkt.PortDst
+	}
+	flow := ServiceUDPConnResetMarkTable.ofTable.BuildFlow(priorityNormal).
+		Cookie(c.cookieAllocator.Request(cookie.Service).Raw()).
+		MatchProtocol(proto).
+		MatchSrcIP(srcIP).
+		MatchDstIP(dstIP).
+		MatchSrcPort(srcPort, nil).
+		MatchDstPort(dstPort, nil).
+		Done()
+	flowMod := getFlowModMessage(flow, binding.DeleteMessage)
+
+	return c.ofEntryOperations.BundleOps(nil, nil, []*openflow15.FlowMod{flowMod})
 }

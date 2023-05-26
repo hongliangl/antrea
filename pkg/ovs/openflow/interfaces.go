@@ -76,6 +76,8 @@ const (
 	NxmFieldPktMark     = "NXM_NX_PKT_MARK"
 	NxmFieldSrcIPv4     = "NXM_OF_IP_SRC"
 	NxmFieldDstIPv4     = "NXM_OF_IP_DST"
+	NxmFieldCtDstIPv4   = "NXM_NX_CT_NW_DST"
+	NxmFieldCtDstIPv6   = "NXM_NX_CT_IPV6_DST"
 	NxmFieldSrcIPv6     = "NXM_NX_IPV6_SRC"
 	NxmFieldDstIPv6     = "NXM_NX_IPV6_DST"
 	NxmFieldTunIPv4Src  = "NXM_NX_TUN_IPV4_SRC"
@@ -326,6 +328,7 @@ type LearnAction interface {
 	MatchLearnedSrcPort(protocol Protocol) LearnAction
 	MatchLearnedSrcIP(isIPv6 bool) LearnAction
 	MatchLearnedDstIP(isIPv6 bool) LearnAction
+	MatchLearnedCtDstIP(isIPv6 bool) LearnAction
 	MatchRegMark(marks ...*RegMark) LearnAction
 	LoadRegMark(marks ...*RegMark) LearnAction
 	LoadFieldToField(fromField, toField *RegField) LearnAction

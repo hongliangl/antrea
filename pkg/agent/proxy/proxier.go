@@ -172,7 +172,7 @@ func (p *proxier) removeStaleServices() {
 		}
 		// Remove associated Endpoints flows.
 		if endpoints, ok := p.endpointsInstalledMap[svcPortName]; ok {
-			if !p.removeStaleEndpoints(svcPortName, svcInfo.OFProtocol, endpoints) {
+			if !p.removeStaleEndpoints(svcInfo, svcPortName, svcInfo.OFProtocol, endpoints) {
 				continue
 			}
 			delete(p.endpointsInstalledMap, svcPortName)
@@ -259,7 +259,7 @@ func (p *proxier) removeServiceGroup(svcPortName k8sproxy.ServicePortName, local
 // given Service. If the Endpoints are still referenced by any other Services, no flow will be removed.
 // The method only returns an error if a data path operation fails. If the flows are successfully
 // removed from the data path, the method returns nil.
-func (p *proxier) removeStaleEndpoints(svcPortName k8sproxy.ServicePortName, protocol binding.Protocol, staleEndpoints map[string]k8sproxy.Endpoint) bool {
+func (p *proxier) removeStaleEndpoints(svcInfo *types.ServiceInfo, svcPortName k8sproxy.ServicePortName, protocol binding.Protocol, staleEndpoints map[string]k8sproxy.Endpoint) bool {
 	var endpointsToRemove []k8sproxy.Endpoint
 
 	// Get all Endpoints whose reference counter is 1, and these Endpoints should be removed.
@@ -292,6 +292,42 @@ func (p *proxier) removeStaleEndpoints(svcPortName k8sproxy.ServicePortName, pro
 			klog.V(2).InfoS("Stale Endpoint is still referenced by other Services, decrementing reference count by 1", "Endpoint", endpoint.String(), "Protocol", protocol)
 		}
 		delete(p.endpointsInstalledMap[svcPortName], endpoint.String())
+	}
+
+	var svcIPs []net.IP
+	var svcPorts []uint16
+	if protocol == binding.ProtocolUDP || protocol == binding.ProtocolUDPv6 {
+		if svcInfo.ClusterIP() != nil {
+			svcIPs = append(svcIPs, svcInfo.ClusterIP())
+			svcPorts = append(svcPorts, uint16(svcInfo.Port()))
+		}
+		if p.proxyAll {
+			if svcInfo.NodePort() != 0 {
+				for _, nodeIP := range p.nodePortAddresses {
+					svcIPs = append(svcIPs, nodeIP)
+					svcPorts = append(svcPorts, uint16(svcInfo.NodePort()))
+				}
+				if p.isIPv6 {
+					svcIPs = append(svcIPs, agentconfig.VirtualNodePortDNATIPv6)
+				} else {
+					svcIPs = append(svcIPs, agentconfig.VirtualNodePortDNATIPv4)
+				}
+			}
+			for _, ingressIP := range svcInfo.LoadBalancerSourceRanges() {
+				if ingressIP != "" {
+					svcIPs = append(svcIPs, net.ParseIP(ingressIP))
+					svcPorts = append(svcPorts, uint16(svcInfo.Port()))
+				}
+			}
+			for _, externalIP := range svcInfo.ExternalIPStrings() {
+				svcIPs = append(svcIPs, net.ParseIP(externalIP))
+				svcPorts = append(svcPorts, uint16(svcInfo.Port()))
+			}
+		}
+		if err := p.ofClient.InstallUDPServiceResetFlows(svcIPs, svcPorts, staleEndpoints); err != nil {
+			klog.ErrorS(err, "Error when installing flows of stale Endpoints for UDP Service", "ServicePortName", svcPortName)
+			return false
+		}
 	}
 
 	return true
@@ -536,7 +572,7 @@ func (p *proxier) installServices() {
 			if !p.addNewEndpoints(svcPortName, svcInfo.OFProtocol, newEndpoints) {
 				continue
 			}
-			if !p.removeStaleEndpoints(svcPortName, svcInfo.OFProtocol, staleEndpoints) {
+			if !p.removeStaleEndpoints(svcInfo, svcPortName, svcInfo.OFProtocol, staleEndpoints) {
 				continue
 			}
 		}

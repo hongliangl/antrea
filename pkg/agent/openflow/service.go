@@ -20,10 +20,12 @@ import (
 
 	"antrea.io/libOpenflow/openflow15"
 	"k8s.io/klog/v2"
+	netutils "k8s.io/utils/net"
 
 	"antrea.io/antrea/pkg/agent/config"
 	"antrea.io/antrea/pkg/agent/openflow/cookie"
 	binding "antrea.io/antrea/pkg/ovs/openflow"
+	"antrea.io/antrea/third_party/proxy"
 )
 
 type featureService struct {
@@ -143,6 +145,76 @@ func (f *featureService) serviceNoEndpointFlow() binding.Flow {
 		Done()
 }
 
+func (f *featureService) serviceInvalidUDPEndpointResetFlows(svcIPs []net.IP, svcPorts []uint16, endpoints map[string]proxy.Endpoint) []binding.Flow {
+	var flows []binding.Flow
+	cookieID := f.cookieAllocator.Request(f.category).Raw()
+	for i := 0; i < len(svcIPs); i++ {
+		protocol := binding.ProtocolUDP
+		isIPv6 := netutils.IsIPv6(svcIPs[i])
+		if isIPv6 {
+			protocol = binding.ProtocolUDPv6
+		}
+		for _, endpoint := range endpoints {
+			endpointIP := net.ParseIP(endpoint.IP())
+			endpointPort, _ := endpoint.Port()
+			flows = append(flows, ConntrackStateTable.ofTable.BuildFlow(priorityNormal+1).
+				Cookie(cookieID).
+				MatchCTStateEst(true).
+				MatchCTStateTrk(true).
+				MatchProtocol(protocol).
+				MatchCTDstIP(svcIPs[i]).
+				MatchCTDstPort(svcPorts[i]).
+				MatchDstIP(endpointIP).
+				MatchDstPort(uint16(endpointPort), nil).
+				Action().Learn(ServiceUDPConnResetMarkTable.GetID(), priorityNormal, 0, 120, cookieID).
+				DeleteLearned().
+				MatchEthernetProtocol(isIPv6).
+				MatchIPProtocol(protocol).
+				MatchLearnedSrcIP(isIPv6).
+				MatchLearnedCtDstIP(isIPv6).
+				MatchLearnedSrcPort(protocol).
+				MatchLearnedDstPort(protocol).
+				LoadRegMark(ServiceUDPConnResetRegMark).
+				Done().
+				Done())
+		}
+	}
+	return flows
+}
+
+func (f *featureService) conntrackStateClassifierFlows() []binding.Flow {
+	cookieID := f.cookieAllocator.Request(f.category).Raw()
+	var flows []binding.Flow
+
+	var protocol binding.Protocol
+	for _, ipProtocol := range f.ipProtocols {
+		if ipProtocol == binding.ProtocolIP {
+			protocol = binding.ProtocolUDP
+		} else {
+			protocol = binding.ProtocolUDPv6
+		}
+		flows = append(flows, ConntrackStateClassifierTable.ofTable.BuildFlow(priorityNormal).
+			Cookie(cookieID).
+			MatchProtocol(protocol).
+			Action().ResubmitToTables(ServiceUDPConnResetMarkTable.GetID(), ServiceUDPConnResetTable.GetID()).
+			Done(),
+		)
+	}
+	flows = append(flows, ConntrackStateClassifierTable.ofTable.BuildFlow(priorityMiss).
+		Action().GotoTable(UnSNATTable.GetID()).
+		Done())
+	return flows
+}
+
+func (f *featureService) serviceUDPConnResetFlow() binding.Flow {
+	return ServiceUDPConnResetTable.ofTable.BuildFlow(priorityNormal).
+		Cookie(f.cookieAllocator.Request(f.category).Raw()).
+		MatchRegMark(ServiceUDPConnResetRegMark).
+		Action().SendToController([]byte{uint8(PacketInServiceUDPConnReset)}, true).
+		Action().GotoStage(stagePreRouting).
+		Done()
+}
+
 func (f *featureService) initFlows() []*openflow15.FlowMod {
 	var flows []binding.Flow
 	if f.enableProxy {
@@ -155,6 +227,8 @@ func (f *featureService) initFlows() []*openflow15.FlowMod {
 		flows = append(flows, f.sessionAffinityReselectFlow())
 		flows = append(flows, f.serviceNoEndpointFlow())
 		flows = append(flows, f.l2ForwardOutputHairpinServiceFlow())
+		flows = append(flows, f.conntrackStateClassifierFlows()...)
+		flows = append(flows, f.serviceUDPConnResetFlow())
 		if f.proxyAll {
 			// This installs the flows to match the first packet of NodePort connection. The flows set a bit of a register
 			// to mark the Service type of the packet as NodePort, and the mark is consumed in table serviceLBTable.
