@@ -173,9 +173,10 @@ func (f *featureService) serviceInvalidUDPEndpointResetFlows(svcIPs []net.IP, sv
 				SetHardTimeout(f.udpStreamTimeout).
 				MatchCTStateEst(true).
 				MatchCTStateTrk(true).
-				MatchProtocol(protocol).
+				MatchCTProtocol(protocol).
 				MatchCTDstIP(svcIPs[i]).
 				MatchCTDstPort(svcPorts[i]).
+				MatchProtocol(protocol).
 				MatchDstIP(endpointIP).
 				MatchDstPort(uint16(endpointPort), nil).
 				Action().Learn(UnSNATTable.GetID(), priorityNormal, 0, f.udpStreamTimeout, cookieID).
@@ -185,7 +186,7 @@ func (f *featureService) serviceInvalidUDPEndpointResetFlows(svcIPs []net.IP, sv
 				MatchLearnedSrcIP(isIPv6).
 				MatchLearnedCtDstIP(isIPv6).
 				MatchLearnedSrcPort(protocol).
-				MatchLearnedDstPort(protocol).
+				MatchLearnedCtDstPort(protocol).
 				Done().
 				Done())
 		}

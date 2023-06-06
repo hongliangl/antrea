@@ -547,6 +547,30 @@ func (a *ofLearnAction) MatchLearnedDstPort(protocol Protocol) LearnAction {
 	return a
 }
 
+// MatchLearnedCtDstPort specifies that the transport layer destination field
+// {tcp|udp|sctp}_dst in the learned flow must match ct_tp_dst field of the packet
+// currently being processed. It only accepts ProtocolTCP, ProtocolUDP, or
+// ProtocolSCTP, otherwise this does nothing.
+func (a *ofLearnAction) MatchLearnedCtDstPort(protocol Protocol) LearnAction {
+	// OXM_OF fields support TCP, UDP and SCTP, but NXM_OF fields only support TCP and UDP. So here using "OXM_OF_" to
+	// generate the field name.
+	var regName string
+	learnedRegName := NxmFieldCtTpDst
+	switch protocol {
+	case ProtocolTCP, ProtocolTCPv6:
+		regName = OxmFieldTCPDst
+	case ProtocolUDP, ProtocolUDPv6:
+		regName = OxmFieldUDPDst
+	case ProtocolSCTP, ProtocolSCTPv6:
+		regName = OxmFieldSCTPDst
+	default:
+		// Return directly if the protocol is not acceptable.
+		return a
+	}
+	a.nxLearn.AddMatch(&ofctrl.LearnField{Name: regName}, 2*8, &ofctrl.LearnField{Name: learnedRegName}, nil)
+	return a
+}
+
 // MatchLearnedSrcPort specifies that the transport layer source field
 // {tcp|udp|sctp}_src in the learned flow must match the same field of the packet
 // currently being processed. It only accepts ProtocolTCP, ProtocolUDP, or
@@ -594,7 +618,7 @@ func (a *ofLearnAction) MatchLearnedDstIP(isIPv6 bool) LearnAction {
 	return a
 }
 
-// MatchLearnedCtDstIP makes the learned flow to match the nw_dst of current IP packet.
+// MatchLearnedCtDstIP makes the learned flow to match the ct_nw_dst of current IP packet.
 func (a *ofLearnAction) MatchLearnedCtDstIP(isIPv6 bool) LearnAction {
 	regName := NxmFieldDstIPv4
 	learnedRegName := NxmFieldCtDstIPv4

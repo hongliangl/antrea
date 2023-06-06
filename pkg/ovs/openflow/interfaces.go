@@ -78,6 +78,7 @@ const (
 	NxmFieldDstIPv4     = "NXM_OF_IP_DST"
 	NxmFieldCtDstIPv4   = "NXM_NX_CT_NW_DST"
 	NxmFieldCtDstIPv6   = "NXM_NX_CT_IPV6_DST"
+	NxmFieldCtTpDst     = "NXM_NX_CT_TP_DST"
 	NxmFieldSrcIPv6     = "NXM_NX_IPV6_SRC"
 	NxmFieldDstIPv6     = "NXM_NX_IPV6_DST"
 	NxmFieldTunIPv4Src  = "NXM_NX_TUN_IPV4_SRC"
@@ -325,6 +326,7 @@ type LearnAction interface {
 	MatchEthernetProtocol(isIPv6 bool) LearnAction
 	MatchIPProtocol(protocol Protocol) LearnAction
 	MatchLearnedDstPort(protocol Protocol) LearnAction
+	MatchLearnedCtDstPort(protocol Protocol) LearnAction
 	MatchLearnedSrcPort(protocol Protocol) LearnAction
 	MatchLearnedSrcIP(isIPv6 bool) LearnAction
 	MatchLearnedDstIP(isIPv6 bool) LearnAction

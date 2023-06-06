@@ -312,6 +312,7 @@ func (p *proxier) removeStaleEndpoints(svcInfo *types.ServiceInfo, svcPortName k
 				} else {
 					svcIPs = append(svcIPs, agentconfig.VirtualNodePortDNATIPv4)
 				}
+				svcPorts = append(svcPorts, uint16(svcInfo.NodePort()))
 			}
 			for _, ingressIP := range svcInfo.LoadBalancerSourceRanges() {
 				if ingressIP != "" {
