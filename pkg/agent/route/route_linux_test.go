@@ -16,6 +16,7 @@ package route
 
 import (
 	"fmt"
+	"golang.org/x/sys/unix"
 	"net"
 	"sync"
 	"testing"
@@ -33,6 +34,7 @@ import (
 	iptablestest "antrea.io/antrea/pkg/agent/util/iptables/testing"
 	netlinktest "antrea.io/antrea/pkg/agent/util/netlink/testing"
 	"antrea.io/antrea/pkg/ovs/openflow"
+	binding "antrea.io/antrea/pkg/ovs/openflow"
 	"antrea.io/antrea/pkg/ovs/ovsconfig"
 	"antrea.io/antrea/pkg/util/ip"
 )
@@ -1712,6 +1714,91 @@ func TestAddAndDeleteNodeIP(t *testing.T) {
 				_, exists = c.clusterNodeIPs.Load(tt.podCIDR.String())
 			}
 			assert.False(t, exists)
+		})
+	}
+}
+
+func TestClearConntrackEntryForService(t *testing.T) {
+	svcIPv4 := net.ParseIP("10.96.0.1")
+	epIPv4 := net.ParseIP("10.10.0.2")
+	svcIPv6 := net.ParseIP("fec0:10:96:0:1")
+	epIPv6 := net.ParseIP("fec0:10:10:0:2")
+	svcPort := uint16(80)
+	conntrackTable := netlink.ConntrackTableType(netlink.ConntrackTable)
+	inetFamilyV4 := netlink.InetFamily(unix.AF_INET)
+	inetFamilyV6 := netlink.InetFamily(unix.AF_INET6)
+	tests := []struct {
+		name          string
+		svcIP         net.IP
+		svcPort       uint16
+		endpointIP    net.IP
+		protocol      binding.Protocol
+		expectedCalls func(mockNetlink *netlinktest.MockInterfaceMockRecorder)
+	}{
+		{
+			name:     "TCP IPv4",
+			svcIP:    svcIPv4,
+			svcPort:  svcPort,
+			protocol: binding.ProtocolTCP,
+			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
+				mockNetlink.ConntrackDeleteFilter(conntrackTable, inetFamilyV4, generateConntrackFilter(svcIPv4, svcPort, epIPv4, unix.IPPROTO_TCP))
+			},
+		},
+		{
+			name:     "UDP IPv4",
+			svcIP:    svcIPv4,
+			svcPort:  svcPort,
+			protocol: binding.ProtocolUDP,
+			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
+				mockNetlink.ConntrackDeleteFilter(conntrackTable, inetFamilyV4, generateConntrackFilter(svcIPv4, svcPort, epIPv4, unix.IPPROTO_UDP))
+			},
+		},
+		{
+			name:     "SCTP IPv4",
+			svcIP:    svcIPv4,
+			svcPort:  svcPort,
+			protocol: binding.ProtocolSCTP,
+			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
+				mockNetlink.ConntrackDeleteFilter(conntrackTable, inetFamilyV4, generateConntrackFilter(svcIPv4, svcPort, epIPv4, unix.IPPROTO_SCTP))
+			},
+		},
+		{
+			name:     "TCP IPv6",
+			svcIP:    svcIPv6,
+			svcPort:  svcPort,
+			protocol: binding.ProtocolTCPv6,
+			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
+				mockNetlink.ConntrackDeleteFilter(conntrackTable, inetFamilyV6, generateConntrackFilter(svcIPv6, svcPort, epIPv6, unix.IPPROTO_TCP))
+			},
+		},
+		{
+			name:     "UDP IPv6",
+			svcIP:    svcIPv6,
+			svcPort:  svcPort,
+			protocol: binding.ProtocolUDPv6,
+			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
+				mockNetlink.ConntrackDeleteFilter(conntrackTable, inetFamilyV6, generateConntrackFilter(svcIPv6, svcPort, epIPv6, unix.IPPROTO_UDP))
+			},
+		},
+		{
+			name:     "SCTP IPv6",
+			svcIP:    svcIPv6,
+			svcPort:  svcPort,
+			protocol: binding.ProtocolSCTPv6,
+			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
+				mockNetlink.ConntrackDeleteFilter(conntrackTable, inetFamilyV6, generateConntrackFilter(svcIPv6, svcPort, epIPv6, unix.IPPROTO_SCTP))
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			mockNetlink := netlinktest.NewMockInterface(ctrl)
+			c := &Client{
+				netlink: mockNetlink,
+			}
+			tt.expectedCalls(mockNetlink.EXPECT())
+			assert.NoError(t, c.ClearConntrackEntryForService(tt.svcIP, tt.svcPort, tt.endpointIP, tt.protocol))
 		})
 	}
 }

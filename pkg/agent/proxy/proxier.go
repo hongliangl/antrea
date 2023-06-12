@@ -172,7 +172,7 @@ func (p *proxier) removeStaleServices() {
 		}
 		// Remove associated Endpoints flows.
 		if endpoints, ok := p.endpointsInstalledMap[svcPortName]; ok {
-			if !p.removeStaleEndpoints(svcPortName, svcInfo.OFProtocol, endpoints) {
+			if !p.removeStaleEndpoints(svcPortName, svcInfo, endpoints) {
 				continue
 			}
 			delete(p.endpointsInstalledMap, svcPortName)
@@ -187,8 +187,8 @@ func (p *proxier) removeServiceFlows(svcInfo *types.ServiceInfo) bool {
 	svcInfoStr := svcInfo.String()
 	svcPort := uint16(svcInfo.Port())
 	svcProto := svcInfo.OFProtocol
-	// Remove ClusterIP flows.
-	if err := p.ofClient.UninstallServiceFlows(svcInfo.ClusterIP(), svcPort, svcProto); err != nil {
+	// Remove ClusterIP flows and configurations.
+	if err := p.uninstallClusterIPService(svcInfo.ClusterIP(), svcPort, svcProto); err != nil {
 		klog.ErrorS(err, "Error when uninstalling ClusterIP flows for Service", "ServiceInfo", svcInfoStr)
 		return false
 	}
@@ -259,7 +259,8 @@ func (p *proxier) removeServiceGroup(svcPortName k8sproxy.ServicePortName, local
 // given Service. If the Endpoints are still referenced by any other Services, no flow will be removed.
 // The method only returns an error if a data path operation fails. If the flows are successfully
 // removed from the data path, the method returns nil.
-func (p *proxier) removeStaleEndpoints(svcPortName k8sproxy.ServicePortName, protocol binding.Protocol, staleEndpoints map[string]k8sproxy.Endpoint) bool {
+func (p *proxier) removeStaleEndpoints(svcPortName k8sproxy.ServicePortName, svcInfo *types.ServiceInfo, staleEndpoints map[string]k8sproxy.Endpoint) bool {
+	protocol := svcInfo.OFProtocol
 	var endpointsToRemove []k8sproxy.Endpoint
 
 	// Get all Endpoints whose reference counter is 1, and these Endpoints should be removed.
@@ -294,6 +295,37 @@ func (p *proxier) removeStaleEndpoints(svcPortName k8sproxy.ServicePortName, pro
 		delete(p.endpointsInstalledMap[svcPortName], endpoint.String())
 	}
 
+	return true
+}
+
+func (p *proxier) removeStaleEndpointConntrackEntries(svcPortName k8sproxy.ServicePortName, svcInfo *types.ServiceInfo, staleEndpoints map[string]k8sproxy.Endpoint) bool {
+	svcPort := uint16(svcInfo.Port())
+	nodePort := uint16(svcInfo.NodePort())
+	svcProto := svcInfo.OFProtocol
+	var svcIPs []net.IP
+	svcIPs = append(svcIPs, svcInfo.ClusterIP())
+	for _, externalIP := range svcInfo.ExternalIPStrings() {
+		svcIPs = append(svcIPs, net.ParseIP(externalIP))
+	}
+	for _, ingressIP := range svcInfo.LoadBalancerIPStrings() {
+		if ingressIP != "" {
+			svcIPs = append(svcIPs, net.ParseIP(ingressIP))
+		}
+	}
+	for _, endpoint := range staleEndpoints {
+		for _, svcIP := range svcIPs {
+			if err := p.routeClient.ClearConntrackEntryForService(svcIP, svcPort, net.ParseIP(endpoint.IP()), svcProto); err != nil {
+				klog.ErrorS(err, "Error when removing conntrack of stale Endpoints for Service", "ServicePortName", svcPortName, "ServiceIP", svcIP, "ServicePort", svcPort, "endpoint", endpoint)
+				return false
+			}
+		}
+		if nodePort > 0 {
+			if err := p.routeClient.ClearConntrackEntryForService(nil, nodePort, net.ParseIP(endpoint.IP()), svcProto); err != nil {
+				klog.ErrorS(err, "Error when removing conntrack of stale Endpoints for Service", "ServicePortName", svcPortName, "NodePort", nodePort, "endpoint", endpoint)
+				return false
+			}
+		}
+	}
 	return true
 }
 
@@ -360,6 +392,19 @@ func smallSliceDifference(s1, s2 []string) []string {
 	return diff
 }
 
+func (p *proxier) uninstallClusterIPService(svcIP net.IP, svcPort uint16, protocol binding.Protocol) error {
+	if err := p.ofClient.UninstallServiceFlows(svcIP, svcPort, protocol); err != nil {
+		return fmt.Errorf("failed to remove ClusterIP flows: %w", err)
+	}
+	if needClearConntrackEntries(protocol) {
+		// Remove ClusterIP conntrack entries when protocol is UDP.
+		if err := p.routeClient.ClearConntrackEntryForService(svcIP, svcPort, nil, protocol); err != nil {
+			return fmt.Errorf("failed to clearn ClusterIP UDP conntrack entries: %w", err)
+		}
+	}
+	return nil
+}
+
 func (p *proxier) installNodePortService(externalGroupID, clusterGroupID binding.GroupIDType, svcPort uint16, protocol binding.Protocol, affinityTimeout uint16) error {
 	if svcPort == 0 {
 		return nil
@@ -391,6 +436,12 @@ func (p *proxier) uninstallNodePortService(svcPort uint16, protocol binding.Prot
 	if err := p.routeClient.DeleteNodePort(p.nodePortAddresses, svcPort, protocol); err != nil {
 		return fmt.Errorf("failed to remove NodePort traffic redirecting rules: %w", err)
 	}
+	if needClearConntrackEntries(protocol) {
+		// Remove NodePort conntrack entries when protocol is UDP.
+		if err := p.routeClient.ClearConntrackEntryForService(nil, svcPort, nil, protocol); err != nil {
+			return fmt.Errorf("failed to clearn NodePort UDP conntrack entries: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -408,6 +459,7 @@ func (p *proxier) installExternalIPService(svcInfoStr string, externalGroupID, c
 }
 
 func (p *proxier) uninstallExternalIPService(svcInfoStr string, externalIPStrings []string, svcPort uint16, protocol binding.Protocol) error {
+	needClearConntrack := needClearConntrackEntries(protocol)
 	for _, externalIP := range externalIPStrings {
 		ip := net.ParseIP(externalIP)
 		if err := p.ofClient.UninstallServiceFlows(ip, svcPort, protocol); err != nil {
@@ -415,6 +467,12 @@ func (p *proxier) uninstallExternalIPService(svcInfoStr string, externalIPString
 		}
 		if err := p.deleteRouteForServiceIP(svcInfoStr, ip, p.routeClient.DeleteExternalIPRoute); err != nil {
 			return fmt.Errorf("failed to remove ExternalIP traffic redirecting routes: %w", err)
+		}
+		if needClearConntrack {
+			// Remove ExternalIP conntrack entries when protocol is UDP.
+			if err := p.routeClient.ClearConntrackEntryForService(ip, svcPort, nil, protocol); err != nil {
+				return fmt.Errorf("failed to clearn ExternalIP UDP conntrack entries: %w", err)
+			}
 		}
 	}
 	return nil
@@ -455,6 +513,7 @@ func (p *proxier) addRouteForServiceIP(svcInfoStr string, ip net.IP, addRouteFn 
 }
 
 func (p *proxier) uninstallLoadBalancerService(svcInfoStr string, loadBalancerIPStrings []string, svcPort uint16, protocol binding.Protocol) error {
+	needClearConntrack := needClearConntrackEntries(protocol)
 	for _, ingress := range loadBalancerIPStrings {
 		if ingress != "" {
 			ip := net.ParseIP(ingress)
@@ -464,6 +523,12 @@ func (p *proxier) uninstallLoadBalancerService(svcInfoStr string, loadBalancerIP
 			if p.proxyAll {
 				if err := p.deleteRouteForServiceIP(svcInfoStr, ip, p.routeClient.DeleteExternalIPRoute); err != nil {
 					return fmt.Errorf("failed to remove LoadBalancer traffic redirecting routes: %w", err)
+				}
+			}
+			if needClearConntrack {
+				// Remove LoadBalancer conntrack entries when protocol is UDP.
+				if err := p.routeClient.ClearConntrackEntryForService(ip, svcPort, nil, protocol); err != nil {
+					return fmt.Errorf("failed to clearn LoadBalancer UDP conntrack entries: %w", err)
 				}
 			}
 		}
@@ -536,8 +601,13 @@ func (p *proxier) installServices() {
 			if !p.addNewEndpoints(svcPortName, svcInfo.OFProtocol, newEndpoints) {
 				continue
 			}
-			if !p.removeStaleEndpoints(svcPortName, svcInfo.OFProtocol, staleEndpoints) {
+			if !p.removeStaleEndpoints(svcPortName, svcInfo, staleEndpoints) {
 				continue
+			}
+			if needClearConntrackEntries(svcInfo.OFProtocol) {
+				if !p.removeStaleEndpointConntrackEntries(svcPortName, svcInfo, staleEndpoints) {
+					continue
+				}
 			}
 		}
 
@@ -1243,4 +1313,8 @@ func NewDualStackProxier(
 	metaProxier := k8sproxy.NewMetaProxier(ipv4Proxier, ipv6Proxier)
 
 	return &metaProxierWrapper{ipv4Proxier, ipv6Proxier, metaProxier}, nil
+}
+
+func needClearConntrackEntries(protocol binding.Protocol) bool {
+	return protocol == binding.ProtocolUDP || protocol == binding.ProtocolUDPv6
 }
