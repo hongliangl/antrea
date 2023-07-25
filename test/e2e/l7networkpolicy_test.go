@@ -171,7 +171,7 @@ func probeL7NetworkPolicyHTTP(t *testing.T, data *TestData, serverPodName, clien
 
 func probeL7NetworkPolicyTLS(t *testing.T, data *TestData, clientPodName string, serverName string, canAccess bool) {
 	url := fmt.Sprintf("https://%s", serverName)
-	assert.NoError(t, wait.PollImmediate(time.Second, 5*time.Second, func() (bool, error) {
+	assert.NoError(t, wait.PollImmediate(time.Second, 15*time.Second, func() (bool, error) {
 		stdout, stderr, err := data.runWgetCommandFromTestPodWithRetry(clientPodName, data.testNamespace, agnhostContainerName, url, 5)
 		if canAccess && err != nil {
 			t.Fatalf("Failed to access %s: %v\nStdout: %s\nStderr: %s\n", url, err, stdout, stderr)
