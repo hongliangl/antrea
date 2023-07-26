@@ -319,7 +319,7 @@ func testL7NetworkPolicyTLS(t *testing.T, data *TestData) {
 	createL7NetworkPolicy(t, data, false, policyAllowSNIFacebook, 2, nil, clientPodLabels, ProtocolTCP, 443, l7ProtocolAllowsFacebook)
 	time.Sleep(networkPolicyDelay)
 
-	probeL7NetworkPolicyTLS(t, data, clientPodName, "apis.google.com", true)
+	probeL7NetworkPolicyTLS(t, data, clientPodName, "developers.google.com", true)
 	probeL7NetworkPolicyTLS(t, data, clientPodName, "www.facebook.com", false)
 
 	// Delete the first L7 NetworkPolicy that allows server name 'github.com'.
