@@ -294,36 +294,36 @@ func testL7NetworkPolicyTLS(t *testing.T, data *TestData) {
 	}
 	require.NoError(t, data.podWaitForRunning(defaultTimeout, clientPodName, data.testNamespace))
 
-	l7ProtocolAllowsGithub := []crdv1alpha1.L7Protocol{
+	l7ProtocolAllowsGithub := []crdv1beta1.L7Protocol{
 		{
-			TLS: &crdv1alpha1.TLSProtocol{
+			TLS: &crdv1beta1.TLSProtocol{
 				SNI: "*.google.com",
 			},
 		},
 	}
-	l7ProtocolAllowsFacebook := []crdv1alpha1.L7Protocol{
+	l7ProtocolAllowsFacebook := []crdv1beta1.L7Protocol{
 		{
-			TLS: &crdv1alpha1.TLSProtocol{
+			TLS: &crdv1beta1.TLSProtocol{
 				SNI: "*.facebook.com",
 			},
 		},
 	}
 
-	policyAllowSNIGithub := "test-l7-tls-allow-sni-github"
+	policyAllowSNIGoogle := "test-l7-tls-allow-sni-google"
 	policyAllowSNIFacebook := "test-l7-tls-allow-sni-facebook"
 
-	// Create two L7 NetworkPolicies, one allows server name 'github.com', the other allows '*.facebook.com'. Note
+	// Create two L7 NetworkPolicies, one allows server name '*.google.com', the other allows '*.facebook.com'. Note
 	// that, the priority of the first one is higher than the second one, and they have the same appliedTo labels and Pod
 	// selector labels.
-	createL7NetworkPolicy(t, data, false, policyAllowSNIGithub, 1, nil, clientPodLabels, ProtocolTCP, 443, l7ProtocolAllowsGithub)
+	createL7NetworkPolicy(t, data, false, policyAllowSNIGoogle, 1, nil, clientPodLabels, ProtocolTCP, 443, l7ProtocolAllowsGithub)
 	createL7NetworkPolicy(t, data, false, policyAllowSNIFacebook, 2, nil, clientPodLabels, ProtocolTCP, 443, l7ProtocolAllowsFacebook)
 	time.Sleep(networkPolicyDelay)
 
-	probeL7NetworkPolicyTLS(t, data, clientPodName, "developers.google.com", true)
+	probeL7NetworkPolicyTLS(t, data, clientPodName, "apis.google.com", true)
 	probeL7NetworkPolicyTLS(t, data, clientPodName, "www.facebook.com", false)
 
 	// Delete the first L7 NetworkPolicy that allows server name 'github.com'.
-	data.crdClient.CrdV1alpha1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policyAllowSNIGithub, metav1.DeleteOptions{})
+	data.crdClient.CrdV1beta1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policyAllowSNIGoogle, metav1.DeleteOptions{})
 	time.Sleep(networkPolicyDelay)
 
 	probeL7NetworkPolicyTLS(t, data, clientPodName, "apis.google.com", false)
