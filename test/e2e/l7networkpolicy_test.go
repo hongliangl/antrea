@@ -294,16 +294,16 @@ func testL7NetworkPolicyTLS(t *testing.T, data *TestData) {
 	}
 	require.NoError(t, data.podWaitForRunning(defaultTimeout, clientPodName, data.testNamespace))
 
-	l7ProtocolAllowsGithub := []crdv1beta1.L7Protocol{
+	l7ProtocolAllowsGithub := []crdv1alpha1.L7Protocol{
 		{
-			TLS: &crdv1beta1.TLSProtocol{
+			TLS: &crdv1alpha1.TLSProtocol{
 				SNI: "*.google.com",
 			},
 		},
 	}
-	l7ProtocolAllowsFacebook := []crdv1beta1.L7Protocol{
+	l7ProtocolAllowsFacebook := []crdv1alpha1.L7Protocol{
 		{
-			TLS: &crdv1beta1.TLSProtocol{
+			TLS: &crdv1alpha1.TLSProtocol{
 				SNI: "*.facebook.com",
 			},
 		},
@@ -323,7 +323,7 @@ func testL7NetworkPolicyTLS(t *testing.T, data *TestData) {
 	probeL7NetworkPolicyTLS(t, data, clientPodName, "www.facebook.com", false)
 
 	// Delete the first L7 NetworkPolicy that allows server name 'github.com'.
-	data.crdClient.CrdV1beta1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policyAllowSNIGoogle, metav1.DeleteOptions{})
+	data.crdClient.CrdV1alpha1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policyAllowSNIGoogle, metav1.DeleteOptions{})
 	time.Sleep(networkPolicyDelay)
 
 	probeL7NetworkPolicyTLS(t, data, clientPodName, "apis.google.com", false)
