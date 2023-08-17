@@ -182,6 +182,13 @@ func (r *CompletedRule) isIGMPEgressPolicyRule() bool {
 	return false
 }
 
+func (r *CompletedRule) isToServiceIngressPolicyRule() bool {
+	if r.Direction == v1beta.DirectionIn && len(r.To.ToServices) != 0 {
+		return true
+	}
+	return false
+}
+
 // ruleCache caches Antrea AddressGroups, AppliedToGroups and NetworkPolicies,
 // can construct complete rules that can be used by reconciler to enforce.
 type ruleCache struct {

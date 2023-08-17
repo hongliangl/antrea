@@ -68,6 +68,7 @@ func TestSyncStatusForNewPolicy(t *testing.T) {
 		name           string
 		policy         *v1beta2.NetworkPolicy
 		realizedRules  int
+		invalidRules   int
 		expectedStatus *v1beta2.NetworkPolicyStatus
 	}{
 		{
@@ -99,6 +100,25 @@ func TestSyncStatusForNewPolicy(t *testing.T) {
 				},
 			},
 		},
+		{
+			name:          "has invalid rules",
+			policy:        policyWithMultipleRules,
+			realizedRules: 1,
+			invalidRules:  1,
+			expectedStatus: &v1beta2.NetworkPolicyStatus{
+				ObjectMeta: v1.ObjectMeta{
+					Name: policyWithMultipleRules.Name,
+				},
+				Nodes: []v1beta2.NetworkPolicyNodeStatus{
+					{
+						NodeName:           testNode1,
+						Generation:         1,
+						RealizationFailure: true,
+						Message:            `[{"rule_id":"2e8b15c49b690893","reason":"AntreaProxy is not enabled"}]`,
+					},
+				},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -112,10 +132,13 @@ func TestSyncStatusForNewPolicy(t *testing.T) {
 			rules := ruleCache.getEffectiveRulesByNetworkPolicy(string(tt.policy.UID))
 			for i, rule := range rules {
 				// Only make specified number of rules realized.
-				if i >= tt.realizedRules {
+				if i <= tt.realizedRules-1 {
+					statusController.SetRuleRealization(rule.ID, tt.policy.UID)
+				} else if tt.invalidRules != 0 {
+					statusController.SetRuleInvalidation(rule.ID, tt.policy.UID, "AntreaProxy is not enabled")
+				} else {
 					break
 				}
-				statusController.SetRuleRealization(rule.ID, tt.policy.UID)
 			}
 			// TODO: Use a determinate mechanism.
 			time.Sleep(500 * time.Millisecond)

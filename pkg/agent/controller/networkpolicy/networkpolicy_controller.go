@@ -646,6 +646,14 @@ func (c *Controller) syncRule(key string) error {
 		return nil
 	}
 
+	if !c.antreaProxyEnabled && rule.isToServiceIngressPolicyRule() {
+		klog.InfoS("Field `toServices` can be only used when AntreaProxy is enabled, skipping", "ruleID", key)
+		if c.statusManagerEnabled {
+			c.statusManager.SetRuleInvalidation(key, rule.PolicyUID, "AntreaProxy is not enabled")
+		}
+		return nil
+	}
+
 	if c.l7NetworkPolicyEnabled && len(rule.L7Protocols) != 0 {
 		// Allocate VLAN ID for the L7 rule.
 		vlanID := c.l7VlanIDAllocator.allocate(key)
