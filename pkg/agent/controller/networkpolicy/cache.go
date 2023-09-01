@@ -39,7 +39,7 @@ import (
 )
 
 const (
-	RuleIDLength                  = 16
+	ruleIDLength                  = 16
 	appliedToGroupIndex           = "appliedToGroup"
 	addressGroupIndex             = "addressGroup"
 	policyIndex                   = "policy"
@@ -137,7 +137,7 @@ func hashRule(r *rule) string {
 	b, _ := json.Marshal(r)
 	hash.Write(b)
 	hashValue := hex.EncodeToString(hash.Sum(nil))
-	return hashValue[:RuleIDLength]
+	return hashValue[:ruleIDLength]
 }
 
 // CompletedRule contains IPAddresses and Pods flattened from AddressGroups and AppliedToGroups.
@@ -145,9 +145,11 @@ func hashRule(r *rule) string {
 type CompletedRule struct {
 	*rule
 	// Source GroupMembers of this rule, can't coexist with ToAddresses.
-	FromAddresses v1beta.GroupMemberSet
+	FromAddresses    v1beta.GroupMemberSet
+	FromAddressesMap map[string]v1beta.GroupMemberSet
 	// Destination GroupMembers of this rule, can't coexist with FromAddresses.
-	ToAddresses v1beta.GroupMemberSet
+	ToAddresses    v1beta.GroupMemberSet
+	ToAddressesMap map[string]v1beta.GroupMemberSet
 	// Target GroupMembers of this rule.
 	TargetMembers v1beta.GroupMemberSet
 	// Vlan ID allocated for this rule if this rule is for L7 NetworkPolicy.
@@ -879,11 +881,23 @@ func (c *ruleCache) GetCompletedRule(ruleID string) (completedRule *CompletedRul
 		return nil, true, false
 	}
 
+	var fromAddressesMap, toAddressesMap map[string]v1beta.GroupMemberSet
+	if r.Direction == v1beta.DirectionIn {
+		fromAddressesMap, completed = c.getAddressGroups(r.From.AddressGroups)
+	} else {
+		toAddressesMap, completed = c.getAddressGroups(r.To.AddressGroups)
+	}
+	if !completed {
+		return nil, true, false
+	}
+
 	completedRule = &CompletedRule{
-		rule:          r,
-		FromAddresses: fromAddresses,
-		ToAddresses:   toAddresses,
-		TargetMembers: groupMembers,
+		rule:             r,
+		FromAddresses:    fromAddresses,
+		FromAddressesMap: fromAddressesMap,
+		ToAddresses:      toAddresses,
+		ToAddressesMap:   toAddressesMap,
+		TargetMembers:    groupMembers,
 	}
 	return completedRule, true, true
 }
@@ -923,6 +937,22 @@ func (c *ruleCache) unionAddressGroups(groupNames []string) (v1beta.GroupMemberS
 		set.Merge(curSet)
 	}
 	return set, true
+}
+
+func (c *ruleCache) getAddressGroups(groupNames []string) (map[string]v1beta.GroupMemberSet, bool) {
+	c.addressSetLock.RLock()
+	defer c.addressSetLock.RUnlock()
+
+	sets := make(map[string]v1beta.GroupMemberSet)
+	for _, groupName := range groupNames {
+		curSet, exists := c.addressSetByGroup[groupName]
+		if !exists {
+			klog.V(2).Infof("AddressGroup %v was not found", groupName)
+			return nil, false
+		}
+		sets[groupName] = curSet
+	}
+	return sets, true
 }
 
 // unionAppliedToGroups gets the union of pods of the provided appliedTo groups.

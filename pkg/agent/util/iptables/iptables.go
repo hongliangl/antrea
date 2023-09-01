@@ -36,7 +36,7 @@ const (
 	RawTable    = "raw"
 
 	AcceptTarget     = "ACCEPT"
-	DROPTarget       = "DROP"
+	DropTarget       = "DROP"
 	MasqueradeTarget = "MASQUERADE"
 	MarkTarget       = "MARK"
 	ReturnTarget     = "RETURN"
@@ -44,6 +44,7 @@ const (
 	NoTrackTarget    = "NOTRACK"
 	SNATTarget       = "SNAT"
 	DNATTarget       = "DNAT"
+	RejectTarget     = "REJECT"
 
 	PreRoutingChain  = "PREROUTING"
 	ForwardChain     = "FORWARD"
@@ -78,11 +79,15 @@ var restoreWaitSupportedMinVersion = semver.Version{Major: 1, Minor: 6, Patch: 2
 type Interface interface {
 	EnsureChain(protocol Protocol, table string, chain string) error
 
+	ClearChain(protocol Protocol, table string, chain string) error
+
 	ChainExists(protocol Protocol, table string, chain string) (bool, error)
 
 	AppendRule(protocol Protocol, table string, chain string, ruleSpec []string) error
 
-	InsertRule(protocol Protocol, table string, chain string, ruleSpec []string) error
+	InsertRule(protocol Protocol, table string, chain string, ruleSpec []string, index int) error
+
+	ReplaceRule(protocol Protocol, table string, chain string, ruleSpec []string, position int) error
 
 	DeleteRule(protocol Protocol, table string, chain string, ruleSpec []string) error
 
@@ -153,6 +158,20 @@ func (c *Client) EnsureChain(protocol Protocol, table string, chain string) erro
 	return nil
 }
 
+func (c *Client) ClearChain(protocol Protocol, table string, chain string) error {
+	for p := range c.ipts {
+		ipt := c.ipts[p]
+		if !matchProtocol(ipt, protocol) {
+			continue
+		}
+		if err := ipt.ClearChain(table, chain); err != nil {
+			return fmt.Errorf("error clearing chain %s in table %s: %v", chain, table, err)
+		}
+		klog.V(2).InfoS("Cleared a chain", "chain", chain, "table", table, "protocol", p)
+	}
+	return nil
+}
+
 // ChainExists checks if target chain already exists in a table
 func (c *Client) ChainExists(protocol Protocol, table string, chain string) (bool, error) {
 	for p := range c.ipts {
@@ -194,8 +213,8 @@ func (c *Client) AppendRule(protocol Protocol, table string, chain string, ruleS
 	return nil
 }
 
-// InsertRule checks if target rule already exists, inserts it at the beginning of the chain if not.
-func (c *Client) InsertRule(protocol Protocol, table string, chain string, ruleSpec []string) error {
+// InsertRule checks if target rule already exists, inserts it at the expected position of the chain if not.
+func (c *Client) InsertRule(protocol Protocol, table string, chain string, ruleSpec []string, position int) error {
 	for p := range c.ipts {
 		ipt := c.ipts[p]
 		if !matchProtocol(ipt, protocol) {
@@ -208,10 +227,26 @@ func (c *Client) InsertRule(protocol Protocol, table string, chain string, ruleS
 		if exist {
 			continue
 		}
-		if err := ipt.Insert(table, chain, 1, ruleSpec...); err != nil {
+		if err := ipt.Insert(table, chain, position, ruleSpec...); err != nil {
 			return fmt.Errorf("error inserting rule %v to table %s chain %s: %v", ruleSpec, table, chain, err)
 		}
-		klog.V(2).InfoS("Inserted a rule", "rule", ruleSpec, "table", table, "chain", chain, "index", 1)
+		klog.V(2).InfoS("Inserted a rule", "rule", ruleSpec, "table", table, "chain", chain, "position", position)
+	}
+	return nil
+}
+
+// ReplaceRule replaces a rule at the expected position.
+func (c *Client) ReplaceRule(protocol Protocol, table string, chain string, ruleSpec []string, position int) error {
+	for p := range c.ipts {
+		ipt := c.ipts[p]
+		if !matchProtocol(ipt, protocol) {
+			continue
+		}
+
+		if err := ipt.Replace(table, chain, position, ruleSpec...); err != nil {
+			return fmt.Errorf("error replacing rule %v to table %s chain %s: %v", ruleSpec, table, chain, err)
+		}
+		klog.V(2).InfoS("Replaced a rule", "rule", ruleSpec, "table", table, "chain", chain, "position", position)
 	}
 	return nil
 }

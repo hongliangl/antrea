@@ -607,7 +607,7 @@ func (c *Client) restoreIptablesData(podCIDR *net.IPNet,
 				"-m", "comment", "--comment", `"Antrea: drop Pod multicast traffic forwarded via underlay network"`,
 				"-m", "set", "--match-set", clusterNodeIPSet, "src",
 				"-d", types.McastCIDR.String(),
-				"-j", iptables.DROPTarget,
+				"-j", iptables.DropTarget,
 			}...)
 		}
 	}
@@ -1238,7 +1238,7 @@ func (c *Client) AddSNATRule(snatIP net.IP, mark uint32) error {
 		protocol = iptables.ProtocolIPv6
 	}
 	c.markToSNATIP.Store(mark, snatIP)
-	return c.iptables.InsertRule(protocol, iptables.NATTable, antreaPostRoutingChain, c.snatRuleSpec(snatIP, mark))
+	return c.iptables.InsertRule(protocol, iptables.NATTable, antreaPostRoutingChain, c.snatRuleSpec(snatIP, mark), 1)
 }
 
 func (c *Client) DeleteSNATRule(mark uint32) error {

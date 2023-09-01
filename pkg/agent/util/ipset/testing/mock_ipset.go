@@ -1,4 +1,4 @@
-// Copyright 2022 Antrea Authors
+// Copyright 2023 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -62,6 +62,20 @@ func (mr *MockInterfaceMockRecorder) AddEntry(arg0, arg1 interface{}) *gomock.Ca
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddEntry", reflect.TypeOf((*MockInterface)(nil).AddEntry), arg0, arg1)
 }
 
+// ClearIPSet mocks base method
+func (m *MockInterface) ClearIPSet(arg0 string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ClearIPSet", arg0)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ClearIPSet indicates an expected call of ClearIPSet
+func (mr *MockInterfaceMockRecorder) ClearIPSet(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClearIPSet", reflect.TypeOf((*MockInterface)(nil).ClearIPSet), arg0)
+}
+
 // CreateIPSet mocks base method
 func (m *MockInterface) CreateIPSet(arg0 string, arg1 ipset.SetType, arg2 bool) error {
 	m.ctrl.T.Helper()
@@ -88,6 +102,20 @@ func (m *MockInterface) DelEntry(arg0, arg1 string) error {
 func (mr *MockInterfaceMockRecorder) DelEntry(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DelEntry", reflect.TypeOf((*MockInterface)(nil).DelEntry), arg0, arg1)
+}
+
+// DelIPSet mocks base method
+func (m *MockInterface) DelIPSet(arg0 string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DelIPSet", arg0)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DelIPSet indicates an expected call of DelIPSet
+func (mr *MockInterfaceMockRecorder) DelIPSet(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DelIPSet", reflect.TypeOf((*MockInterface)(nil).DelIPSet), arg0)
 }
 
 // ListEntries mocks base method

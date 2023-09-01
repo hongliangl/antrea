@@ -37,6 +37,10 @@ var memberPattern = regexp.MustCompile("(?m)^(.*\n)*Members:\n")
 type Interface interface {
 	CreateIPSet(name string, setType SetType, isIPv6 bool) error
 
+	ClearIPSet(name string) error
+
+	DelIPSet(name string) error
+
 	AddEntry(name string, entry string) error
 
 	DelEntry(name string, entry string) error
@@ -50,6 +54,22 @@ var _ Interface = &Client{}
 
 func NewClient() *Client {
 	return &Client{}
+}
+
+func (c *Client) ClearIPSet(name string) error {
+	cmd := exec.Command("ipset", "flush", name)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("error flushing ipset %s: %v", name, err)
+	}
+	return nil
+}
+
+func (c *Client) DelIPSet(name string) error {
+	cmd := exec.Command("ipset", "destroy", name)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("error destroying ipset %s: %v", name, err)
+	}
+	return nil
 }
 
 // CreateIPSet creates a new set, it will ignore error when the set already exists.

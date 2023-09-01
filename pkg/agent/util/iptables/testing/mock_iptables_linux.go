@@ -1,4 +1,4 @@
-// Copyright 2022 Antrea Authors
+// Copyright 2023 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -77,6 +77,20 @@ func (mr *MockInterfaceMockRecorder) ChainExists(arg0, arg1, arg2 interface{}) *
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ChainExists", reflect.TypeOf((*MockInterface)(nil).ChainExists), arg0, arg1, arg2)
 }
 
+// ClearChain mocks base method
+func (m *MockInterface) ClearChain(arg0 iptables.Protocol, arg1, arg2 string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ClearChain", arg0, arg1, arg2)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ClearChain indicates an expected call of ClearChain
+func (mr *MockInterfaceMockRecorder) ClearChain(arg0, arg1, arg2 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClearChain", reflect.TypeOf((*MockInterface)(nil).ClearChain), arg0, arg1, arg2)
+}
+
 // DeleteChain mocks base method
 func (m *MockInterface) DeleteChain(arg0 iptables.Protocol, arg1, arg2 string) error {
 	m.ctrl.T.Helper()
@@ -120,17 +134,17 @@ func (mr *MockInterfaceMockRecorder) EnsureChain(arg0, arg1, arg2 interface{}) *
 }
 
 // InsertRule mocks base method
-func (m *MockInterface) InsertRule(arg0 iptables.Protocol, arg1, arg2 string, arg3 []string) error {
+func (m *MockInterface) InsertRule(arg0 iptables.Protocol, arg1, arg2 string, arg3 []string, arg4 int) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "InsertRule", arg0, arg1, arg2, arg3)
+	ret := m.ctrl.Call(m, "InsertRule", arg0, arg1, arg2, arg3, arg4)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // InsertRule indicates an expected call of InsertRule
-func (mr *MockInterfaceMockRecorder) InsertRule(arg0, arg1, arg2, arg3 interface{}) *gomock.Call {
+func (mr *MockInterfaceMockRecorder) InsertRule(arg0, arg1, arg2, arg3, arg4 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InsertRule", reflect.TypeOf((*MockInterface)(nil).InsertRule), arg0, arg1, arg2, arg3)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InsertRule", reflect.TypeOf((*MockInterface)(nil).InsertRule), arg0, arg1, arg2, arg3, arg4)
 }
 
 // ListRules mocks base method
@@ -146,6 +160,20 @@ func (m *MockInterface) ListRules(arg0, arg1 string) ([]string, error) {
 func (mr *MockInterfaceMockRecorder) ListRules(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListRules", reflect.TypeOf((*MockInterface)(nil).ListRules), arg0, arg1)
+}
+
+// ReplaceRule mocks base method
+func (m *MockInterface) ReplaceRule(arg0 iptables.Protocol, arg1, arg2 string, arg3 []string, arg4 int) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReplaceRule", arg0, arg1, arg2, arg3, arg4)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ReplaceRule indicates an expected call of ReplaceRule
+func (mr *MockInterfaceMockRecorder) ReplaceRule(arg0, arg1, arg2, arg3, arg4 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReplaceRule", reflect.TypeOf((*MockInterface)(nil).ReplaceRule), arg0, arg1, arg2, arg3, arg4)
 }
 
 // Restore mocks base method

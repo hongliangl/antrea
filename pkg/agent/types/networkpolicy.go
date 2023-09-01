@@ -98,6 +98,21 @@ func (r *PolicyRule) IsAntreaNetworkPolicyRule() bool {
 	return r.PolicyRef.Type != v1beta2.K8sNetworkPolicy
 }
 
+type BMPolicyRule struct {
+	Direction     v1beta2.Direction
+	From          map[string]v1beta2.GroupMemberSet
+	To            map[string]v1beta2.GroupMemberSet
+	Service       []v1beta2.Service
+	L7Protocols   []v1beta2.L7Protocol
+	L7RuleVlanID  *uint32
+	Action        *secv1beta1.RuleAction
+	Priority      *Priority
+	Name          string
+	PolicyRef     *v1beta2.NetworkPolicyReference
+	EnableLogging bool
+	LogLabel      string
+}
+
 // Priority is a struct that is composed of Antrea NetworkPolicy priority, rule priority and Tier priority.
 // It is used as the basic unit for priority sorting.
 type Priority struct {
