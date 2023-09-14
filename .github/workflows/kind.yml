@@ -105,7 +105,7 @@ jobs:
         path: test-e2e-encap-coverage.tar.gz
         retention-days: 30
     - name: Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         file: '*.cov.out*'
@@ -170,7 +170,7 @@ jobs:
         path: test-e2e-encap-non-default-coverage.tar.gz
         retention-days: 30
     - name: Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         file: '*.cov.out*'
@@ -235,7 +235,7 @@ jobs:
           path: test-e2e-encap-all-features-enabled-coverage.tar.gz
           retention-days: 30
       - name: Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           file: '*.cov.out*'
@@ -294,7 +294,7 @@ jobs:
         path: test-e2e-noencap-coverage.tar.gz
         retention-days: 30
     - name: Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         file: '*.cov.out*'
@@ -353,7 +353,7 @@ jobs:
         path: test-e2e-hybrid-coverage.tar.gz
         retention-days: 30
     - name: Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         file: '*.cov.out*'
@@ -424,7 +424,7 @@ jobs:
           path: test-e2e-fa-coverage.tar.gz
           retention-days: 30
       - name: Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           file: '*.cov.out*'
