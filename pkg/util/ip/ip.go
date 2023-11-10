@@ -269,3 +269,11 @@ func AppendPortIfMissing(addr, port string) string {
 
 	return net.JoinHostPort(addr, port)
 }
+
+func IsZeroCIDR(cidr *net.IPNet) bool {
+	ones, _ := cidr.Mask.Size()
+	if ones == 0 && (cidr.IP.Equal(net.IPv4zero) || cidr.IP.Equal(net.IPv6zero)) {
+		return true
+	}
+	return false
+}

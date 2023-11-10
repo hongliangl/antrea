@@ -1522,6 +1522,33 @@ spec:
                         required:
                           - name
                           - namespace
+                      nodeSelector:
+                        type: object
+                        properties:
+                          matchExpressions:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                key:
+                                  type: string
+                                operator:
+                                  enum:
+                                    - In
+                                    - NotIn
+                                    - Exists
+                                    - DoesNotExist
+                                  type: string
+                                values:
+                                  type: array
+                                  items:
+                                    type: string
+                                    pattern: "^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$"
+                          matchLabels:
+                            additionalProperties:
+                              type: string
+                              pattern: "^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$"
+                            type: object
                 ingress:
                   type: array
                   items:
@@ -5576,6 +5603,9 @@ data:
     # Enable Egress traffic shaping.
     #  EgressTrafficShaping: false
 
+    # Allow users to protect their Kubernetes Nodes.
+    #  NodeNetworkPolicy: false
+
     # Name of the OpenVSwitch bridge antrea-agent will create and use.
     # Make sure it doesn't conflict with your existing OpenVSwitch bridges.
     ovsBridge: "br-int"
@@ -5884,6 +5914,44 @@ data:
       maxAge: 28
       # Compress enables gzip compression on rotated files.
       compress: true
+
+    nodeNetworkPolicy:
+      # privilegedRules is a list of rules applied to Nodes to guarantee the their availability of network alongside any
+      # user-defined NodeNetworkPolicy rules.
+      privilegedRules:
+      - description: allow ingress traffic to SSH
+        direction: ingress
+        ports:
+        - 22
+        protocol: tcp
+      - description: allow ingress traffic to Kubernetes ports
+        direction: ingress
+        ports:
+        - 6443
+        - 10248-10250
+        - 10256-10258
+        protocol: tcp
+      - description: allow egress traffic to Kubernetes ports
+        direction: egress
+        ports:
+        - 6443
+        - 10248-10250
+        - 10256-10258
+        protocol: tcp
+      - description: allow ingress traffic to Antrea ports
+        direction: ingress
+        ports:
+        - 10348-10351
+        protocol: tcp
+      - description: allow egress traffic to Antrea ports
+        direction: egress
+        ports:
+        - 10348-10351
+        protocol: tcp
+      - description: allow egress traffic to DNS port
+        direction: egress
+        ports:
+        - 53
   antrea-cni.conflist: |
     {
         "cniVersion":"0.3.0",
@@ -5963,6 +6031,9 @@ data:
     # Enable the use of Network Policy APIs (https://network-policy-api.sigs.k8s.io/api-overview) which helps administrators
     # set security postures for their clusters.
     #  AdminNetworkPolicy: false
+
+    # Allow users to protect their Kubernetes Nodes.
+    #  NodeNetworkPolicy: false
 
     # The port for the antrea-controller APIServer to serve on.
     # Note that if it's set to another value, the `containerPort` of the `api` port of the
@@ -6868,7 +6939,7 @@ spec:
         kubectl.kubernetes.io/default-container: antrea-agent
         # Automatically restart Pods with a RollingUpdate if the ConfigMap changes
         # See https://helm.sh/docs/howto/charts_tips_and_tricks/#automatically-roll-deployments
-        checksum/config: e59e0431902646d46cba490279184fea2bdd3c8b486b5a7b1d3ece9a91614634
+        checksum/config: abaf2d6048c053447397fee6ad607f19fb7c833e77416872024e71688fabcbda
       labels:
         app: antrea
         component: antrea-agent
@@ -7106,7 +7177,7 @@ spec:
       annotations:
         # Automatically restart Pod if the ConfigMap changes
         # See https://helm.sh/docs/howto/charts_tips_and_tricks/#automatically-roll-deployments
-        checksum/config: e59e0431902646d46cba490279184fea2bdd3c8b486b5a7b1d3ece9a91614634
+        checksum/config: abaf2d6048c053447397fee6ad607f19fb7c833e77416872024e71688fabcbda
       labels:
         app: antrea
         component: antrea-controller

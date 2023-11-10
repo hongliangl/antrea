@@ -119,6 +119,33 @@ Kubernetes: `>= 1.16.0-0`
 | nodeIPAM.nodeCIDRMaskSizeIPv6 | int | `64` | Mask size for IPv6 Node CIDR in IPv6 or dual-stack cluster. |
 | nodeIPAM.serviceCIDR | string | `""` | IPv4 CIDR ranges reserved for Services. |
 | nodeIPAM.serviceCIDRv6 | string | `""` | IPv6 CIDR ranges reserved for Services. |
+| nodeNetworkPolicy.privilegedRules[0].description | string | `"allow ingress traffic to SSH"` |  |
+| nodeNetworkPolicy.privilegedRules[0].direction | string | `"ingress"` |  |
+| nodeNetworkPolicy.privilegedRules[0].ports[0] | int | `22` |  |
+| nodeNetworkPolicy.privilegedRules[0].protocol | string | `"tcp"` |  |
+| nodeNetworkPolicy.privilegedRules[1].description | string | `"allow ingress traffic to Kubernetes ports"` |  |
+| nodeNetworkPolicy.privilegedRules[1].direction | string | `"ingress"` |  |
+| nodeNetworkPolicy.privilegedRules[1].ports[0] | int | `6443` |  |
+| nodeNetworkPolicy.privilegedRules[1].ports[1] | string | `"10248-10250"` |  |
+| nodeNetworkPolicy.privilegedRules[1].ports[2] | string | `"10256-10258"` |  |
+| nodeNetworkPolicy.privilegedRules[1].protocol | string | `"tcp"` |  |
+| nodeNetworkPolicy.privilegedRules[2].description | string | `"allow egress traffic to Kubernetes ports"` |  |
+| nodeNetworkPolicy.privilegedRules[2].direction | string | `"egress"` |  |
+| nodeNetworkPolicy.privilegedRules[2].ports[0] | int | `6443` |  |
+| nodeNetworkPolicy.privilegedRules[2].ports[1] | string | `"10248-10250"` |  |
+| nodeNetworkPolicy.privilegedRules[2].ports[2] | string | `"10256-10258"` |  |
+| nodeNetworkPolicy.privilegedRules[2].protocol | string | `"tcp"` |  |
+| nodeNetworkPolicy.privilegedRules[3].description | string | `"allow ingress traffic to Antrea ports"` |  |
+| nodeNetworkPolicy.privilegedRules[3].direction | string | `"ingress"` |  |
+| nodeNetworkPolicy.privilegedRules[3].ports[0] | string | `"10348-10351"` |  |
+| nodeNetworkPolicy.privilegedRules[3].protocol | string | `"tcp"` |  |
+| nodeNetworkPolicy.privilegedRules[4].description | string | `"allow egress traffic to Antrea ports"` |  |
+| nodeNetworkPolicy.privilegedRules[4].direction | string | `"egress"` |  |
+| nodeNetworkPolicy.privilegedRules[4].ports[0] | string | `"10348-10351"` |  |
+| nodeNetworkPolicy.privilegedRules[4].protocol | string | `"tcp"` |  |
+| nodeNetworkPolicy.privilegedRules[5].description | string | `"allow egress traffic to DNS port"` |  |
+| nodeNetworkPolicy.privilegedRules[5].direction | string | `"egress"` |  |
+| nodeNetworkPolicy.privilegedRules[5].ports[0] | int | `53` |  |
 | nodePortLocal.enable | bool | `false` | Enable the NodePortLocal feature. |
 | nodePortLocal.portRange | string | `"61000-62000"` | Port range used by NodePortLocal when creating Pod port mappings. |
 | ovs.bridgeName | string | `"br-int"` | Name of the OVS bridge antrea-agent will create and use. |
