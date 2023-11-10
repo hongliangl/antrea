@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -612,6 +614,9 @@ func (o *Options) validateK8sNodeOptions() error {
 	if err := o.validateSecondaryNetworkConfig(); err != nil {
 		return fmt.Errorf("failed to validate secondary network config: %v", err)
 	}
+	if err := o.validateNodeNetworkPolicyConfig(); err != nil {
+		return fmt.Errorf("failed to validate NodeNetworkPolicy config: %v", err)
+	}
 
 	return nil
 }
@@ -670,7 +675,7 @@ func (o *Options) validatePolicyBypassRulesConfig() error {
 		if rule.Port == 0 && (rule.Protocol == "tcp" || rule.Protocol == "udp") {
 			return fmt.Errorf("missing port for policyBypassRule when protocol is %s", rule.Protocol)
 		}
-		if rule.Port < 0 || rule.Port > 65535 {
+		if !(rule.Port >= 1 && rule.Port <= 65535) {
 			return fmt.Errorf("port %d for policyBypassRule is invalid", rule.Port)
 		}
 	}
@@ -755,6 +760,63 @@ func (o *Options) validateNodePortLocalConfig() error {
 		}
 		o.nplStartPort = startPort
 		o.nplEndPort = endPort
+	}
+	return nil
+}
+
+func validateNodeNetworkPolicyPrivilegedRules(rules []agentconfig.PrivilegedRule) error {
+	for _, rule := range rules {
+		if rule.Direction != "ingress" && rule.Direction != "egress" {
+			return fmt.Errorf(`direction can only be "ingress" or "egress"`)
+		}
+		if rule.IPFamilies != "" && rule.IPFamilies != "ipv4" && rule.IPFamilies != "ipv6" {
+			return fmt.Errorf(`ip families can only be "ipv4" or "ipv6", leave it empty for both "ipv4" and "ipv6"`)
+		}
+		if rule.Protocol != "" && rule.Protocol != "tcp" && rule.Protocol != "udp" {
+			return fmt.Errorf(`protocol can only be "tcp" or "udp", leave it empty for both "tcp" and "udp"`)
+		}
+		if rule.CIDR != "" {
+			if rule.IPFamilies == "" {
+				return fmt.Errorf(`CIDR should be empty when ip families is empty`)
+			}
+			_, cidr, err := net.ParseCIDR(rule.CIDR)
+			if err != nil {
+				return fmt.Errorf("CIDR is invalid")
+			}
+			if cidr.IP.To4() != nil && rule.IPFamilies != "ipv4" {
+				return fmt.Errorf(`CIDR is IPv4 but ip families is not "ipv4"`)
+			}
+			if cidr.IP.To16() != nil && rule.IPFamilies != "ipv6" {
+				return fmt.Errorf(`CIDR is IPv6 but ip families is not "ipv6"`)
+			}
+		}
+		regex := regexp.MustCompile(`^\d+(?:-\d+)?$`)
+		for _, portStr := range rule.Ports {
+			if regex.MatchString(portStr) {
+				if len(strings.Split(portStr, "-")) == 2 {
+					if _, _, err := parsePortRange(portStr); err != nil {
+						return fmt.Errorf("port range is invalid: %v", err)
+					}
+				} else {
+					port, _ := strconv.Atoi(portStr)
+					if !(port >= 1 && port <= 65535) {
+						return fmt.Errorf("port must be between 1 and 65535: %s", portStr)
+					}
+				}
+			} else {
+				return fmt.Errorf("invalid port pattern: %s", portStr)
+			}
+		}
+	}
+	return nil
+}
+
+func (o *Options) validateNodeNetworkPolicyConfig() error {
+	if !features.DefaultFeatureGate.Enabled(features.NodeNetworkPolicy) {
+		return nil
+	}
+	if err := validateNodeNetworkPolicyPrivilegedRules(o.config.NodeNetworkPolicy.PrivilegedRules); err != nil {
+		return fmt.Errorf("failed to validate NodeNetworkPolicy privileged rules: %v", err)
 	}
 	return nil
 }

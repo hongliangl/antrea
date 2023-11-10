@@ -205,6 +205,8 @@ type AgentConfig struct {
 	// second(pps) and the burst size will be automatically set to twice the rate.
 	// When the rate and burst size are exceeded, new packets will be dropped.
 	PacketInRate int `yaml:"packetInRate,omitempty"`
+	// NodeNetworkPolicy includes the privileged ingress and egress rules for NodeNetworkPolicy.
+	NodeNetworkPolicy NodeNetworkPolicyConfig `yaml:"nodeNetworkPolicy,omitempty"`
 }
 
 type AntreaProxyConfig struct {
@@ -403,4 +405,24 @@ type OVSBridgeConfig struct {
 	// Names of physical interfaces to be connected to the bridge. At the moment,
 	// only a single physical interface is supported.
 	PhysicalInterfaces []string `yaml:"physicalInterfaces,omitempty"`
+}
+
+type PrivilegedRule struct {
+	// The direction value can be "ingress" or "egress".
+	Direction string `yaml:"direction,omitempty"`
+	// The IP families of the rule. Supported values are "ipv4", "ipv6" and "" (both).
+	IPFamilies string `yaml:"ipFamily,omitempty"`
+	// The protocol which traffic must match. Supported values are "tcp", "udp", "" (both).
+	Protocol string `yaml:"protocol,omitempty"`
+	// CIDR marks the destination CIDR for egress and source CIDR for ingress. It can be "" which means allow all addresses.
+	CIDR string `json:"cidr,omitempty"`
+	// The destination port list of the given protocol. It can be nil which means allow all ports.
+	Ports []string `yaml:"ports,omitempty"`
+	// Description is the explanation of the rule.
+	Description string `yaml:"description,omitempty"`
+}
+
+// NodeNetworkPolicyConfig includes the privileged rules.
+type NodeNetworkPolicyConfig struct {
+	PrivilegedRules []PrivilegedRule `yaml:"privilegedRules,omitempty"`
 }

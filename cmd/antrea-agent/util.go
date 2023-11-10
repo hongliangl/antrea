@@ -77,5 +77,9 @@ func parsePortRange(portRangeStr string) (start, end int, err error) {
 		return 0, 0, fmt.Errorf("start port must be smaller than end port: %s", portRangeStr)
 	}
 
+	if !(start >= 1 && end <= 65535) {
+		return 0, 0, fmt.Errorf("port range must be between 1 and 65535: %s", portRangeStr)
+	}
+
 	return start, end, nil
 }

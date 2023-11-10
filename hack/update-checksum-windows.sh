@@ -27,13 +27,13 @@ CONTAINERD_CONF_FILES="${WINDOWS_DIR}/containerd/conf/Install-WindowsCNI-Contain
 CONTAINERD_WITH_OVS_CONF_FILES="${WINDOWS_DIR}/containerd-with-ovs/conf/Run-AntreaOVS-Containerd.ps1 \
     ${WINDOWS_DIR}/containerd-with-ovs/conf/VMSwitchExtension-AntreaAgent-Containerd.ps1"
 
-checksum_windows_config=$(cat ${BASE_CONF_FILES} | sha256sum | cut -d " " -f 1)
+checksum_windows_config=$(cat ${BASE_CONF_FILES} | shasum -a 256 | cut -d " " -f 1)
 
-checksum_default=$(cat ${DEFAULT_CONF_FILES} | sha256sum | cut -d " " -f 1)
+checksum_default=$(cat ${DEFAULT_CONF_FILES} | shasum -a 256 | cut -d " " -f 1)
 
-checksum_containerd=$( cat ${CONTAINERD_CONF_FILES} | sha256sum | cut -d " " -f 1)
+checksum_containerd=$( cat ${CONTAINERD_CONF_FILES} | shasum -a 256 | cut -d " " -f 1)
 
-checksum_containerd_with_ovs=$(cat ${CONTAINERD_CONF_FILES} ${CONTAINERD_WITH_OVS_CONF_FILES} | sha256sum | cut -d " " -f 1)
+checksum_containerd_with_ovs=$(cat ${CONTAINERD_CONF_FILES} ${CONTAINERD_WITH_OVS_CONF_FILES} | shasum -a 256 | cut -d " " -f 1)
 
 for file in ${MANIFESTS[@]}; do
     sed -i.bak "s/windows-config-checksum-placeholder/${checksum_windows_config}/g" ${file}

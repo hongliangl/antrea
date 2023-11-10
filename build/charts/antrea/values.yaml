@@ -422,6 +422,43 @@ multicluster:
     # -- WireGuard tunnel port for cross-cluster traffic.
     port: 51821
 
+nodeNetworkPolicy:
+  # Configure nodeNetworkPolicy privileged rules for Antrea Agent.
+  privilegedRules:
+    - protocol: tcp
+      direction: ingress
+      ports:
+        - 22
+      description: "allow ingress traffic to SSH"
+    - protocol: tcp
+      direction: ingress
+      ports:
+        - 6443
+        - 10248-10250
+        - 10256-10258
+      description:  "allow ingress traffic to Kubernetes ports"
+    - protocol: tcp
+      direction: egress
+      ports:
+        - 6443
+        - 10248-10250
+        - 10256-10258
+      description: "allow egress traffic to Kubernetes ports"
+    - protocol: tcp
+      direction: ingress
+      ports:
+        - 10348-10351
+      description:  "allow ingress traffic to Antrea ports"
+    - protocol: tcp
+      direction: egress
+      ports:
+        - 10348-10351
+      description: "allow egress traffic to Antrea ports"
+    - direction: egress
+      ports:
+        - 53
+      description: "allow egress traffic to DNS port"
+
 testing:
   # -- Enable code coverage measurement (used when testing Antrea only).
   coverage: false

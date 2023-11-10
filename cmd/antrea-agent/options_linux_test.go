@@ -128,3 +128,167 @@ func TestMulticlusterOptions(t *testing.T) {
 		})
 	}
 }
+
+func TestNodeNetworkPolicyOptions(t *testing.T) {
+	tests := []struct {
+		name                    string
+		nodeNetworkPolicyConfig agentconfig.NodeNetworkPolicyConfig
+		featureGate             bool
+		expectedErr             string
+	}{
+		{
+			name:                    "feature is not enabled",
+			nodeNetworkPolicyConfig: agentconfig.NodeNetworkPolicyConfig{},
+			expectedErr:             "",
+		},
+		{
+			name: "invalid direction",
+			nodeNetworkPolicyConfig: agentconfig.NodeNetworkPolicyConfig{
+				PrivilegedRules: []agentconfig.PrivilegedRule{
+					{
+						Direction: "in",
+						Protocol:  "tcp",
+						Ports:     []string{"443"},
+					},
+				},
+			},
+			featureGate: true,
+			expectedErr: `direction can only be "ingress" or "egress"`,
+		},
+		{
+			name: "invalid ip families",
+			nodeNetworkPolicyConfig: agentconfig.NodeNetworkPolicyConfig{
+				PrivilegedRules: []agentconfig.PrivilegedRule{
+					{
+						Direction:  "ingress",
+						IPFamilies: "ip",
+						Protocol:   "tcp",
+						Ports:      []string{"443"},
+					},
+				},
+			},
+			featureGate: true,
+			expectedErr: `ip families can only be "ipv4" or "ipv6", leave it empty for both "ipv4" and "ipv6"`,
+		},
+		{
+			name: "invalid protocol",
+			nodeNetworkPolicyConfig: agentconfig.NodeNetworkPolicyConfig{
+				PrivilegedRules: []agentconfig.PrivilegedRule{
+					{
+						Direction: "ingress",
+						Protocol:  "icmp",
+						Ports:     []string{"443"},
+					},
+				},
+			},
+			featureGate: true,
+			expectedErr: `protocol can only be "tcp" or "udp", leave it empty for both "tcp" and "udp"`,
+		},
+		{
+			name: "CIDR should not be specific when IP families is empty (both for IPv4 and IPv6)",
+			nodeNetworkPolicyConfig: agentconfig.NodeNetworkPolicyConfig{
+				PrivilegedRules: []agentconfig.PrivilegedRule{
+					{
+						Direction:  "ingress",
+						IPFamilies: "",
+						Protocol:   "tcp",
+						CIDR:       "192.168.1.1/24",
+					},
+				},
+			},
+			featureGate: true,
+			expectedErr: `CIDR should be empty when ip families is empty`,
+		},
+		{
+			name: "invalid CIDR",
+			nodeNetworkPolicyConfig: agentconfig.NodeNetworkPolicyConfig{
+				PrivilegedRules: []agentconfig.PrivilegedRule{
+					{
+						Direction:  "ingress",
+						IPFamilies: "ipv4",
+						Protocol:   "tcp",
+						CIDR:       "192.168.1.1",
+					},
+				},
+			},
+			featureGate: true,
+			expectedErr: `CIDR is invalid`,
+		},
+		{
+			name: "invalid CIDR for IPv6",
+			nodeNetworkPolicyConfig: agentconfig.NodeNetworkPolicyConfig{
+				PrivilegedRules: []agentconfig.PrivilegedRule{
+					{
+						Direction:  "ingress",
+						Protocol:   "tcp",
+						IPFamilies: "ipv6",
+						CIDR:       "192.168.1.0/24",
+					},
+				},
+			},
+			featureGate: true,
+			expectedErr: `CIDR is IPv4 but ip families is not "ipv4"`,
+		},
+		{
+			name: "invalid CIDR for IPv4",
+			nodeNetworkPolicyConfig: agentconfig.NodeNetworkPolicyConfig{
+				PrivilegedRules: []agentconfig.PrivilegedRule{
+					{
+						Direction:  "ingress",
+						Protocol:   "tcp",
+						IPFamilies: "ipv4",
+						CIDR:       "fec0::/64",
+					},
+				},
+			},
+			featureGate: true,
+			expectedErr: `CIDR is IPv6 but ip families is not "ipv6"`,
+		},
+		{
+			name: "invalid port range",
+			nodeNetworkPolicyConfig: agentconfig.NodeNetworkPolicyConfig{
+				PrivilegedRules: []agentconfig.PrivilegedRule{
+					{
+						Direction: "ingress",
+						Protocol:  "tcp",
+						Ports:     []string{"80-79"},
+					},
+				},
+			},
+			featureGate: true,
+			expectedErr: "start port must be smaller than end port",
+		},
+		{
+			name: "invalid port pattern",
+			nodeNetworkPolicyConfig: agentconfig.NodeNetworkPolicyConfig{
+				PrivilegedRules: []agentconfig.PrivilegedRule{
+					{
+						Direction: "ingress",
+						Protocol:  "tcp",
+						Ports:     []string{"79:80"},
+					},
+				},
+			},
+			featureGate: true,
+			expectedErr: "invalid port pattern",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &agentconfig.AgentConfig{
+				FeatureGates:      map[string]bool{"NodeNetworkPolicy": tt.featureGate},
+				NodeNetworkPolicy: tt.nodeNetworkPolicyConfig,
+			}
+			o := &Options{config: config}
+			features.DefaultMutableFeatureGate.SetFromMap(o.config.FeatureGates)
+			o.setDefaults()
+
+			err := o.validateNodeNetworkPolicyConfig()
+			if tt.expectedErr == "" {
+				assert.NoError(t, err)
+			} else {
+				assert.ErrorContains(t, err, tt.expectedErr)
+			}
+		})
+	}
+}
