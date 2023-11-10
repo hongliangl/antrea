@@ -182,6 +182,15 @@ func (r *CompletedRule) isIGMPEgressPolicyRule() bool {
 	return false
 }
 
+func (r *CompletedRule) isNodeNetworkPolicyRule() bool {
+	for _, m := range r.TargetMembers {
+		if m.Node != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // ruleCache caches Antrea AddressGroups, AppliedToGroups and NetworkPolicies,
 // can construct complete rules that can be used by reconciler to enforce.
 type ruleCache struct {

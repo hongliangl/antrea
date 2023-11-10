@@ -146,6 +146,10 @@ const (
 	// alpha: v1.14
 	// Enable Egress traffic shaping.
 	EgressTrafficShaping featuregate.Feature = "EgressTrafficShaping"
+
+	// alpha: v1.15
+	// Allow users to protect their Kubernetes Nodes.
+	NodeNetworkPolicy featuregate.Feature = "NodeNetworkPolicy"
 )
 
 var (
@@ -184,6 +188,7 @@ var (
 		LoadBalancerModeDSR:         {Default: false, PreRelease: featuregate.Alpha},
 		AdminNetworkPolicy:          {Default: false, PreRelease: featuregate.Alpha},
 		EgressTrafficShaping:        {Default: false, PreRelease: featuregate.Alpha},
+		NodeNetworkPolicy:           {Default: false, PreRelease: featuregate.Alpha},
 	}
 
 	// AgentGates consists of all known feature gates for the Antrea Agent.
@@ -211,6 +216,7 @@ var (
 		Traceflow,
 		TrafficControl,
 		EgressTrafficShaping,
+		NodeNetworkPolicy,
 	)
 
 	// ControllerGates consists of all known feature gates for the Antrea Controller.
@@ -229,6 +235,7 @@ var (
 		ServiceExternalIP,
 		SupportBundleCollection,
 		Traceflow,
+		NodeNetworkPolicy,
 	)
 
 	// UnsupportedFeaturesOnWindows records the features not supported on
@@ -255,6 +262,7 @@ var (
 		LoadBalancerModeDSR:         {},
 		CleanupStaleUDPSvcConntrack: {},
 		EgressTrafficShaping:        {},
+		NodeNetworkPolicy:           {},
 	}
 	// supportedFeaturesOnExternalNode records the features supported on an external
 	// Node. Antrea Agent checks the enabled features if it is running on an

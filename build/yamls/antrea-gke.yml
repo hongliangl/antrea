@@ -5603,6 +5603,9 @@ data:
     # Enable Egress traffic shaping.
     #  EgressTrafficShaping: false
 
+    # Allow users to protect their Kubernetes Nodes.
+    #  NodeNetworkPolicy: false
+
     # Name of the OpenVSwitch bridge antrea-agent will create and use.
     # Make sure it doesn't conflict with your existing OpenVSwitch bridges.
     ovsBridge: "br-int"
@@ -6895,7 +6898,7 @@ spec:
         kubectl.kubernetes.io/default-container: antrea-agent
         # Automatically restart Pods with a RollingUpdate if the ConfigMap changes
         # See https://helm.sh/docs/howto/charts_tips_and_tricks/#automatically-roll-deployments
-        checksum/config: 3b1758664de8044af1aa7454c64bd1a4911750e562e1ae9375c9c16a335a469d
+        checksum/config: 99ec0840193c5c4e9555308b4fd6c0919fbbabd72c64294da9f07593cfe23867
       labels:
         app: antrea
         component: antrea-agent
@@ -7131,7 +7134,7 @@ spec:
       annotations:
         # Automatically restart Pod if the ConfigMap changes
         # See https://helm.sh/docs/howto/charts_tips_and_tricks/#automatically-roll-deployments
-        checksum/config: 3b1758664de8044af1aa7454c64bd1a4911750e562e1ae9375c9c16a335a469d
+        checksum/config: 99ec0840193c5c4e9555308b4fd6c0919fbbabd72c64294da9f07593cfe23867
       labels:
         app: antrea
         component: antrea-controller
