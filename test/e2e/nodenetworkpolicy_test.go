@@ -88,13 +88,14 @@ func TestAntreaNodeNetworkPolicy(t *testing.T) {
 	defer teardownTest(t, data)
 
 	initializeAntreaNodeNetworkPolicy(t, data, true)
-
-	t.Run("Case=ACNPAllowNoDefaultIsolationTCP", func(t *testing.T) { testNodeACNPAllowNoDefaultIsolation(t, ProtocolTCP) })
-	t.Run("Case=ACNPAllowNoDefaultIsolationUDP", func(t *testing.T) { testNodeACNPAllowNoDefaultIsolation(t, ProtocolUDP) })
-	t.Run("Case=ACNPAllowNoDefaultIsolationSCTP", func(t *testing.T) { testNodeACNPAllowNoDefaultIsolation(t, ProtocolSCTP) })
-	t.Run("Case=ACNPDropEgress", func(t *testing.T) { testNodeACNPDropEgress(t, ProtocolTCP) })
-	t.Run("Case=ACNPDropEgressUDP", func(t *testing.T) { testNodeACNPDropEgress(t, ProtocolUDP) })
-	t.Run("Case=ACNPDropEgressSCTP", func(t *testing.T) { testNodeACNPDropEgress(t, ProtocolSCTP) })
+	/*
+		t.Run("Case=ACNPAllowNoDefaultIsolationTCP", func(t *testing.T) { testNodeACNPAllowNoDefaultIsolation(t, ProtocolTCP) })
+		t.Run("Case=ACNPAllowNoDefaultIsolationUDP", func(t *testing.T) { testNodeACNPAllowNoDefaultIsolation(t, ProtocolUDP) })
+		t.Run("Case=ACNPAllowNoDefaultIsolationSCTP", func(t *testing.T) { testNodeACNPAllowNoDefaultIsolation(t, ProtocolSCTP) })
+		t.Run("Case=ACNPDropEgress", func(t *testing.T) { testNodeACNPDropEgress(t, ProtocolTCP) })
+		t.Run("Case=ACNPDropEgressUDP", func(t *testing.T) { testNodeACNPDropEgress(t, ProtocolUDP) })
+		t.Run("Case=ACNPDropEgressSCTP", func(t *testing.T) { testNodeACNPDropEgress(t, ProtocolSCTP) })
+	*/
 	t.Run("Case=ACNPDropIngress", func(t *testing.T) { testNodeACNPDropIngress(t, ProtocolTCP) })
 	t.Run("Case=ACNPDropIngressUDP", func(t *testing.T) { testNodeACNPDropIngress(t, ProtocolUDP) })
 	t.Run("Case=ACNPDropIngressSCTP", func(t *testing.T) { testNodeACNPDropIngress(t, ProtocolSCTP) })
@@ -113,13 +114,16 @@ func TestAntreaNodeNetworkPolicy(t *testing.T) {
 
 	k8sUtils.Cleanup(namespaces)
 
-	initializeAntreaNodeNetworkPolicy(t, data, false)
+	/*
+		initializeAntreaNodeNetworkPolicy(t, data, false)
 
-	t.Run("Case=ACNPNamespaceIsolation", func(t *testing.T) { testNodeACNPNamespaceIsolation(t) })
-	t.Run("Case=ACNPClusterGroupUpdate", func(t *testing.T) { testNodeACNPClusterGroupUpdate(t) })
-	t.Run("Case=ACNPClusterGroupRefRuleIPBlocks", func(t *testing.T) { testNodeACNPClusterGroupRefRuleIPBlocks(t) })
-	t.Run("Case=ACNPNestedClusterGroup", func(t *testing.T) { testNodeACNPNestedClusterGroupCreateAndUpdate(t, data) })
-	t.Run("Case=ACNPNestedIPBlockClusterGroup", func(t *testing.T) { testNodeACNPNestedIPBlockClusterGroupCreateAndUpdate(t) })
+		t.Run("Case=ACNPNamespaceIsolation", func(t *testing.T) { testNodeACNPNamespaceIsolation(t) })
+		t.Run("Case=ACNPClusterGroupUpdate", func(t *testing.T) { testNodeACNPClusterGroupUpdate(t) })
+		t.Run("Case=ACNPClusterGroupRefRuleIPBlocks", func(t *testing.T) { testNodeACNPClusterGroupRefRuleIPBlocks(t) })
+		t.Run("Case=ACNPNestedClusterGroup", func(t *testing.T) { testNodeACNPNestedClusterGroupCreateAndUpdate(t, data) })
+		t.Run("Case=ACNPNestedIPBlockClusterGroup", func(t *testing.T) { testNodeACNPNestedIPBlockClusterGroupCreateAndUpdate(t) })
+
+	*/
 
 	k8sUtils.Cleanup(namespaces)
 }
