@@ -95,7 +95,7 @@ func TestAntreaNodeNetworkPolicy(t *testing.T) {
 		t.Run("Case=ACNPDropEgress", func(t *testing.T) { testNodeACNPDropEgress(t, ProtocolTCP) })
 		t.Run("Case=ACNPDropEgressUDP", func(t *testing.T) { testNodeACNPDropEgress(t, ProtocolUDP) })
 		t.Run("Case=ACNPDropEgressSCTP", func(t *testing.T) { testNodeACNPDropEgress(t, ProtocolSCTP) })
-	*/
+	
 	t.Run("Case=ACNPDropIngress", func(t *testing.T) { testNodeACNPDropIngress(t, ProtocolTCP) })
 	t.Run("Case=ACNPDropIngressUDP", func(t *testing.T) { testNodeACNPDropIngress(t, ProtocolUDP) })
 	t.Run("Case=ACNPDropIngressSCTP", func(t *testing.T) { testNodeACNPDropIngress(t, ProtocolSCTP) })
@@ -106,6 +106,7 @@ func TestAntreaNodeNetworkPolicy(t *testing.T) {
 	t.Run("Case=ACNPRejectEgressSCTP", func(t *testing.T) { testNodeACNPRejectEgress(t, ProtocolSCTP) })
 	t.Run("Case=ACNPRejectIngress", func(t *testing.T) { testNodeACNPRejectIngress(t, ProtocolTCP) })
 	t.Run("Case=ACNPRejectIngressUDP", func(t *testing.T) { testNodeACNPRejectIngress(t, ProtocolUDP) })
+ */
 	t.Run("Case=ACNPNoEffectOnOtherProtocols", func(t *testing.T) { testNodeACNPNoEffectOnOtherProtocols(t) })
 	t.Run("Case=ACNPPriorityOverride", func(t *testing.T) { testNodeACNPPriorityOverride(t) })
 	t.Run("Case=ACNPTierOverride", func(t *testing.T) { testNodeACNPTierOverride(t) })
