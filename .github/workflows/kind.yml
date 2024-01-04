@@ -73,7 +73,7 @@ jobs:
             --node-ipam \
             --multicast
       - name: Tar coverage files
-        run: tar -czf test-e2e-encap-all-features-enabled-coverage.tar.gz test-e2e-encap-all-features-enabled-coverage
+        run: tar -czf test-e2e-encap-all-features-enabled-coverage.tar.gz test-e2e-encap-all-features-enabled-coverage log
       - name: Upload coverage for test-e2e-encap-all-features-enabled-coverage
         uses: actions/upload-artifact@v4
         with:
