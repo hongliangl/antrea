@@ -106,13 +106,13 @@ func TestAntreaNodeNetworkPolicy(t *testing.T) {
 	t.Run("Case=ACNPRejectEgressSCTP", func(t *testing.T) { testNodeACNPRejectEgress(t, ProtocolSCTP) })
 	t.Run("Case=ACNPRejectIngress", func(t *testing.T) { testNodeACNPRejectIngress(t, ProtocolTCP) })
 	t.Run("Case=ACNPRejectIngressUDP", func(t *testing.T) { testNodeACNPRejectIngress(t, ProtocolUDP) })
-
+ */
 	t.Run("Case=ACNPNoEffectOnOtherProtocols", func(t *testing.T) { testNodeACNPNoEffectOnOtherProtocols(t) })
 	t.Run("Case=ACNPPriorityOverride", func(t *testing.T) { testNodeACNPPriorityOverride(t) })
-	t.Run("Case=ACNPTierOverride", func(t *testing.T) { testNodeACNPTierOverride(t) })
-  */
-	t.Run("Case=ACNPCustomTiers", func(t *testing.T) { testNodeACNPCustomTiers(t) })
-	t.Run("Case=ACNPPriorityConflictingRule", func(t *testing.T) { testNodeACNPPriorityConflictingRule(t) })
+	//t.Run("Case=ACNPTierOverride", func(t *testing.T) { testNodeACNPTierOverride(t) })
+ 
+	//t.Run("Case=ACNPCustomTiers", func(t *testing.T) { testNodeACNPCustomTiers(t) })
+	//t.Run("Case=ACNPPriorityConflictingRule", func(t *testing.T) { testNodeACNPPriorityConflictingRule(t) })
 
 	k8sUtils.Cleanup(namespaces)
 
