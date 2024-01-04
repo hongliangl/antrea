@@ -73,29 +73,14 @@ jobs:
             --node-ipam \
             --multicast
       - name: Tar coverage files
-        run: tar -czf test-e2e-encap-all-features-enabled-coverage.tar.gz test-e2e-encap-all-features-enabled-coverage log
+        run: |
+          ls ./log/TestAntreaNodeNetworkPolicy \
+          tar -cvzf test-e2e-encap-all-features-enabled-coverage.tar.gz test-e2e-encap-all-features-enabled-coverage log
       - name: Upload coverage for test-e2e-encap-all-features-enabled-coverage
         uses: actions/upload-artifact@v4
         with:
           name: test-e2e-encap-all-features-enabled-coverage
           path: test-e2e-encap-all-features-enabled-coverage.tar.gz
-          retention-days: 30
-      - name: Codecov
-        uses: codecov/codecov-action@v3
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          file: '*.cov.out*'
-          flags: kind-e2e-tests
-          name: codecov-test-e2e-encap-all-features-enabled
-          directory: test-e2e-encap-all-features-enabled-coverage
-          fail_ci_if_error: ${{ github.event_name == 'push' }}
-      - name: Tar log files
-        run: tar -cvzf log.tar.gz log
-      - name: Upload test log
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-kind-encap-all-features-enabled.tar.gz
-          path: log.tar.gz
           retention-days: 30
 
   # Runs after all other jobs in the workflow succeed and deletes Antrea Docker images uploaded as temporary
