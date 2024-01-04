@@ -42,13 +42,16 @@ const (
 )
 
 /*
-NodeNetworkPolicy datapath implementation using iptables/ip6tables involves four components:
+Tips:
+In the following, service describes a port to allow traffic on which is defined in pkg/apis/controlplane/v1beta2/types.go
+
+NodeNetworkPolicy data path implementation using iptables/ip6tables involves four components:
 1. Core iptables rule:
    - Added to ANTREA-POL-INGRESS-RULES (ingress) or ANTREA-POL-EGRESS-RULES (egress).
    - Matches an ipset created for the NodeNetworkPolicy rule as source (ingress) or destination (egress) when there are
      multiple IP addresses; if there is only one address, matches the address directly.
-   - Targets an action (the rule with single service) or a service chain created for the NodeNetworkPolicy rule (the rule
-     with multiple services).
+   - Targets an action (the rule with a single service) or a service chain created for the NodeNetworkPolicy rule (the
+     rule with multiple services).
 2. Service iptables chain:
    - Created for the NodeNetworkPolicy rule to integrate service iptables rules if a rule has multiple services.
 3. Service iptables rules:
@@ -57,8 +60,8 @@ NodeNetworkPolicy datapath implementation using iptables/ip6tables involves four
 4. From/To ipset:
    - Created for the NodeNetworkPolicy rule, containing all source IP addresses (ingress) or destination IP addresses (egress).
 
-Assuming four ingress NodeNetworkPolicy rules with IDs 1111, 2222, 3333 and 4444 prioritized in descending order.
-Core iptables rules organized by priorities in ANTREA-POL-INGRESS-RULES like the following.
+Assuming four ingress NodeNetworkPolicy rules with IDs 1111111111111111, 2222222222222222, 3333333333333333 and 4444444444444444
+prioritized in descending order. Core iptables rules organized by priorities in ANTREA-POL-INGRESS-RULES like the following.
 
 If the rule has multiple source IP addresses to match, then an ipset will be created for it. The name of the ipset consists
 of prefix "ANTREA-POL", rule ID and IP protocol version.
@@ -68,10 +71,10 @@ of prefix "ANTREA-POL" and rule ID.
 
 ```
 :ANTREA-POL-INGRESS-RULES
--A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-1111-4 src -j ANTREA-POL-1111 -m comment --comment "Antrea: for rule 1111, policy AntreaClusterNetworkPolicy:name1"
--A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-2222-4 src -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule 2222, policy AntreaClusterNetworkPolicy:name2"
--A ANTREA-POL-INGRESS-RULES -s 3.3.3.3/32 src -j ANTREA-POL-3333 -m comment --comment "Antrea: for rule 3333, policy AntreaClusterNetworkPolicy:name3"
--A ANTREA-POL-INGRESS-RULES -s 4.4.4.4/32 -p tcp --dport 80 -j ACCEPT -m comment --comment "Antrea: for rule 4444, policy AntreaClusterNetworkPolicy:name4"
+-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-1111111111111111-4 src -j ANTREA-POL-1111111111111111 -m comment --comment "Antrea: for rule 1111111111111111, policy AntreaClusterNetworkPolicy:name1"
+-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-2222222222222222-4 src -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule 2222222222222222, policy AntreaClusterNetworkPolicy:name2"
+-A ANTREA-POL-INGRESS-RULES -s 3.3.3.3/32 src -j ANTREA-POL-3333333333333333 -m comment --comment "Antrea: for rule 3333333333333333, policy AntreaClusterNetworkPolicy:name3"
+-A ANTREA-POL-INGRESS-RULES -s 4.4.4.4/32 -p tcp --dport 80 -j ACCEPT -m comment --comment "Antrea: for rule 4444444444444444, policy AntreaClusterNetworkPolicy:name4"
 ```
 
 For the first rule, it has multiple services and multiple source IP addresses to match, so there will be service iptables chain
@@ -80,15 +83,15 @@ and service iptables rules and ipset created for it.
 The iptables chain is like the following:
 
 ```
-:ANTREA-POL-1111
--A ANTREA-POL-1111 -j ACCEPT -p tcp --dport 80
--A ANTREA-POL-1111 -j ACCEPT -p tcp --dport 443
+:ANTREA-POL-1111111111111111
+-A ANTREA-POL-1111111111111111 -j ACCEPT -p tcp --dport 80
+-A ANTREA-POL-1111111111111111 -j ACCEPT -p tcp --dport 443
 ```
 
 The ipset is like the following:
 
 ```
-Name: ANTREA-POL-1111-4
+Name: ANTREA-POL-1111111111111111-4
 Type: hash:net
 Revision: 6
 Header: family inet hashsize 1024 maxelem 65536
@@ -102,7 +105,7 @@ Members:
 
 For the second rule, it has only one service, so there will be no service iptables chain and service iptables rules created
 for it. The core rule will match the service and target the action directly. The rule has multiple source IP addresses to
-match, so there will be an ipset `ANTREA-POL-2222-4` created for it.
+match, so there will be an ipset `ANTREA-POL-2222222222222222-4` created for it.
 
 For the third rule, it has multiple services to match, so there will be service iptables chain and service iptables rules
 created for it. The rule has only one source IP address to match, so there will be no ipset created for it and just match
@@ -178,7 +181,7 @@ func newNodeReconciler(routeClient route.Interface, ipv4Enabled, ipv6Enabled boo
 	}
 }
 
-// Reconcile checks whether the provided rule have been enforced or not, and invoke the add or update method accordingly.
+// Reconcile checks whether the provided rule has been enforced or not, and invoke the add or update method accordingly.
 func (r *nodeReconciler) Reconcile(rule *CompletedRule) error {
 	klog.InfoS("Reconciling Node NetworkPolicy rule", "rule", rule.ID, "policy", rule.SourceRef.ToString())
 
@@ -314,10 +317,10 @@ func (r *nodeReconciler) computeIPTRules(rule *CompletedRule) (map[iptables.Prot
 		coreIPTRuleTarget = serviceIPTChain
 		lastRealized.serviceIPTChain = serviceIPTChain
 	} else {
-		// If a rule has no or single service, the target is determined by the rule's action, as there is no need to create
-		// a chain for a single-service iptables rule.
+		// If a rule has no service or a single service, the target is determined by the rule's action, as there is no
+		// need to create a chain for a single-service iptables rule.
 		coreIPTRuleTarget = ruleActionToIPTTarget(rule.Action)
-		// If a rule has single service, the core iptables rule directly incorporates the service.
+		// If a rule has a single service, the core iptables rule directly incorporates the service.
 		if len(rule.Services) == 1 {
 			service = &rule.Services[0]
 		}
@@ -446,7 +449,7 @@ func (r *nodeReconciler) addOrUpdateCoreIPTRules(iptRules []*coreIPTRule, iptCha
 		for _, iptRule := range iptRules {
 			iptRulesToUpdate[iptRule.ruleID] = iptRule
 		}
-		// Iterate every existing rules. If an existing rule is in the iptRulesToUpdate map, replace it with the new rule.
+		// Iterate each existing rule. If an existing rule is in the iptRulesToUpdate map, replace it with the new rule.
 		for index, iptRule := range cachedIPTRules {
 			if _, exists := iptRulesToUpdate[iptRule.ruleID]; exists {
 				cachedIPTRules[index] = iptRulesToUpdate[iptRule.ruleID]
@@ -506,10 +509,10 @@ func (r *nodeReconciler) deleteCoreIPRule(ruleID string, iptChain string, isIPv6
 
 func (r *nodeReconciler) getCachedCoreIPTChain(iptChain string, isIPv6 bool) *coreIPTChain {
 	// There are 4 categories of cached core iptables rules:
-	// - For IPv4, iptables rules installed in chain ANTREA-INGRESS-RULES for ingress rules.
-	// - For IPv6, ip6tables rules installed in chain ANTREA-INGRESS-RULES for ingress rules.
-	// - For IPv4, iptables rules installed in chain ANTREA-EGRESS-RULES for egress rules.
-	// - For IPv6, ip6tables rules installed in chain ANTREA-EGRESS-RULES for egress rules.
+	// - For IPv4, iptables rules installed in the chain ANTREA-INGRESS-RULES for ingress rules.
+	// - For IPv6, ip6tables rules installed in the chain ANTREA-INGRESS-RULES for ingress rules.
+	// - For IPv4, iptables rules installed in the chain ANTREA-EGRESS-RULES for egress rules.
+	// - For IPv6, ip6tables rules installed in the chain ANTREA-EGRESS-RULES for egress rules.
 	categoryKey := genCacheCategory(iptChain, isIPv6)
 	return r.cachedCoreIPTChains[categoryKey]
 }
@@ -667,8 +670,6 @@ func ruleActionToIPTTarget(ruleAction *secv1beta1.RuleAction) string {
 		target = iptables.RejectTarget
 	case secv1beta1.RuleActionAllow:
 		target = iptables.AcceptTarget
-	default:
-		klog.InfoS("Unknown rule action", "action", ruleAction)
 	}
 	return target
 }

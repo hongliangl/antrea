@@ -977,10 +977,10 @@ func (c *Client) initNodeNetworkPolicy() {
 		config.NodeNetworkPolicyIngressRulesChain,
 		config.NodeNetworkPolicyEgressRulesChain,
 	}
-	c.buildFixedNodeNetworkPolicyIPTablesRules(c.networkConfig.IPv4Enabled, c.networkConfig.IPv6Enabled)
+	c.buildStaticNodeNetworkPolicyIPTablesRules(c.networkConfig.IPv4Enabled, c.networkConfig.IPv6Enabled)
 }
 
-func (c *Client) buildFixedNodeNetworkPolicyIPTablesRules(ipv4Enabled, ipv6Enabled bool) {
+func (c *Client) buildStaticNodeNetworkPolicyIPTablesRules(ipv4Enabled, ipv6Enabled bool) {
 	var ipProtocols []iptables.Protocol
 	if ipv4Enabled {
 		ipProtocols = append(ipProtocols, iptables.ProtocolIPv4)

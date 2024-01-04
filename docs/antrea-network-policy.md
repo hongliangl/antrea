@@ -536,8 +536,8 @@ spec:
   priority: 5
   tier: securityops
   appliedTo:
-    - nodeSelector:               # Select Nodes in the cluster with label, which means the policy will be applied to the
-        matchLabels:              # selected Nodes.
+    - nodeSelector:
+        matchLabels:
           kubernetes.io/os: linux
   egress:
     - action: Drop
@@ -559,8 +559,8 @@ spec:
   priority: 5
   tier: securityops
   appliedTo:
-    - nodeSelector:               # Select Nodes in the cluster with label, which means the policy will be applied to the
-        matchLabels:              # selected Nodes.
+    - nodeSelector:
+        matchLabels:
           kubernetes.io/os: linux
   ingress:
     - action: Drop

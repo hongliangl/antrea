@@ -11,15 +11,14 @@
 
 ## Introduction
 
-Node NetworkPolicy is designed to secure the network of Kubernetes Nodes. Starting with v1.15, Antrea introduces support
-for Node NetworkPolicy, which provides the control over the network traffic in IP, transport protocol, and port grains.
+Node NetworkPolicy is designed to secure the Kubernetes Nodes traffic. It is supported by Antrea starting with Antrea v1.15.
 
-This guide demonstrates how to configure Node NetworkPolicy.
+This guide demonstrates how to configure Node NetworkPolicies.
 
 ## Prerequisites
 
 Node NetworkPolicy was introduced in v1.15 as an alpha feature and is disabled by default. A feature gate, `NodeNetworkPolicy`,
-must be enabled in antrea-agent.conf in the `antrea-config` ConfigMap. An example configuration is as below:
+must be enabled in antrea-agent.conf in the `antrea-config` ConfigMap.
 
 ```yaml
 apiVersion: v1
@@ -33,7 +32,7 @@ data:
       NodeNetworkPolicy: true
 ```
 
-Alternatively, you can use the following helm installation command to configure the above options:
+Alternatively, you can use the following helm installation command to enable the feature gate:
 
 ```bash
 helm install antrea antrea/antrea --namespace kube-system --set featureGates.NodeNetworkPolicy=true
@@ -41,9 +40,8 @@ helm install antrea antrea/antrea --namespace kube-system --set featureGates.Nod
 
 ## Usage
 
-Similar to layer 7 NetworkPolicy, there is no separate resource type for Node NetworkPolicy. It is one type of Antrea-native
-policy applied to Kubernetes Nodes by specifying nodeSelector in the global `appliedTo` (not per-rule appliedTo). Other
-fields remain the same as Antrea NetworkPolicy applied to Pods.
+Node NetworkPolicy is an extension of Antrea ClusterNetworkPolicy (ACNP). By specifying a `nodeSelector` in the policy-level
+`appliedTo`, an ACNP is applied to the selected Kuberentes Nodes.
 
 An example Node NetworkPolicy that blocks ingress traffic from Pods with label `app=client` to Nodes with label
 `kubernetes.io/hostname: k8s-node-control-plane`:
@@ -96,6 +94,8 @@ spec:
               kubernetes.io/hostname: k8s-node-worker-1
         - ipBlock:
             cidr: 192.168.77.0/24
+        - ipBlock:
+            cidr: 10.10.0.0/24
       ports:
         - protocol: TCP
           port: 22
@@ -103,13 +103,14 @@ spec:
 
 ## Limitations
 
-- This feature is currently only supported for Nodes running Linux.
-- The policies applied to Nodes can be only specified in global `appliedTo` field, not in per-rule `appliedTo`, a `Group`
-  or a `ClusterGroup`.
-- Policies applied to Nodes can be only specified in `ClusterNetworkPolicy`, not in `NetworkPolicy`.
-- Policies applied to Nodes cannot be applied to Pods at the same time.
-- FQDN in Node NetworkPolicy is not supported at this moment.
-- Layer 7 NetworkPolicy in Node NetworkPolicy is not supported at this moment.
-- With misconfiguration, it is possible to block traffic between Nodes and the API server, causing the Node to be unresponsive
-  or blocking all traffic to/from the cluster. Please exercise caution when configuring Node NetworkPolicy.
-- For egress traffic, the action `Reject` defaults to `Drop`.
+- This feature is currently only supported for Linux Nodes.
+- Only ACNPs can be applied to Nodes, and `nodeSelector` is only supported by ACNP. ANPs cannot be applied to Nodes.
+- `nodeSelector` can only be specified in the policy-level `appliedTo` field, not in the rule-level `appliedTo`, and not
+  in a `Group` or `ClusterGroup`.
+- ACNPs applied to Nodes cannot be applied to Pods at the same time.
+- FQDN is not supported for ACNPs applied to Nodes.
+- Layer 7 NetworkPolicy is not supported yet.
+- The Reject `action` is not supported for egress rules due to data path restrictions. Although using the Reject action
+  in egress rules is permissible, it behaves identically to action `Drop`.
+- With misconfiguration, it is possible to block traffic between Nodes and the API server, causing a Node to be unresponsive
+  or event blocking all traffic to/from the cluster. Please exercise caution when configuring Node NetworkPolicies.

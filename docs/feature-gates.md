@@ -407,7 +407,7 @@ complements the Antrea-native policies and help cluster administrators to set se
 
 ### NodeNetworkPolicy
 
-`NodeNetworkPolicy` allow users to protect their Kubernetes Nodes.
+`NodeNetworkPolicy` allows users to protect their Kubernetes Nodes.
 
 #### Requirements for this Feature
 
