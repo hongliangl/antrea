@@ -177,7 +177,7 @@ func testNodeACNPDropEgress(t *testing.T, protocol AntreaPolicyProtocol) {
 		skipIfIPv6Cluster(t)
 	}
 	if protocol == ProtocolUDP {
-		t.Skip("Skipping test as dropping UDP egress traffic in OUTPUT doesn't return the expected stdout or stderr message")
+		t.Skip("Skipping test as dropping UDP egress traffic in doesn't return the expected stdout or stderr message")
 	}
 	builder := &ClusterNetworkPolicySpecBuilder{}
 	builder = builder.SetName("acnp-drop-x-to-y-egress").
@@ -351,7 +351,7 @@ func testNodeACNPRejectEgress(t *testing.T, protocol AntreaPolicyProtocol) {
 		skipIfIPv6Cluster(t)
 	}
 	if protocol == ProtocolUDP {
-		t.Skip("Skipping test as dropping UDP egress traffic in OUTPUT doesn't return the expected stdout or stderr message")
+		t.Skip("Skipping test as dropping UDP egress traffic in doesn't return the expected stdout or stderr message")
 	}
 
 	builder := &ClusterNetworkPolicySpecBuilder{}
@@ -363,7 +363,12 @@ func testNodeACNPRejectEgress(t *testing.T, protocol AntreaPolicyProtocol) {
 
 	reachability := NewReachability(allPods, Connected)
 
-	reachability.Expect(Pod(namespaces["x"]+"/a"), Pod(namespaces["y"]+"/a"), Rejected)
+	expectedAction := Rejected
+	// For SCTP, when the `Rejected` is specified in an egress rule, it behaves identical to `Dropped`.
+	if protocol == ProtocolSCTP {
+		expectedAction = Dropped
+	}
+	reachability.Expect(Pod(namespaces["x"]+"/a"), Pod(namespaces["y"]+"/a"), expectedAction)
 	testStep := []*TestStep{
 		{
 			"Port 80",
