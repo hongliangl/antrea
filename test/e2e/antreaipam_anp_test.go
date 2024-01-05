@@ -44,7 +44,6 @@ func initializeAntreaIPAM(t *testing.T, data *TestData) {
 	// It should be empty every time when "initializeAntreaIPAM" is performed, otherwise there will be unexpected
 	// results.
 	allPods = []Pod{}
-	podsByNamespace = make(map[string][]Pod)
 
 	for _, ns := range antreaIPAMNamespaces {
 		namespaces[ns] = ns
@@ -53,7 +52,6 @@ func initializeAntreaIPAM(t *testing.T, data *TestData) {
 	for _, podName := range pods {
 		for _, ns := range namespaces {
 			allPods = append(allPods, NewPod(ns, podName))
-			podsByNamespace[ns] = append(podsByNamespace[ns], NewPod(ns, podName))
 		}
 	}
 
@@ -61,9 +59,9 @@ func initializeAntreaIPAM(t *testing.T, data *TestData) {
 	// k8sUtils is a global var
 	k8sUtils, err = NewKubernetesUtils(data)
 	failOnError(err, t)
-	_, err = k8sUtils.Bootstrap(regularNamespaces, pods, true)
+	_, err = k8sUtils.Bootstrap(regularNamespaces, pods, true, nil, nil)
 	failOnError(err, t)
-	ips, err := k8sUtils.Bootstrap(namespaces, pods, false)
+	ips, err := k8sUtils.Bootstrap(namespaces, pods, false, nil, nil)
 	failOnError(err, t)
 	podIPs = ips
 }
@@ -195,18 +193,18 @@ func testAntreaIPAMACNP(t *testing.T, protocol e2eutils.AntreaPolicyProtocol, ac
 		SetAppliedToGroup([]e2eutils.ACNPAppliedToSpec{{PodSelector: map[string]string{"pod": "c"}}})
 	if isIngress {
 		builder.AddIngress(protocol, &p80, nil, nil, nil, nil, nil, nil, nil, map[string]string{}, nil,
-			nil, nil, false, nil, ruleAction, "", "", nil)
+			nil, nil, nil, nil, false, nil, ruleAction, "", "", nil)
 		builder2.AddIngress(protocol, &p80, nil, nil, nil, nil, nil, nil, nil, map[string]string{}, nil,
-			nil, nil, false, nil, ruleAction, "", "", nil)
+			nil, nil, nil, nil, false, nil, ruleAction, "", "", nil)
 		builder3.AddIngress(protocol, &p80, nil, nil, nil, nil, nil, nil, nil, map[string]string{}, nil,
-			nil, nil, false, nil, ruleAction, "", "", nil)
+			nil, nil, nil, nil, false, nil, ruleAction, "", "", nil)
 	} else {
 		builder.AddEgress(protocol, &p80, nil, nil, nil, nil, nil, nil, nil, map[string]string{}, nil,
-			nil, nil, false, nil, ruleAction, "", "", nil)
+			nil, nil, nil, nil, false, nil, ruleAction, "", "", nil)
 		builder2.AddEgress(protocol, &p80, nil, nil, nil, nil, nil, nil, nil, map[string]string{}, nil,
-			nil, nil, false, nil, ruleAction, "", "", nil)
+			nil, nil, nil, nil, false, nil, ruleAction, "", "", nil)
 		builder3.AddEgress(protocol, &p80, nil, nil, nil, nil, nil, nil, nil, map[string]string{}, nil,
-			nil, nil, false, nil, ruleAction, "", "", nil)
+			nil, nil, nil, nil, false, nil, ruleAction, "", "", nil)
 	}
 
 	reachability := NewReachability(allPods, action)

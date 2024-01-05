@@ -72,11 +72,15 @@ const (
 	antreaForwardChain     = "ANTREA-FORWARD"
 	antreaPreRoutingChain  = "ANTREA-PREROUTING"
 	antreaPostRoutingChain = "ANTREA-POSTROUTING"
+	antreaInputChain       = "ANTREA-INPUT"
 	antreaOutputChain      = "ANTREA-OUTPUT"
 	antreaMangleChain      = "ANTREA-MANGLE"
 
 	serviceIPv4CIDRKey = "serviceIPv4CIDRKey"
 	serviceIPv6CIDRKey = "serviceIPv6CIDRKey"
+
+	privilegedNodeNetworkPolicyIngressRulesChain = "ANTREA-POL-PRI-INGRESS-RULES"
+	privilegedNodeNetworkPolicyEgressRulesChain  = "ANTREA-POL-PRI-EGRESS-RULES"
 )
 
 // Client implements Interface.
@@ -107,11 +111,12 @@ type Client struct {
 	// markToSNATIP caches marks to SNAT IPs. It's used in Egress feature.
 	markToSNATIP sync.Map
 	// iptablesInitialized is used to notify when iptables initialization is done.
-	iptablesInitialized   chan struct{}
-	proxyAll              bool
-	connectUplinkToBridge bool
-	multicastEnabled      bool
-	isCloudEKS            bool
+	iptablesInitialized      chan struct{}
+	proxyAll                 bool
+	connectUplinkToBridge    bool
+	multicastEnabled         bool
+	isCloudEKS               bool
+	nodeNetworkPolicyEnabled bool
 	// serviceRoutes caches ip routes about Services.
 	serviceRoutes sync.Map
 	// serviceNeighbors caches neighbors.
@@ -126,20 +131,44 @@ type Client struct {
 	clusterNodeIP6s sync.Map
 	// The latest calculated Service CIDRs can be got from serviceCIDRProvider.
 	serviceCIDRProvider servicecidr.Interface
+	// nodeNetworkPolicyIPSetsIPv4 caches all existing IPv4 ipsets for NodeNetworkPolicy.
+	nodeNetworkPolicyIPSetsIPv4 sync.Map
+	// nodeNetworkPolicyIPSetsIPv6 caches all existing IPv6 ipsets for NodeNetworkPolicy.
+	nodeNetworkPolicyIPSetsIPv6 sync.Map
+	// nodeNetworkPolicyIPSetsIPv4 caches all existing IPv4 iptables chains and rules for NodeNetworkPolicy.
+	nodeNetworkPolicyIPTablesIPv4 sync.Map
+	// nodeNetworkPolicyIPSetsIPv6 caches all existing IPv4 iptables chains and rules for NodeNetworkPolicy.
+	nodeNetworkPolicyIPTablesIPv6 sync.Map
+	// fixedNodeNetworkPolicyIPTablesIPv4 stores the IPv4 iptables rules that should be created before adding
+	// NodeNetworkPolicy rules. They should be also deleted after all NodeNetworkPolicy rules are removed.
+	fixedNodeNetworkPolicyIPTablesIPv4 []string
+	// fixedNodeNetworkPolicyIPTablesIPv6 stores the IPv6 iptables rules that should be created before adding
+	// NodeNetworkPolicy rules. They should be also deleted after all NodeNetworkPolicy rules are removed.
+	fixedNodeNetworkPolicyIPTablesIPv6 []string
+	// fixedNodeNetworkPolicyChains stores the iptables chains that should be created before adding NodeNetworkPolicy
+	// rules. They should be also deleted after all NodeNetworkPolicy rules are removed.
+	fixedNodeNetworkPolicyChains []string
 }
 
 // NewClient returns a route client.
-func NewClient(networkConfig *config.NetworkConfig, noSNAT, proxyAll, connectUplinkToBridge, multicastEnabled bool, serviceCIDRProvider servicecidr.Interface) (*Client, error) {
+func NewClient(networkConfig *config.NetworkConfig,
+	noSNAT bool,
+	proxyAll bool,
+	connectUplinkToBridge bool,
+	nodeNetworkPolicyEnabled bool,
+	multicastEnabled bool,
+	serviceCIDRProvider servicecidr.Interface) (*Client, error) {
 	return &Client{
-		networkConfig:         networkConfig,
-		noSNAT:                noSNAT,
-		proxyAll:              proxyAll,
-		multicastEnabled:      multicastEnabled,
-		connectUplinkToBridge: connectUplinkToBridge,
-		ipset:                 ipset.NewClient(),
-		netlink:               &netlink.Handle{},
-		isCloudEKS:            env.IsCloudEKS(),
-		serviceCIDRProvider:   serviceCIDRProvider,
+		networkConfig:            networkConfig,
+		noSNAT:                   noSNAT,
+		proxyAll:                 proxyAll,
+		multicastEnabled:         multicastEnabled,
+		connectUplinkToBridge:    connectUplinkToBridge,
+		nodeNetworkPolicyEnabled: nodeNetworkPolicyEnabled,
+		ipset:                    ipset.NewClient(),
+		netlink:                  &netlink.Handle{},
+		isCloudEKS:               env.IsCloudEKS(),
+		serviceCIDRProvider:      serviceCIDRProvider,
 	}, nil
 }
 
@@ -199,6 +228,10 @@ func (c *Client) Initialize(nodeConfig *config.NodeConfig, done func()) error {
 		if err := c.initServiceIPRoutes(); err != nil {
 			return fmt.Errorf("failed to initialize Service IP routes: %v", err)
 		}
+	}
+	// Build privileged iptables rules for NodeNetworkPolicy.
+	if c.nodeNetworkPolicyEnabled {
+		c.initNodeNetworkPolicy()
 	}
 
 	return nil
@@ -396,6 +429,33 @@ func (c *Client) syncIPSet() error {
 		})
 	}
 
+	c.nodeNetworkPolicyIPSetsIPv4.Range(func(key, value any) bool {
+		ipsetName := key.(string)
+		ipsetEntries := value.(sets.Set[string])
+		if err := c.ipset.CreateIPSet(ipsetName, ipset.HashNet, false); err != nil {
+			return false
+		}
+		for ipsetEntry := range ipsetEntries {
+			if err := c.ipset.AddEntry(ipsetName, ipsetEntry); err != nil {
+				return false
+			}
+		}
+		return true
+	})
+	c.nodeNetworkPolicyIPSetsIPv6.Range(func(key, value any) bool {
+		ipsetName := key.(string)
+		ipsetEntries := value.(sets.Set[string])
+		if err := c.ipset.CreateIPSet(ipsetName, ipset.HashNet, true); err != nil {
+			return false
+		}
+		for ipsetEntry := range ipsetEntries {
+			if err := c.ipset.AddEntry(ipsetName, ipsetEntry); err != nil {
+				return false
+			}
+		}
+		return true
+	})
+
 	return nil
 }
 
@@ -482,18 +542,19 @@ func (c *Client) writeEKSNATRules(iptablesData *bytes.Buffer) {
 	}...)
 }
 
+// Create the antrea managed chains and link them to built-in chains.
+// We cannot use iptables-restore for these jump rules because there
+// are non antrea managed rules in built-in chains.
+type jumpRule struct {
+	table    string
+	srcChain string
+	dstChain string
+	comment  string
+}
+
 // syncIPTables ensure that the iptables infrastructure we use is set up.
 // It's idempotent and can safely be called on every startup.
 func (c *Client) syncIPTables() error {
-	// Create the antrea managed chains and link them to built-in chains.
-	// We cannot use iptables-restore for these jump rules because there
-	// are non antrea managed rules in built-in chains.
-	type jumpRule struct {
-		table    string
-		srcChain string
-		dstChain string
-		comment  string
-	}
 	jumpRules := []jumpRule{
 		{iptables.RawTable, iptables.PreRoutingChain, antreaPreRoutingChain, "Antrea: jump to Antrea prerouting rules"},
 		{iptables.RawTable, iptables.OutputChain, antreaOutputChain, "Antrea: jump to Antrea output rules"},
@@ -507,6 +568,10 @@ func (c *Client) syncIPTables() error {
 	}
 	if c.proxyAll {
 		jumpRules = append(jumpRules, jumpRule{iptables.NATTable, iptables.OutputChain, antreaOutputChain, "Antrea: jump to Antrea output rules"})
+	}
+	if c.nodeNetworkPolicyEnabled {
+		jumpRules = append(jumpRules, jumpRule{iptables.FilterTable, iptables.InputChain, antreaInputChain, "Antrea: jump to Antrea input rules"})
+		jumpRules = append(jumpRules, jumpRule{iptables.FilterTable, iptables.OutputChain, antreaOutputChain, "Antrea: jump to Antrea output rules"})
 	}
 	for _, rule := range jumpRules {
 		if err := c.iptables.EnsureChain(iptables.ProtocolDual, rule.table, rule.dstChain); err != nil {
@@ -531,6 +596,21 @@ func (c *Client) syncIPTables() error {
 		return true
 	})
 
+	nodeNetworkPolicyIPTablesIPv4 := map[string][]string{}
+	nodeNetworkPolicyIPTablesIPv6 := map[string][]string{}
+	c.nodeNetworkPolicyIPTablesIPv4.Range(func(key, value interface{}) bool {
+		chain := key.(string)
+		rules := value.([]string)
+		nodeNetworkPolicyIPTablesIPv4[chain] = rules
+		return true
+	})
+	c.nodeNetworkPolicyIPTablesIPv6.Range(func(key, value interface{}) bool {
+		chain := key.(string)
+		rules := value.([]string)
+		nodeNetworkPolicyIPTablesIPv6[chain] = rules
+		return true
+	})
+
 	// Use iptables-restore to configure IPv4 settings.
 	if c.networkConfig.IPv4Enabled {
 		iptablesData := c.restoreIptablesData(c.nodeConfig.PodIPv4CIDR,
@@ -541,6 +621,8 @@ func (c *Client) syncIPTables() error {
 			config.VirtualNodePortDNATIPv4,
 			config.VirtualServiceIPv4,
 			snatMarkToIPv4,
+			nodeNetworkPolicyIPTablesIPv4,
+			c.fixedNodeNetworkPolicyIPTablesIPv4,
 			false)
 
 		// Setting --noflush to keep the previous contents (i.e. non antrea managed chains) of the tables.
@@ -559,6 +641,8 @@ func (c *Client) syncIPTables() error {
 			config.VirtualNodePortDNATIPv6,
 			config.VirtualServiceIPv6,
 			snatMarkToIPv6,
+			nodeNetworkPolicyIPTablesIPv6,
+			c.fixedNodeNetworkPolicyIPTablesIPv6,
 			true)
 		// Setting --noflush to keep the previous contents (i.e. non antrea managed chains) of the tables.
 		if err := c.iptables.Restore(iptablesData.String(), false, true); err != nil {
@@ -577,6 +661,8 @@ func (c *Client) restoreIptablesData(podCIDR *net.IPNet,
 	nodePortDNATVirtualIP,
 	serviceVirtualIP net.IP,
 	snatMarkToIP map[uint32]net.IP,
+	nodeNetWorkPolicyIPTables map[string][]string,
+	fixedNodeNetWorkPolicyIPTables []string,
 	isIPv6 bool) *bytes.Buffer {
 	// Create required rules in the antrea chains.
 	// Use iptables-restore as it flushes the involved chains and creates the desired rules
@@ -623,7 +709,7 @@ func (c *Client) restoreIptablesData(podCIDR *net.IPNet,
 				"-m", "comment", "--comment", `"Antrea: drop Pod multicast traffic forwarded via underlay network"`,
 				"-m", "set", "--match-set", clusterNodeIPSet, "src",
 				"-d", types.McastCIDR.String(),
-				"-j", iptables.DROPTarget,
+				"-j", iptables.DropTarget,
 			}...)
 		}
 	}
@@ -665,6 +751,17 @@ func (c *Client) restoreIptablesData(podCIDR *net.IPNet,
 
 	writeLine(iptablesData, "*filter")
 	writeLine(iptablesData, iptables.MakeChainLine(antreaForwardChain))
+
+	for _, chain := range c.fixedNodeNetworkPolicyChains {
+		writeLine(iptablesData, iptables.MakeChainLine(chain))
+	}
+	for chain := range nodeNetWorkPolicyIPTables {
+		// Skip these two chains since they are included in fixedNodeNetworkPolicyChains.
+		if chain == config.NodeNetworkPolicyIngressRulesChain || chain == config.NodeNetworkPolicyEgressRulesChain {
+			continue
+		}
+		writeLine(iptablesData, iptables.MakeChainLine(chain))
+	}
 	writeLine(iptablesData, []string{
 		"-A", antreaForwardChain,
 		"-m", "comment", "--comment", `"Antrea: accept packets from local Pods"`,
@@ -693,6 +790,14 @@ func (c *Client) restoreIptablesData(podCIDR *net.IPNet,
 			"-m", "set", "--match-set", localAntreaFlexibleIPAMPodIPSet, "dst",
 			"-j", iptables.AcceptTarget,
 		}...)
+	}
+	for _, rule := range fixedNodeNetWorkPolicyIPTables {
+		writeLine(iptablesData, rule)
+	}
+	for _, rules := range nodeNetWorkPolicyIPTables {
+		for _, rule := range rules {
+			writeLine(iptablesData, rule)
+		}
 	}
 	writeLine(iptablesData, "COMMIT")
 
@@ -861,6 +966,97 @@ func (c *Client) initServiceIPRoutes() error {
 		}
 	})
 	return nil
+}
+
+func (c *Client) initNodeNetworkPolicy() {
+	c.fixedNodeNetworkPolicyChains = []string{
+		antreaInputChain,
+		antreaOutputChain,
+		privilegedNodeNetworkPolicyIngressRulesChain,
+		privilegedNodeNetworkPolicyEgressRulesChain,
+		config.NodeNetworkPolicyIngressRulesChain,
+		config.NodeNetworkPolicyEgressRulesChain,
+	}
+	c.buildFixedNodeNetworkPolicyIPTablesRules(c.networkConfig.IPv4Enabled, c.networkConfig.IPv6Enabled)
+}
+
+func (c *Client) buildFixedNodeNetworkPolicyIPTablesRules(ipv4Enabled, ipv6Enabled bool) {
+	var ipProtocols []iptables.Protocol
+	if ipv4Enabled {
+		ipProtocols = append(ipProtocols, iptables.ProtocolIPv4)
+	}
+	if ipv6Enabled {
+		ipProtocols = append(ipProtocols, iptables.ProtocolIPv6)
+	}
+
+	antreaInputChainRules := []string{
+		iptables.NewRuleBuilder(antreaInputChain).
+			SetComment("Antrea: jump to privileged ingress NodeNetworkPolicy rules").
+			SetTarget(privilegedNodeNetworkPolicyIngressRulesChain).
+			Done().
+			GetRule(),
+		iptables.NewRuleBuilder(antreaInputChain).
+			SetComment("Antrea: jump to ingress NodeNetworkPolicy rules").
+			SetTarget(config.NodeNetworkPolicyIngressRulesChain).
+			Done().
+			GetRule(),
+	}
+	antreaOutputChainRules := []string{
+		iptables.NewRuleBuilder(antreaOutputChain).
+			SetComment("Antrea: jump to privileged egress NodeNetworkPolicy rules").
+			SetTarget(privilegedNodeNetworkPolicyEgressRulesChain).
+			Done().
+			GetRule(),
+		iptables.NewRuleBuilder(antreaOutputChain).
+			SetComment("Antrea: jump to egress NodeNetworkPolicy rules").
+			SetTarget(config.NodeNetworkPolicyEgressRulesChain).
+			Done().
+			GetRule(),
+	}
+	privilegedIngressChainRules := []string{
+		iptables.NewRuleBuilder(privilegedNodeNetworkPolicyIngressRulesChain).
+			MatchEstablishedOrRelated().
+			SetComment("Antrea: allow ingress established or related packets").
+			SetTarget(iptables.AcceptTarget).
+			Done().
+			GetRule(),
+		iptables.NewRuleBuilder(privilegedNodeNetworkPolicyIngressRulesChain).
+			MatchInputInterface("lo").
+			SetComment("Antrea: allow ingress packets from loopback").
+			SetTarget(iptables.AcceptTarget).
+			Done().
+			GetRule(),
+	}
+	privilegedEgressChainRules := []string{
+		iptables.NewRuleBuilder(privilegedNodeNetworkPolicyEgressRulesChain).
+			MatchEstablishedOrRelated().
+			SetComment("Antrea: allow egress established or related packets").
+			SetTarget(iptables.AcceptTarget).
+			Done().
+			GetRule(),
+		iptables.NewRuleBuilder(privilegedNodeNetworkPolicyEgressRulesChain).
+			MatchOutputInterface("lo").
+			SetComment("Antrea: allow egress packets to loopback").
+			SetTarget(iptables.AcceptTarget).
+			Done().
+			GetRule(),
+	}
+	for _, ipProtocol := range ipProtocols {
+		if ipProtocol == iptables.ProtocolIPv6 {
+			c.fixedNodeNetworkPolicyIPTablesIPv6 = append(c.fixedNodeNetworkPolicyIPTablesIPv6, antreaInputChainRules...)
+			c.fixedNodeNetworkPolicyIPTablesIPv6 = append(c.fixedNodeNetworkPolicyIPTablesIPv6, privilegedIngressChainRules...)
+
+			c.fixedNodeNetworkPolicyIPTablesIPv6 = append(c.fixedNodeNetworkPolicyIPTablesIPv6, antreaOutputChainRules...)
+			c.fixedNodeNetworkPolicyIPTablesIPv6 = append(c.fixedNodeNetworkPolicyIPTablesIPv6, privilegedEgressChainRules...)
+		}
+		if ipProtocol == iptables.ProtocolIPv4 {
+			c.fixedNodeNetworkPolicyIPTablesIPv4 = append(c.fixedNodeNetworkPolicyIPTablesIPv4, antreaInputChainRules...)
+			c.fixedNodeNetworkPolicyIPTablesIPv4 = append(c.fixedNodeNetworkPolicyIPTablesIPv4, privilegedIngressChainRules...)
+
+			c.fixedNodeNetworkPolicyIPTablesIPv4 = append(c.fixedNodeNetworkPolicyIPTablesIPv4, antreaOutputChainRules...)
+			c.fixedNodeNetworkPolicyIPTablesIPv4 = append(c.fixedNodeNetworkPolicyIPTablesIPv4, privilegedEgressChainRules...)
+		}
+	}
 }
 
 // Reconcile removes orphaned podCIDRs from ipset and removes routes to orphaned podCIDRs
@@ -1699,4 +1895,103 @@ func generateNeigh(ip net.IP, linkIndex int) *netlink.Neigh {
 		IP:           ip,
 		HardwareAddr: globalVMAC,
 	}
+}
+
+func (c *Client) AddOrUpdateNodeNetworkPolicyIPSet(ipsetName string, ipsetEntries sets.Set[string], isIPv6 bool) error {
+	var prevIPSetEntries sets.Set[string]
+	if isIPv6 {
+		if value, ok := c.nodeNetworkPolicyIPSetsIPv6.Load(ipsetName); ok {
+			prevIPSetEntries = value.(sets.Set[string])
+		}
+	} else {
+		if value, ok := c.nodeNetworkPolicyIPSetsIPv4.Load(ipsetName); ok {
+			prevIPSetEntries = value.(sets.Set[string])
+		}
+	}
+	ipsetEntriesToAdd := ipsetEntries.Difference(prevIPSetEntries)
+	ipsetEntriesToDelete := prevIPSetEntries.Difference(ipsetEntries)
+
+	if err := c.ipset.CreateIPSet(ipsetName, ipset.HashNet, isIPv6); err != nil {
+		return err
+	}
+	for ipsetEntry := range ipsetEntriesToAdd {
+		if err := c.ipset.AddEntry(ipsetName, ipsetEntry); err != nil {
+			return err
+		}
+	}
+	for ipsetEntry := range ipsetEntriesToDelete {
+		if err := c.ipset.DelEntry(ipsetName, ipsetEntry); err != nil {
+			return err
+		}
+	}
+
+	if isIPv6 {
+		c.nodeNetworkPolicyIPSetsIPv6.Store(ipsetName, ipsetEntries)
+	} else {
+		c.nodeNetworkPolicyIPSetsIPv4.Store(ipsetName, ipsetEntries)
+	}
+	return nil
+}
+
+func (c *Client) DeleteNodeNetworkPolicyIPSet(ipsetName string, isIPv6 bool) error {
+	if err := c.ipset.DestroyIPSet(ipsetName); err != nil {
+		return err
+	}
+	if isIPv6 {
+		c.nodeNetworkPolicyIPSetsIPv6.Delete(ipsetName)
+	} else {
+		c.nodeNetworkPolicyIPSetsIPv4.Delete(ipsetName)
+	}
+	return nil
+}
+
+func (c *Client) AddOrUpdateNodeNetworkPolicyIPTables(iptablesChains []string, iptablesRules [][]string, isIPv6 bool) error {
+	iptablesData := bytes.NewBuffer(nil)
+
+	writeLine(iptablesData, "*filter")
+	for _, iptablesChain := range iptablesChains {
+		writeLine(iptablesData, iptables.MakeChainLine(iptablesChain))
+	}
+	for _, rules := range iptablesRules {
+		for _, rule := range rules {
+			writeLine(iptablesData, rule)
+		}
+	}
+	writeLine(iptablesData, "COMMIT")
+
+	if err := c.iptables.Restore(iptablesData.String(), false, isIPv6); err != nil {
+		return err
+	}
+
+	for index, iptablesChain := range iptablesChains {
+		if isIPv6 {
+			c.nodeNetworkPolicyIPTablesIPv6.Store(iptablesChain, iptablesRules[index])
+		} else {
+			c.nodeNetworkPolicyIPTablesIPv4.Store(iptablesChain, iptablesRules[index])
+		}
+	}
+	return nil
+}
+
+func (c *Client) DeleteNodeNetworkPolicyIPTables(iptablesChains []string, isIPv6 bool) error {
+	ipProtocol := iptables.ProtocolIPv4
+	if isIPv6 {
+		ipProtocol = iptables.ProtocolIPv6
+	}
+
+	for _, iptablesChain := range iptablesChains {
+		if err := c.iptables.DeleteChain(ipProtocol, iptables.FilterTable, iptablesChain); err != nil {
+			return err
+		}
+	}
+
+	for _, iptablesChain := range iptablesChains {
+		if isIPv6 {
+			c.nodeNetworkPolicyIPTablesIPv6.Delete(iptablesChain)
+		} else {
+			c.nodeNetworkPolicyIPTablesIPv4.Delete(iptablesChain)
+		}
+	}
+
+	return nil
 }
