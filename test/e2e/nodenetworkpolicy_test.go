@@ -177,9 +177,6 @@ func testNodeACNPDropEgress(t *testing.T, protocol AntreaPolicyProtocol) {
 		// meantime.
 		skipIfIPv6Cluster(t)
 	}
-	if protocol == ProtocolUDP {
-		t.Skip("Skipping test as dropping UDP egress traffic in OUTPUT doesn't return the expected stdout or stderr message")
-	}
 	builder := &ClusterNetworkPolicySpecBuilder{}
 	builder = builder.SetName("acnp-drop-x-to-y-egress").
 		SetPriority(1.0).
@@ -351,9 +348,6 @@ func testNodeACNPRejectEgress(t *testing.T, protocol AntreaPolicyProtocol) {
 		// meantime.
 		skipIfIPv6Cluster(t)
 	}
-	if protocol == ProtocolUDP {
-		t.Skip("Skipping test as dropping UDP egress traffic in OUTPUT doesn't return the expected stdout or stderr message")
-	}
 	builder := &ClusterNetworkPolicySpecBuilder{}
 	builder = builder.SetName("acnp-reject-x-to-y-egress").
 		SetPriority(1.0).
@@ -363,7 +357,7 @@ func testNodeACNPRejectEgress(t *testing.T, protocol AntreaPolicyProtocol) {
 
 	reachability := NewReachability(allPods, Connected)
 
-	reachability.Expect(Pod(namespaces["x"]+"/a"), Pod(namespaces["y"]+"/a"), Dropped) //
+	reachability.Expect(Pod(namespaces["x"]+"/a"), Pod(namespaces["y"]+"/a"), Rejected) //
 	testStep := []*TestStep{
 		{
 			"Port 80",
