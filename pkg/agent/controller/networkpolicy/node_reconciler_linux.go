@@ -482,12 +482,18 @@ func (r *nodeReconciler) deleteCoreIPRule(ruleID string, iptChain string, isIPv6
 	// Get all cached iptables rules, then delete the rule with the given ruleID.
 	cachedIPTRules := cachedCoreIPTChain.rules
 	var indexToDelete int
+	var indexExists bool
 	for i := 0; i < len(cachedIPTRules); i++ {
 		if cachedIPTRules[i].ruleID == ruleID {
 			indexToDelete = i
+			indexExists = true
 			break
 		}
 	}
+	if !indexExists {
+	   return nil
+	}
+	
 	cachedIPTRules = append(cachedIPTRules[:indexToDelete], cachedIPTRules[indexToDelete+1:]...)
 
 	// Get all the sorted iptables rules and synchronize them.
