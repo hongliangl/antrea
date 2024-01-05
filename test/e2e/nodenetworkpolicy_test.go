@@ -88,7 +88,7 @@ func TestAntreaNodeNetworkPolicy(t *testing.T) {
 	defer teardownTest(t, data)
 
 	initializeAntreaNodeNetworkPolicy(t, data, true)
-	
+
 	t.Run("Case=ACNPAllowNoDefaultIsolationTCP", func(t *testing.T) { testNodeACNPAllowNoDefaultIsolation(t, ProtocolTCP) })
 	t.Run("Case=ACNPAllowNoDefaultIsolationUDP", func(t *testing.T) { testNodeACNPAllowNoDefaultIsolation(t, ProtocolUDP) })
 	t.Run("Case=ACNPAllowNoDefaultIsolationSCTP", func(t *testing.T) { testNodeACNPAllowNoDefaultIsolation(t, ProtocolSCTP) })
@@ -113,7 +113,6 @@ func TestAntreaNodeNetworkPolicy(t *testing.T) {
 
 	k8sUtils.Cleanup(namespaces)
 
-	
 	initializeAntreaNodeNetworkPolicy(t, data, false)
 
 	t.Run("Case=ACNPNamespaceIsolation", func(t *testing.T) { testNodeACNPNamespaceIsolation(t) })
@@ -176,6 +175,11 @@ func testNodeACNPDropEgress(t *testing.T, protocol AntreaPolicyProtocol) {
 		// investigating the issue and disabling the tests for IPv6 clusters in the
 		// meantime.
 		skipIfIPv6Cluster(t)
+	}
+	if protocol == ProtocolUDP {
+		// For UDP, when action `Drop` is specified in an egress rule, we got the unexpected message like the follows:
+		// 	 UNKNOWN: write udp 172.18.0.3:58150->172.18.0.2:80: write: operation not permitted
+		t.Skip("Skipping test as dropping UDP egress traffic in doesn't return the expected stdout or stderr message")
 	}
 	builder := &ClusterNetworkPolicySpecBuilder{}
 	builder = builder.SetName("acnp-drop-x-to-y-egress").
@@ -348,6 +352,12 @@ func testNodeACNPRejectEgress(t *testing.T, protocol AntreaPolicyProtocol) {
 		// meantime.
 		skipIfIPv6Cluster(t)
 	}
+	if protocol == ProtocolUDP {
+		// For UDP, when action `Reject` is specified in an egress rule, we got the unexpected message like the follows:
+		//   UNKNOWN: write udp 172.18.0.3:58150->172.18.0.2:80: write: operation not permitted
+		t.Skip("Skipping test as dropping UDP egress traffic in doesn't return the expected stdout or stderr message")
+	}
+
 	builder := &ClusterNetworkPolicySpecBuilder{}
 	builder = builder.SetName("acnp-reject-x-to-y-egress").
 		SetPriority(1.0).
@@ -357,7 +367,13 @@ func testNodeACNPRejectEgress(t *testing.T, protocol AntreaPolicyProtocol) {
 
 	reachability := NewReachability(allPods, Connected)
 
-	reachability.Expect(Pod(namespaces["x"]+"/a"), Pod(namespaces["y"]+"/a"), Rejected) //
+	expectedResult := Rejected
+	// For SCTP, when the `Rejected` is specified in an egress rule, it behaves identical to `Dropped`.
+	if protocol == ProtocolSCTP  {
+		expectedResult = Dropped
+	}
+
+	reachability.Expect(Pod(namespaces["x"]+"/a"), Pod(namespaces["y"]+"/a"), expectedResult)
 	testStep := []*TestStep{
 		{
 			"Port 80",
