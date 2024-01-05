@@ -123,6 +123,30 @@ func TestBuilders(t *testing.T) {
 			},
 			expected: `-A INPUT -p tcp -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT`,
 		},
+		{
+			name:  "Accept no source and destination IPv4 address",
+			chain: InputChain,
+			buildFunc: func(builder IPTablesRuleBuilder) IPTablesRule {
+				return builder.MatchTransProtocol(ProtocolTCP).
+					MatchNoSrc(ProtocolIPv4).
+					MatchNoDst(ProtocolIPv4).
+					SetTarget(AcceptTarget).
+					Done()
+			},
+			expected: `-A INPUT -p tcp ! -s 0.0.0.0/0 ! -d 0.0.0.0/0 -j ACCEPT`,
+		},
+		{
+			name:  "Accept no source and destination IPv6 address",
+			chain: InputChain,
+			buildFunc: func(builder IPTablesRuleBuilder) IPTablesRule {
+				return builder.MatchTransProtocol(ProtocolTCP).
+					MatchNoSrc(ProtocolIPv6).
+					MatchNoDst(ProtocolIPv6).
+					SetTarget(AcceptTarget).
+					Done()
+			},
+			expected: `-A INPUT -p tcp ! -s ::/0 ! -d ::/0 -j ACCEPT`,
+		},
 	}
 
 	for _, tc := range testCases {

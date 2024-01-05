@@ -80,7 +80,6 @@ type Address interface {
 type NodePolicyRule struct {
 	IPSet           string
 	IPSetMembers    sets.Set[string]
-	IPNet           string
 	Priority        *Priority
 	ServiceIPTChain string
 	ServiceIPTRules []string

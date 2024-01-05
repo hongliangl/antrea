@@ -186,6 +186,8 @@ func (r *CompletedRule) isNodeNetworkPolicyRule() bool {
 	for _, m := range r.TargetMembers {
 		if m.Node != nil {
 			return true
+		} else {
+			return false
 		}
 	}
 	return false

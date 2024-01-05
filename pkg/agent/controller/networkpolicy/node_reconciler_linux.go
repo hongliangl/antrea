@@ -38,7 +38,8 @@ import (
 )
 
 const (
-	prefix = "ANTREA-POL"
+	ipv4Any = "0.0.0.0/0"
+	ipv6Any = "::/0"
 )
 
 /*
@@ -60,8 +61,8 @@ NodeNetworkPolicy data path implementation using iptables/ip6tables involves fou
 4. From/To ipset:
    - Created for the NodeNetworkPolicy rule, containing all source IP addresses (ingress) or destination IP addresses (egress).
 
-Assuming four ingress NodeNetworkPolicy rules with IDs 1111111111111111, 2222222222222222, 3333333333333333 and 4444444444444444
-prioritized in descending order. Core iptables rules organized by priorities in ANTREA-POL-INGRESS-RULES like the following.
+Assuming four ingress NodeNetworkPolicy rules with IDs RULE1, RULE2, RULE3 and RULE4 prioritized in descending order.
+Core iptables rules organized by priorities in ANTREA-POL-INGRESS-RULES like the following.
 
 If the rule has multiple source IP addresses to match, then an ipset will be created for it. The name of the ipset consists
 of prefix "ANTREA-POL", rule ID and IP protocol version.
@@ -71,10 +72,10 @@ of prefix "ANTREA-POL" and rule ID.
 
 ```
 :ANTREA-POL-INGRESS-RULES
--A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-1111111111111111-4 src -j ANTREA-POL-1111111111111111 -m comment --comment "Antrea: for rule 1111111111111111, policy AntreaClusterNetworkPolicy:name1"
--A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-2222222222222222-4 src -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule 2222222222222222, policy AntreaClusterNetworkPolicy:name2"
--A ANTREA-POL-INGRESS-RULES -s 3.3.3.3/32 src -j ANTREA-POL-3333333333333333 -m comment --comment "Antrea: for rule 3333333333333333, policy AntreaClusterNetworkPolicy:name3"
--A ANTREA-POL-INGRESS-RULES -s 4.4.4.4/32 -p tcp --dport 80 -j ACCEPT -m comment --comment "Antrea: for rule 4444444444444444, policy AntreaClusterNetworkPolicy:name4"
+-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-RULE1-4 src -j ANTREA-POL-RULE1 -m comment --comment "Antrea: for rule RULE1, policy AntreaClusterNetworkPolicy:name1"
+-A ANTREA-POL-INGRESS-RULES -m set --match-set ANTREA-POL-RULE2-4 src -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule RULE2, policy AntreaClusterNetworkPolicy:name2"
+-A ANTREA-POL-INGRESS-RULES -s 3.3.3.3/32 src -j ANTREA-POL-RULE3 -m comment --comment "Antrea: for rule RULE3, policy AntreaClusterNetworkPolicy:name3"
+-A ANTREA-POL-INGRESS-RULES -s 4.4.4.4/32 -p tcp --dport 80 -j ACCEPT -m comment --comment "Antrea: for rule RULE4, policy AntreaClusterNetworkPolicy:name4"
 ```
 
 For the first rule, it has multiple services and multiple source IP addresses to match, so there will be service iptables chain
@@ -83,15 +84,15 @@ and service iptables rules and ipset created for it.
 The iptables chain is like the following:
 
 ```
-:ANTREA-POL-1111111111111111
--A ANTREA-POL-1111111111111111 -j ACCEPT -p tcp --dport 80
--A ANTREA-POL-1111111111111111 -j ACCEPT -p tcp --dport 443
+:ANTREA-POL-RULE1
+-A ANTREA-POL-RULE1 -j ACCEPT -p tcp --dport 80
+-A ANTREA-POL-RULE1 -j ACCEPT -p tcp --dport 443
 ```
 
 The ipset is like the following:
 
 ```
-Name: ANTREA-POL-1111111111111111-4
+Name: ANTREA-POL-RULE1-4
 Type: hash:net
 Revision: 6
 Header: family inet hashsize 1024 maxelem 65536
@@ -105,7 +106,7 @@ Members:
 
 For the second rule, it has only one service, so there will be no service iptables chain and service iptables rules created
 for it. The core rule will match the service and target the action directly. The rule has multiple source IP addresses to
-match, so there will be an ipset `ANTREA-POL-2222222222222222-4` created for it.
+match, so there will be an ipset `ANTREA-POL-RULE2-4` created for it.
 
 For the third rule, it has multiple services to match, so there will be service iptables chain and service iptables rules
 created for it. The rule has only one source IP address to match, so there will be no ipset created for it and just match
@@ -123,7 +124,12 @@ type coreIPTRule struct {
 	ruleStr  string
 }
 
-// coreIPTChain caches the sorted iptables rules and for a chain.
+type chainKey struct {
+	name   string
+	isIPv6 bool
+}
+
+// coreIPTChain caches the sorted iptables rules for a chain.
 type coreIPTChain struct {
 	rules []*coreIPTRule
 	sync.Mutex
@@ -140,7 +146,7 @@ type nodePolicyLastRealized struct {
 	ipsets map[iptables.Protocol]string
 	// ipNets tracks the last realized ipNet used in core iptables rules. It cannot coexist with ipsets.
 	ipNets map[iptables.Protocol]string
-	// serviceIPTChain tracks the last realized service iptables chain if multipleServices is true.
+	// serviceIPTChain tracks the last realized service iptables chain if a rule have multiple services.
 	serviceIPTChain string
 	// coreIPTChain tracks the last realized iptables chain where the core iptables rule is installed.
 	coreIPTChain string
@@ -154,30 +160,30 @@ func newNodePolicyLastRealized() *nodePolicyLastRealized {
 }
 
 type nodeReconciler struct {
-	ipProtocols         []iptables.Protocol
-	routeClient         route.Interface
-	cachedCoreIPTChains map[string]*coreIPTChain
+	ipProtocols   []iptables.Protocol
+	routeClient   route.Interface
+	coreIPTChains map[chainKey]*coreIPTChain
 	// lastRealizeds caches the last realized rules. It's a mapping from ruleID to *nodePolicyLastRealized.
 	lastRealizeds sync.Map
 }
 
 func newNodeReconciler(routeClient route.Interface, ipv4Enabled, ipv6Enabled bool) *nodeReconciler {
 	var ipProtocols []iptables.Protocol
-	cachedCoreIPTChains := make(map[string]*coreIPTChain)
+	coreIPTChains := make(map[chainKey]*coreIPTChain)
 	if ipv4Enabled {
 		ipProtocols = append(ipProtocols, iptables.ProtocolIPv4)
-		cachedCoreIPTChains[genCacheCategory(config.NodeNetworkPolicyIngressRulesChain, false)] = newIPTChain()
-		cachedCoreIPTChains[genCacheCategory(config.NodeNetworkPolicyEgressRulesChain, false)] = newIPTChain()
+		coreIPTChains[newChainKey(config.NodeNetworkPolicyIngressRulesChain, false)] = newIPTChain()
+		coreIPTChains[newChainKey(config.NodeNetworkPolicyEgressRulesChain, false)] = newIPTChain()
 	}
 	if ipv6Enabled {
 		ipProtocols = append(ipProtocols, iptables.ProtocolIPv6)
-		cachedCoreIPTChains[genCacheCategory(config.NodeNetworkPolicyIngressRulesChain, true)] = newIPTChain()
-		cachedCoreIPTChains[genCacheCategory(config.NodeNetworkPolicyEgressRulesChain, true)] = newIPTChain()
+		coreIPTChains[newChainKey(config.NodeNetworkPolicyIngressRulesChain, true)] = newIPTChain()
+		coreIPTChains[newChainKey(config.NodeNetworkPolicyEgressRulesChain, true)] = newIPTChain()
 	}
 	return &nodeReconciler{
-		ipProtocols:         ipProtocols,
-		routeClient:         routeClient,
-		cachedCoreIPTChains: cachedCoreIPTChains,
+		ipProtocols:   ipProtocols,
+		routeClient:   routeClient,
+		coreIPTChains: coreIPTChains,
 	}
 }
 
@@ -252,10 +258,10 @@ func (r *nodeReconciler) batchAdd(rules []*CompletedRule) error {
 		if err := r.routeClient.AddOrUpdateNodeNetworkPolicyIPTables(serviceIPTChains[ipProtocol], serviceIPTRules[ipProtocol], isIPv6); err != nil {
 			return err
 		}
-		if err := r.addOrUpdateCoreIPTRules(ingressCoreIPTRules[ipProtocol], config.NodeNetworkPolicyIngressRulesChain, isIPv6, false); err != nil {
+		if err := r.addOrUpdateCoreIPTRules(config.NodeNetworkPolicyIngressRulesChain, isIPv6, false, ingressCoreIPTRules[ipProtocol]...); err != nil {
 			return err
 		}
-		if err := r.addOrUpdateCoreIPTRules(egressCoreIPTRules[ipProtocol], config.NodeNetworkPolicyEgressRulesChain, isIPv6, false); err != nil {
+		if err := r.addOrUpdateCoreIPTRules(config.NodeNetworkPolicyEgressRulesChain, isIPv6, false, egressCoreIPTRules[ipProtocol]...); err != nil {
 			return err
 		}
 	}
@@ -305,7 +311,11 @@ func (r *nodeReconciler) GetRuleByFlowID(ruleFlowID uint32) (*types.PolicyRule, 
 func (r *nodeReconciler) computeIPTRules(rule *CompletedRule) (map[iptables.Protocol]*types.NodePolicyRule, *nodePolicyLastRealized) {
 	ruleID := rule.ID
 	lastRealized := newNodePolicyLastRealized()
-	priority := genPriority(rule)
+	priority := &types.Priority{
+		TierPriority:   *rule.TierPriority,
+		PolicyPriority: *rule.PolicyPriority,
+		RulePriority:   rule.Priority,
+	}
 
 	var serviceIPTChain, serviceIPTRuleTarget, coreIPTRuleTarget string
 	var service *v1beta2.Service
@@ -342,7 +352,8 @@ func (r *nodeReconciler) computeIPTRules(rule *CompletedRule) (map[iptables.Prot
 		var ipNet string
 		var ipset string
 		if ipNets.Len() > 1 {
-			// If a rule matches multiple source or destination ipNets, create an ipset and use it in core iptables rule.
+			// If a rule matches multiple source or destination ipNets, create an ipset which contains these ipnets and
+			// use the ipset in core iptables rule.
 			ipset = genIPSetName(ruleID, isIPv6)
 			lastRealized.ipsets[ipProtocol] = ipset
 		} else if ipNets.Len() == 1 {
@@ -363,7 +374,6 @@ func (r *nodeReconciler) computeIPTRules(rule *CompletedRule) (map[iptables.Prot
 		nodePolicyRules[ipProtocol] = &types.NodePolicyRule{
 			IPSet:           ipset,
 			IPSetMembers:    ipNets,
-			IPNet:           ipNet,
 			Priority:        priority,
 			ServiceIPTChain: serviceIPTChain,
 			ServiceIPTRules: serviceIPTRules,
@@ -391,7 +401,7 @@ func (r *nodeReconciler) add(rule *CompletedRule) error {
 				return err
 			}
 		}
-		if err := r.addOrUpdateCoreIPTRules([]*coreIPTRule{{ruleID, iptRule.Priority, iptRule.CoreIPTRule}}, iptRule.CoreIPTChain, iptRule.IsIPv6, false); err != nil {
+		if err := r.addOrUpdateCoreIPTRules(iptRule.CoreIPTChain, iptRule.IsIPv6, false, &coreIPTRule{ruleID, iptRule.Priority, iptRule.CoreIPTRule}); err != nil {
 			return err
 		}
 	}
@@ -416,14 +426,13 @@ func (r *nodeReconciler) update(lastRealized *nodePolicyLastRealized, newRule *C
 			if err := r.routeClient.AddOrUpdateNodeNetworkPolicyIPSet(iptRule.IPSet, iptRule.IPSetMembers, iptRule.IsIPv6); err != nil {
 				return err
 			}
-		}
-		if lastRealized.ipsets[ipProtocol] != "" && ipset == "" {
+		} else if prevIPSet != "" {
 			if err := r.routeClient.DeleteNodeNetworkPolicyIPSet(lastRealized.ipsets[ipProtocol], iptRule.IsIPv6); err != nil {
 				return err
 			}
 		}
 		if prevIPSet != ipset || prevIPNet != ipNet {
-			if err := r.addOrUpdateCoreIPTRules([]*coreIPTRule{{ruleID, iptRule.Priority, iptRule.CoreIPTRule}}, iptRule.CoreIPTChain, iptRule.IsIPv6, true); err != nil {
+			if err := r.addOrUpdateCoreIPTRules(iptRule.CoreIPTChain, iptRule.IsIPv6, true, &coreIPTRule{ruleID, iptRule.Priority, iptRule.CoreIPTRule}); err != nil {
 				return err
 			}
 		}
@@ -433,12 +442,12 @@ func (r *nodeReconciler) update(lastRealized *nodePolicyLastRealized, newRule *C
 	return nil
 }
 
-func (r *nodeReconciler) addOrUpdateCoreIPTRules(iptRules []*coreIPTRule, iptChain string, isIPv6 bool, isUpdate bool) error {
+func (r *nodeReconciler) addOrUpdateCoreIPTRules(iptChain string, isIPv6 bool, isUpdate bool, iptRules ...*coreIPTRule) error {
 	if len(iptRules) == 0 {
 		return nil
 	}
 
-	cachedCoreIPTChain := r.getCachedCoreIPTChain(iptChain, isIPv6)
+	cachedCoreIPTChain := r.getCoreIPTChain(iptChain, isIPv6)
 	cachedCoreIPTChain.Lock()
 	defer cachedCoreIPTChain.Unlock()
 
@@ -478,24 +487,24 @@ func (r *nodeReconciler) addOrUpdateCoreIPTRules(iptRules []*coreIPTRule, iptCha
 }
 
 func (r *nodeReconciler) deleteCoreIPRule(ruleID string, iptChain string, isIPv6 bool) error {
-	cachedCoreIPTChain := r.getCachedCoreIPTChain(iptChain, isIPv6)
-	cachedCoreIPTChain.Lock()
-	defer cachedCoreIPTChain.Unlock()
+	coreIPTChain := r.getCoreIPTChain(iptChain, isIPv6)
+	coreIPTChain.Lock()
+	defer coreIPTChain.Unlock()
 
 	// Get all cached iptables rules, then delete the rule with the given ruleID.
-	cachedIPTRules := cachedCoreIPTChain.rules
+	iptRules := coreIPTChain.rules
 	var indexToDelete int
-	for i := 0; i < len(cachedIPTRules); i++ {
-		if cachedIPTRules[i].ruleID == ruleID {
+	for i := 0; i < len(iptRules); i++ {
+		if iptRules[i].ruleID == ruleID {
 			indexToDelete = i
 			break
 		}
 	}
-	cachedIPTRules = append(cachedIPTRules[:indexToDelete], cachedIPTRules[indexToDelete+1:]...)
+	iptRules = append(iptRules[:indexToDelete], iptRules[indexToDelete+1:]...)
 
 	// Get all the sorted iptables rules and synchronize them.
 	var iptRuleStrs []string
-	for _, r := range cachedIPTRules {
+	for _, r := range iptRules {
 		iptRuleStrs = append(iptRuleStrs, r.ruleStr)
 	}
 	if err := r.routeClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{iptChain}, [][]string{iptRuleStrs}, isIPv6); err != nil {
@@ -503,18 +512,17 @@ func (r *nodeReconciler) deleteCoreIPRule(ruleID string, iptChain string, isIPv6
 	}
 
 	// cache the new iptables rules.
-	cachedCoreIPTChain.rules = cachedIPTRules
+	coreIPTChain.rules = iptRules
 	return nil
 }
 
-func (r *nodeReconciler) getCachedCoreIPTChain(iptChain string, isIPv6 bool) *coreIPTChain {
+func (r *nodeReconciler) getCoreIPTChain(iptChain string, isIPv6 bool) *coreIPTChain {
 	// There are 4 categories of cached core iptables rules:
 	// - For IPv4, iptables rules installed in the chain ANTREA-INGRESS-RULES for ingress rules.
 	// - For IPv6, ip6tables rules installed in the chain ANTREA-INGRESS-RULES for ingress rules.
 	// - For IPv4, iptables rules installed in the chain ANTREA-EGRESS-RULES for egress rules.
 	// - For IPv6, ip6tables rules installed in the chain ANTREA-EGRESS-RULES for egress rules.
-	categoryKey := genCacheCategory(iptChain, isIPv6)
-	return r.cachedCoreIPTChains[categoryKey]
+	return r.coreIPTChains[newChainKey(iptChain, isIPv6)]
 }
 
 func groupMembersToIPNets(groups v1beta2.GroupMemberSet, isIPv6 bool) sets.Set[string] {
@@ -534,8 +542,8 @@ func groupMembersToIPNets(groups v1beta2.GroupMemberSet, isIPv6 bool) sets.Set[s
 	return ipNets
 }
 
-func ipBlocksToIPNets(ipBlocks []v1beta2.IPBlock, isIPv6 bool) sets.Set[string] {
-	ipNets := sets.New[string]()
+func ipBlocksToIPNets(ipBlocks []v1beta2.IPBlock, isIPv6 bool) []string {
+	var ipNets []string
 	for _, b := range ipBlocks {
 		blockCIDR := ip.IPNetToNetIPNet(&b.CIDR)
 		if isIPv6 != utilnet.IsIPv6CIDR(blockCIDR) {
@@ -553,7 +561,7 @@ func ipBlocksToIPNets(ipBlocks []v1beta2.IPBlock, isIPv6 bool) sets.Set[string] 
 			continue
 		}
 		for _, d := range diffCIDRs {
-			ipNets.Insert(d.String())
+			ipNets = append(ipNets, d.String())
 		}
 	}
 	return ipNets
@@ -563,13 +571,16 @@ func getIPNetsFromRule(rule *CompletedRule, isIPv6 bool) sets.Set[string] {
 	var set sets.Set[string]
 	if rule.Direction == v1beta2.DirectionIn {
 		set = groupMembersToIPNets(rule.FromAddresses, isIPv6)
-		set = set.Union(ipBlocksToIPNets(rule.From.IPBlocks, isIPv6))
+		set.Insert(ipBlocksToIPNets(rule.From.IPBlocks, isIPv6)...)
 	} else {
 		set = groupMembersToIPNets(rule.ToAddresses, isIPv6)
-		set = set.Union(ipBlocksToIPNets(rule.To.IPBlocks, isIPv6))
+		set.Insert(ipBlocksToIPNets(rule.To.IPBlocks, isIPv6)...)
 	}
-	if set.Has("0.0.0.0/0") || set.Has("::/0") {
-		return nil
+	if isIPv6 && set.Has(ipv6Any) {
+		return sets.New[string](ipv6Any)
+	}
+	if !isIPv6 && set.Has(ipv4Any) {
+		return sets.New[string](ipv4Any)
 	}
 	return set
 }
@@ -595,12 +606,16 @@ func buildCoreIPTRule(ipProtocol iptables.Protocol,
 			builder = builder.MatchIPSetSrc(ipset)
 		} else if ipNet != "" {
 			builder = builder.MatchCIDRSrc(ipNet)
+		} else {
+			builder = builder.MatchNoSrc(ipProtocol)
 		}
 	} else {
 		if ipset != "" {
 			builder = builder.MatchIPSetDst(ipset)
 		} else if ipNet != "" {
 			builder = builder.MatchCIDRDst(ipNet)
+		} else {
+			builder = builder.MatchNoDst(ipProtocol)
 		}
 	}
 	if service != nil {
@@ -650,7 +665,7 @@ func buildServiceIPTRules(ipProtocol iptables.Protocol, services []v1beta2.Servi
 }
 
 func genServiceIPTRuleChain(ruleID string) string {
-	return fmt.Sprintf("%s-%s", prefix, strings.ToUpper(ruleID))
+	return fmt.Sprintf("%s-%s", config.NodeNetworkPolicyPrefix, strings.ToUpper(ruleID))
 }
 
 func genIPSetName(ruleID string, isIPv6 bool) string {
@@ -658,7 +673,7 @@ func genIPSetName(ruleID string, isIPv6 bool) string {
 	if isIPv6 {
 		suffix = "6"
 	}
-	return fmt.Sprintf("%s-%s-%s", prefix, strings.ToUpper(ruleID), suffix)
+	return fmt.Sprintf("%s-%s-%s", config.NodeNetworkPolicyPrefix, strings.ToUpper(ruleID), suffix)
 }
 
 func ruleActionToIPTTarget(ruleAction *secv1beta1.RuleAction) string {
@@ -681,24 +696,13 @@ func getServiceTransProtocol(protocol *v1beta2.Protocol) string {
 	return strings.ToLower(string(*protocol))
 }
 
-func genPriority(rule *CompletedRule) *types.Priority {
-	if rule == nil {
-		return nil
-	}
-	return &types.Priority{
-		TierPriority:   *rule.TierPriority,
-		PolicyPriority: *rule.PolicyPriority,
-		RulePriority:   rule.Priority,
-	}
-}
-
 func genCoreIPTRuleComment(ruleID, policyName string) string {
 	return fmt.Sprintf("Antrea: for rule %s, policy %s", ruleID, policyName)
 }
 
-func genCacheCategory(chain string, isIPv6 bool) string {
-	if isIPv6 {
-		return fmt.Sprintf("%s_6", chain)
+func newChainKey(name string, isIPv6 bool) chainKey {
+	return chainKey{
+		name:   name,
+		isIPv6: isIPv6,
 	}
-	return fmt.Sprintf("%s_4", chain)
 }

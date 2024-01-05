@@ -111,6 +111,8 @@ type IPTablesRuleBuilder interface {
 	MatchCIDRDst(cidr string) IPTablesRuleBuilder
 	MatchIPSetSrc(ipset string) IPTablesRuleBuilder
 	MatchIPSetDst(ipset string) IPTablesRuleBuilder
+	MatchNoSrc(ipProtocol Protocol) IPTablesRuleBuilder
+	MatchNoDst(ipProtocol Protocol) IPTablesRuleBuilder
 	MatchTransProtocol(protocol string) IPTablesRuleBuilder
 	MatchDstPort(port *intstr.IntOrString, endPort *int32) IPTablesRuleBuilder
 	MatchSrcPort(port, endPort *int32) IPTablesRuleBuilder

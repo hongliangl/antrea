@@ -53,6 +53,8 @@ const (
 const (
 	NodeNetworkPolicyIngressRulesChain = "ANTREA-POL-INGRESS-RULES"
 	NodeNetworkPolicyEgressRulesChain  = "ANTREA-POL-EGRESS-RULES"
+
+	NodeNetworkPolicyPrefix = "ANTREA-POL"
 )
 
 var (

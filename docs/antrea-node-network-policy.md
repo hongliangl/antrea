@@ -12,7 +12,6 @@
 ## Introduction
 
 Node NetworkPolicy is designed to secure the Kubernetes Nodes traffic. It is supported by Antrea starting with Antrea v1.15.
-
 This guide demonstrates how to configure Node NetworkPolicies.
 
 ## Prerequisites
@@ -41,7 +40,7 @@ helm install antrea antrea/antrea --namespace kube-system --set featureGates.Nod
 ## Usage
 
 Node NetworkPolicy is an extension of Antrea ClusterNetworkPolicy (ACNP). By specifying a `nodeSelector` in the policy-level
-`appliedTo`, an ACNP is applied to the selected Kuberentes Nodes.
+`appliedTo`, an ACNP is applied to the selected Kubernetes Nodes.
 
 An example Node NetworkPolicy that blocks ingress traffic from Pods with label `app=client` to Nodes with label
 `kubernetes.io/hostname: k8s-node-control-plane`:
@@ -104,13 +103,13 @@ spec:
 ## Limitations
 
 - This feature is currently only supported for Linux Nodes.
-- Only ACNPs can be applied to Nodes, and `nodeSelector` is only supported by ACNP. ANPs cannot be applied to Nodes.
+- Be cautious when you configure policies to Nodes, in particular, when configuring a default-deny policy applied to Nodes.
+  You should ensure Kubernetes and Antrea control-plane communication is exempt, otherwise the cluster may go out-of-service
+  and you may lose connectivity to it.
+- Only ACNPs can be applied to Nodes. ANPs cannot be applied to Nodes.
 - `nodeSelector` can only be specified in the policy-level `appliedTo` field, not in the rule-level `appliedTo`, and not
   in a `Group` or `ClusterGroup`.
 - ACNPs applied to Nodes cannot be applied to Pods at the same time.
 - FQDN is not supported for ACNPs applied to Nodes.
 - Layer 7 NetworkPolicy is not supported yet.
-- The Reject `action` is not supported for egress rules due to data path restrictions. Although using the Reject action
-  in egress rules is permissible, it behaves identically to action `Drop`.
-- With misconfiguration, it is possible to block traffic between Nodes and the API server, causing a Node to be unresponsive
-  or event blocking all traffic to/from the cluster. Please exercise caution when configuring Node NetworkPolicies.
+- When the `Reject` action is specified in an egress rule, it behaves identical to `Drop` action.

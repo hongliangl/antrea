@@ -86,6 +86,24 @@ func (b *iptablesRuleBuilder) MatchIPSetDst(ipset string) IPTablesRuleBuilder {
 	return b
 }
 
+func (b *iptablesRuleBuilder) MatchNoSrc(ipProtocol Protocol) IPTablesRuleBuilder {
+	if ipProtocol == ProtocolIPv4 {
+		b.writeSpec("! -s 0.0.0.0/0")
+	} else if ipProtocol == ProtocolIPv6 {
+		b.writeSpec("! -s ::/0")
+	}
+	return b
+}
+
+func (b *iptablesRuleBuilder) MatchNoDst(ipProtocol Protocol) IPTablesRuleBuilder {
+	if ipProtocol == ProtocolIPv4 {
+		b.writeSpec("! -d 0.0.0.0/0")
+	} else if ipProtocol == ProtocolIPv6 {
+		b.writeSpec("! -d ::/0")
+	}
+	return b
+}
+
 func (b *iptablesRuleBuilder) MatchTransProtocol(protocol string) IPTablesRuleBuilder {
 	if protocol == "" {
 		return b

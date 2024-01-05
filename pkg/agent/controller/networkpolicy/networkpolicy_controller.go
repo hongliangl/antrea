@@ -776,11 +776,6 @@ func (c *Controller) syncRule(key string) error {
 		return nil
 	}
 
-	var isNodeNetworkPolicy bool
-	if c.nodeNetworkPolicyEnabled {
-		isNodeNetworkPolicy = rule.isNodeNetworkPolicyRule()
-	}
-
 	if c.l7NetworkPolicyEnabled && len(rule.L7Protocols) != 0 {
 		// Allocate VLAN ID for the L7 rule.
 		vlanID := c.l7VlanIDAllocator.allocate(key)
@@ -791,9 +786,14 @@ func (c *Controller) syncRule(key string) error {
 		}
 	}
 
+	isNodeNetworkPolicy := rule.isNodeNetworkPolicyRule()
 	var err error
 	if isNodeNetworkPolicy {
-		err = c.nodeReconciler.Reconcile(rule)
+		if c.nodeNetworkPolicyEnabled {
+			err = c.nodeReconciler.Reconcile(rule)
+		} else {
+			klog.InfoS("Feature gate NodeNetworkPolicy is not enabled, skipping reconciling rule", "ruleID", key)
+		}
 	} else {
 		err = c.podReconciler.Reconcile(rule)
 		if c.fqdnController != nil {

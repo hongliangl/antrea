@@ -205,8 +205,6 @@ type AgentConfig struct {
 	// second(pps) and the burst size will be automatically set to twice the rate.
 	// When the rate and burst size are exceeded, new packets will be dropped.
 	PacketInRate int `yaml:"packetInRate,omitempty"`
-	// NodeNetworkPolicy includes the privileged ingress and egress rules for NodeNetworkPolicy.
-	NodeNetworkPolicy NodeNetworkPolicyConfig `yaml:"nodeNetworkPolicy,omitempty"`
 }
 
 type AntreaProxyConfig struct {

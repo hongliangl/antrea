@@ -123,6 +123,7 @@ var (
 		FromAddresses: nil,
 		ToAddresses:   nil,
 	}
+	ingressRule3WithFromAnyAddress        = ingressRule3
 	updatedIngressRule3WithOneFromAddress = &CompletedRule{
 		rule: &rule{
 			ID:             ingressRuleID3,
@@ -185,6 +186,22 @@ var (
 			SourceRef:      &cnp1,
 		},
 		FromAddresses: addressGroup2.Union(v1beta2.NewGroupMemberSet(newAddressGroupMember("1.1.1.3"))),
+		ToAddresses:   nil,
+	}
+	updatedIngressRule3WithFromNoAddress = &CompletedRule{
+		rule: &rule{
+			ID:             ingressRuleID3,
+			Name:           "rule-03",
+			PolicyName:     "ingress-policy",
+			Direction:      v1beta2.DirectionIn,
+			Services:       []v1beta2.Service{serviceTCP8080},
+			Action:         &ruleActionAllow,
+			Priority:       3,
+			PolicyPriority: &policyPriority1,
+			TierPriority:   &tierPriority2,
+			SourceRef:      &cnp1,
+		},
+		FromAddresses: nil,
 		ToAddresses:   nil,
 	}
 	egressRule1 = &CompletedRule{
@@ -542,45 +559,69 @@ func TestNodeReconcilerReconcileAndForget(t *testing.T) {
 				coreRules7 := coreRules1
 				coreRules8 := coreRules4
 				coreRules9 := coreRules1
+				coreRules10 := [][]string{
+					{
+						`-A ANTREA-POL-INGRESS-RULES ! -s 0.0.0.0/0 -p tcp --dport 8080 -j ACCEPT -m comment --comment "Antrea: for rule ingressRule3, policy AntreaClusterNetworkPolicy:name1"`,
+					},
+				}
+				coreRules11 := coreRules4
+				coreRules12 := coreRules10
+				coreRules13 := coreRules1
 
 				s1 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules1, false).Times(1)
 				s2 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules2, false).Times(1)
 				s3 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules3, false).Times(1)
-				s41 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", sets.New[string]("1.1.1.1/32", "1.1.1.2/32"), false).Times(1)
-				s42 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules4, false).Times(1)
+				s4p1 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", sets.New[string]("1.1.1.1/32", "1.1.1.2/32"), false).Times(1)
+				s4p2 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules4, false).Times(1)
 				s5 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", sets.New[string]("1.1.1.2/32", "1.1.1.3/32"), false).Times(1)
-				s61 := mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", false).Times(1)
-				s62 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules6, false).Times(1)
+				s6p1 := mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", false).Times(1)
+				s6p2 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules6, false).Times(1)
 				s7 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules7, false).Times(1)
-				s81 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", sets.New[string]("1.1.1.1/32", "1.1.1.2/32"), false).Times(1)
-				s82 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules8, false).Times(1)
-				s91 := mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", false).Times(1)
-				s92 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules9, false).Times(1)
+				s8p1 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", sets.New[string]("1.1.1.1/32", "1.1.1.2/32"), false).Times(1)
+				s8p2 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules8, false).Times(1)
+				s9p1 := mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", false).Times(1)
+				s9p2 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules9, false).Times(1)
+				s10 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules10, false).Times(1)
+				s11p1 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", sets.New[string]("1.1.1.1/32", "1.1.1.2/32"), false).Times(1)
+				s11p2 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules11, false).Times(1)
+				s12p1 := mockRouteClient.DeleteNodeNetworkPolicyIPSet("ANTREA-POL-INGRESSRULE3-4", false).Times(1)
+				s12p2 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules12, false).Times(1)
+				s13 := mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, coreRules13, false).Times(1)
 				s2.After(s1)
 				s3.After(s2)
-				s41.After(s3)
-				s42.After(s3)
-				s5.After(s42)
-				s5.After(s42)
-				s61.After(s5)
-				s62.After(s5)
-				s7.After(s62)
-				s81.After(s7)
-				s82.After(s7)
-				s91.After(s82)
-				s92.After(s82)
+				s4p1.After(s3)
+				s4p2.After(s3)
+				s5.After(s4p2)
+				s5.After(s4p2)
+				s6p1.After(s5)
+				s6p2.After(s5)
+				s7.After(s6p2)
+				s8p1.After(s7)
+				s8p2.After(s7)
+				s9p1.After(s8p2)
+				s9p2.After(s8p2)
+				s10.After(s9p2)
+				s11p1.After(s10)
+				s11p2.After(s10)
+				s12p1.After(s11p2)
+				s12p2.After(s11p2)
+				s13.After(s12p2)
 				mockRouteClient.AddOrUpdateNodeNetworkPolicyIPTables([]string{"ANTREA-POL-INGRESS-RULES"}, [][]string{nil}, false).Times(1)
 			},
 			rulesToAdd: []*CompletedRule{
-				ingressRule3,
+				ingressRule3WithFromAnyAddress,
 				updatedIngressRule3WithOneFromAddress,
 				updatedIngressRule3WithAnotherFromAddress,
 				updatedIngressRule3WithMultipleFromAddresses,
 				updatedIngressRule3WithOtherMultipleFromAddresses,
 				updatedIngressRule3WithOneFromAddress,
-				ingressRule3,
+				ingressRule3WithFromAnyAddress,
 				updatedIngressRule3WithMultipleFromAddresses,
-				ingressRule3,
+				ingressRule3WithFromAnyAddress,
+				updatedIngressRule3WithFromNoAddress,
+				updatedIngressRule3WithMultipleFromAddresses,
+				updatedIngressRule3WithFromNoAddress,
+				ingressRule3WithFromAnyAddress,
 			},
 			rulesToForget: []string{
 				ingressRuleID3,

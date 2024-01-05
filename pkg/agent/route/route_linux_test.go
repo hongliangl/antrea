@@ -125,17 +125,20 @@ func TestSyncIPSet(t *testing.T) {
 	podCIDRv6Str := "2001:ab03:cd04:55ef::/64"
 	_, podCIDRv6, _ := net.ParseCIDR(podCIDRv6Str)
 	tests := []struct {
-		name                  string
-		proxyAll              bool
-		multicastEnabled      bool
-		connectUplinkToBridge bool
-		networkConfig         *config.NetworkConfig
-		nodeConfig            *config.NodeConfig
-		nodePortsIPv4         []string
-		nodePortsIPv6         []string
-		clusterNodeIPs        map[string]string
-		clusterNodeIP6s       map[string]string
-		expectedCalls         func(ipset *ipsettest.MockInterfaceMockRecorder)
+		name                        string
+		proxyAll                    bool
+		multicastEnabled            bool
+		connectUplinkToBridge       bool
+		nodeNetworkPolicyEnabled    bool
+		networkConfig               *config.NetworkConfig
+		nodeConfig                  *config.NodeConfig
+		nodePortsIPv4               []string
+		nodePortsIPv6               []string
+		clusterNodeIPs              map[string]string
+		clusterNodeIP6s             map[string]string
+		nodeNetworkPolicyIPSetsIPv4 map[string]sets.Set[string]
+		nodeNetworkPolicyIPSetsIPv6 map[string]sets.Set[string]
+		expectedCalls               func(ipset *ipsettest.MockInterfaceMockRecorder)
 	}{
 		{
 			name: "networkPolicyOnly",
@@ -163,9 +166,10 @@ func TestSyncIPSet(t *testing.T) {
 			},
 		},
 		{
-			name:             "encap, proxyAll=true, multicastEnabled=true",
-			proxyAll:         true,
-			multicastEnabled: true,
+			name:                     "encap, proxyAll=true, multicastEnabled=true, nodeNetworkPolicy=true",
+			proxyAll:                 true,
+			multicastEnabled:         true,
+			nodeNetworkPolicyEnabled: true,
 			networkConfig: &config.NetworkConfig{
 				TrafficEncapMode: config.TrafficEncapModeEncap,
 				IPv4Enabled:      true,
@@ -175,10 +179,12 @@ func TestSyncIPSet(t *testing.T) {
 				PodIPv4CIDR: podCIDR,
 				PodIPv6CIDR: podCIDRv6,
 			},
-			nodePortsIPv4:   []string{"192.168.0.2,tcp:10000", "127.0.0.1,tcp:10000"},
-			nodePortsIPv6:   []string{"fe80::e643:4bff:fe44:ee,tcp:10000", "::1,tcp:10000"},
-			clusterNodeIPs:  map[string]string{"172.16.3.0/24": "192.168.0.3", "172.16.4.0/24": "192.168.0.4"},
-			clusterNodeIP6s: map[string]string{"2001:ab03:cd04:5503::/64": "fe80::e643:4bff:fe03", "2001:ab03:cd04:5504::/64": "fe80::e643:4bff:fe04"},
+			nodePortsIPv4:               []string{"192.168.0.2,tcp:10000", "127.0.0.1,tcp:10000"},
+			nodePortsIPv6:               []string{"fe80::e643:4bff:fe44:ee,tcp:10000", "::1,tcp:10000"},
+			clusterNodeIPs:              map[string]string{"172.16.3.0/24": "192.168.0.3", "172.16.4.0/24": "192.168.0.4"},
+			clusterNodeIP6s:             map[string]string{"2001:ab03:cd04:5503::/64": "fe80::e643:4bff:fe03", "2001:ab03:cd04:5504::/64": "fe80::e643:4bff:fe04"},
+			nodeNetworkPolicyIPSetsIPv4: map[string]sets.Set[string]{"ANTREA-POL-RULE1-4": sets.New[string]("1.1.1.1/32", "2.2.2.2/32")},
+			nodeNetworkPolicyIPSetsIPv6: map[string]sets.Set[string]{"ANTREA-POL-RULE1-6": sets.New[string]("fec0::1111/128", "fec0::2222/128")},
 			expectedCalls: func(mockIPSet *ipsettest.MockInterfaceMockRecorder) {
 				mockIPSet.CreateIPSet(antreaPodIPSet, ipset.HashNet, false)
 				mockIPSet.CreateIPSet(antreaPodIP6Set, ipset.HashNet, true)
@@ -196,6 +202,12 @@ func TestSyncIPSet(t *testing.T) {
 				mockIPSet.AddEntry(clusterNodeIPSet, "192.168.0.4")
 				mockIPSet.AddEntry(clusterNodeIP6Set, "fe80::e643:4bff:fe03")
 				mockIPSet.AddEntry(clusterNodeIP6Set, "fe80::e643:4bff:fe04")
+				mockIPSet.CreateIPSet("ANTREA-POL-RULE1-4", ipset.HashNet, false)
+				mockIPSet.CreateIPSet("ANTREA-POL-RULE1-6", ipset.HashNet, true)
+				mockIPSet.AddEntry("ANTREA-POL-RULE1-4", "1.1.1.1/32")
+				mockIPSet.AddEntry("ANTREA-POL-RULE1-4", "2.2.2.2/32")
+				mockIPSet.AddEntry("ANTREA-POL-RULE1-6", "fec0::1111/128")
+				mockIPSet.AddEntry("ANTREA-POL-RULE1-6", "fec0::2222/128")
 			},
 		},
 		{
@@ -225,15 +237,16 @@ func TestSyncIPSet(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			ipset := ipsettest.NewMockInterface(ctrl)
 			c := &Client{ipset: ipset,
-				networkConfig:         tt.networkConfig,
-				nodeConfig:            tt.nodeConfig,
-				proxyAll:              tt.proxyAll,
-				multicastEnabled:      tt.multicastEnabled,
-				connectUplinkToBridge: tt.connectUplinkToBridge,
-				nodePortsIPv4:         sync.Map{},
-				nodePortsIPv6:         sync.Map{},
-				clusterNodeIPs:        sync.Map{},
-				clusterNodeIP6s:       sync.Map{},
+				networkConfig:            tt.networkConfig,
+				nodeConfig:               tt.nodeConfig,
+				proxyAll:                 tt.proxyAll,
+				multicastEnabled:         tt.multicastEnabled,
+				connectUplinkToBridge:    tt.connectUplinkToBridge,
+				nodeNetworkPolicyEnabled: tt.nodeNetworkPolicyEnabled,
+				nodePortsIPv4:            sync.Map{},
+				nodePortsIPv6:            sync.Map{},
+				clusterNodeIPs:           sync.Map{},
+				clusterNodeIP6s:          sync.Map{},
 			}
 			for _, nodePortIPv4 := range tt.nodePortsIPv4 {
 				c.nodePortsIPv4.Store(nodePortIPv4, struct{}{})
@@ -246,6 +259,12 @@ func TestSyncIPSet(t *testing.T) {
 			}
 			for cidr, nodeIP := range tt.clusterNodeIP6s {
 				c.clusterNodeIP6s.Store(cidr, nodeIP)
+			}
+			for set, ips := range tt.nodeNetworkPolicyIPSetsIPv4 {
+				c.nodeNetworkPolicyIPSetsIPv4.Store(set, ips)
+			}
+			for set, ips := range tt.nodeNetworkPolicyIPSetsIPv6 {
+				c.nodeNetworkPolicyIPSetsIPv6.Store(set, ips)
 			}
 			tt.expectedCalls(ipset.EXPECT())
 			assert.NoError(t, c.syncIPSet())
@@ -329,21 +348,21 @@ COMMIT
 :ANTREA-FORWARD - [0:0]
 :ANTREA-INPUT - [0:0]
 :ANTREA-OUTPUT - [0:0]
-:ANTREA-POL-PRI-INGRESS-RULES - [0:0]
-:ANTREA-POL-PRI-EGRESS-RULES - [0:0]
-:ANTREA-POL-INGRESS-RULES - [0:0]
 :ANTREA-POL-EGRESS-RULES - [0:0]
+:ANTREA-POL-INGRESS-RULES - [0:0]
+:ANTREA-POL-PRE-EGRESS-RULES - [0:0]
+:ANTREA-POL-PRE-INGRESS-RULES - [0:0]
 -A ANTREA-FORWARD -m comment --comment "Antrea: accept packets from local Pods" -i antrea-gw0 -j ACCEPT
 -A ANTREA-FORWARD -m comment --comment "Antrea: accept packets to local Pods" -o antrea-gw0 -j ACCEPT
--A ANTREA-INPUT -m comment --comment "Antrea: jump to privileged ingress NodeNetworkPolicy rules" -j ANTREA-POL-PRI-INGRESS-RULES
+-A ANTREA-INPUT -m comment --comment "Antrea: jump to static ingress NodeNetworkPolicy rules" -j ANTREA-POL-PRE-INGRESS-RULES
 -A ANTREA-INPUT -m comment --comment "Antrea: jump to ingress NodeNetworkPolicy rules" -j ANTREA-POL-INGRESS-RULES
--A ANTREA-POL-PRI-INGRESS-RULES -m conntrack --ctstate ESTABLISHED,RELATED -m comment --comment "Antrea: allow ingress established or related packets" -j ACCEPT
--A ANTREA-POL-PRI-INGRESS-RULES -i lo -m comment --comment "Antrea: allow ingress packets from loopback" -j ACCEPT
--A ANTREA-OUTPUT -m comment --comment "Antrea: jump to privileged egress NodeNetworkPolicy rules" -j ANTREA-POL-PRI-EGRESS-RULES
+-A ANTREA-OUTPUT -m comment --comment "Antrea: jump to static egress NodeNetworkPolicy rules" -j ANTREA-POL-PRE-EGRESS-RULES
 -A ANTREA-OUTPUT -m comment --comment "Antrea: jump to egress NodeNetworkPolicy rules" -j ANTREA-POL-EGRESS-RULES
--A ANTREA-POL-PRI-EGRESS-RULES -m conntrack --ctstate ESTABLISHED,RELATED -m comment --comment "Antrea: allow egress established or related packets" -j ACCEPT
--A ANTREA-POL-PRI-EGRESS-RULES -o lo -m comment --comment "Antrea: allow egress packets to loopback" -j ACCEPT
 -A ANTREA-POL-INGRESS-RULES -j ACCEPT -m comment --comment "mock rule"
+-A ANTREA-POL-PRE-EGRESS-RULES -m conntrack --ctstate ESTABLISHED,RELATED -m comment --comment "Antrea: allow egress established or related packets" -j ACCEPT
+-A ANTREA-POL-PRE-EGRESS-RULES -o lo -m comment --comment "Antrea: allow egress packets to loopback" -j ACCEPT
+-A ANTREA-POL-PRE-INGRESS-RULES -m conntrack --ctstate ESTABLISHED,RELATED -m comment --comment "Antrea: allow ingress established or related packets" -j ACCEPT
+-A ANTREA-POL-PRE-INGRESS-RULES -i lo -m comment --comment "Antrea: allow ingress packets from loopback" -j ACCEPT
 COMMIT
 *nat
 :ANTREA-PREROUTING - [0:0]
@@ -373,21 +392,21 @@ COMMIT
 :ANTREA-FORWARD - [0:0]
 :ANTREA-INPUT - [0:0]
 :ANTREA-OUTPUT - [0:0]
-:ANTREA-POL-PRI-INGRESS-RULES - [0:0]
-:ANTREA-POL-PRI-EGRESS-RULES - [0:0]
-:ANTREA-POL-INGRESS-RULES - [0:0]
 :ANTREA-POL-EGRESS-RULES - [0:0]
+:ANTREA-POL-INGRESS-RULES - [0:0]
+:ANTREA-POL-PRE-EGRESS-RULES - [0:0]
+:ANTREA-POL-PRE-INGRESS-RULES - [0:0]
 -A ANTREA-FORWARD -m comment --comment "Antrea: accept packets from local Pods" -i antrea-gw0 -j ACCEPT
 -A ANTREA-FORWARD -m comment --comment "Antrea: accept packets to local Pods" -o antrea-gw0 -j ACCEPT
--A ANTREA-INPUT -m comment --comment "Antrea: jump to privileged ingress NodeNetworkPolicy rules" -j ANTREA-POL-PRI-INGRESS-RULES
+-A ANTREA-INPUT -m comment --comment "Antrea: jump to static ingress NodeNetworkPolicy rules" -j ANTREA-POL-PRE-INGRESS-RULES
 -A ANTREA-INPUT -m comment --comment "Antrea: jump to ingress NodeNetworkPolicy rules" -j ANTREA-POL-INGRESS-RULES
--A ANTREA-POL-PRI-INGRESS-RULES -m conntrack --ctstate ESTABLISHED,RELATED -m comment --comment "Antrea: allow ingress established or related packets" -j ACCEPT
--A ANTREA-POL-PRI-INGRESS-RULES -i lo -m comment --comment "Antrea: allow ingress packets from loopback" -j ACCEPT
--A ANTREA-OUTPUT -m comment --comment "Antrea: jump to privileged egress NodeNetworkPolicy rules" -j ANTREA-POL-PRI-EGRESS-RULES
+-A ANTREA-OUTPUT -m comment --comment "Antrea: jump to static egress NodeNetworkPolicy rules" -j ANTREA-POL-PRE-EGRESS-RULES
 -A ANTREA-OUTPUT -m comment --comment "Antrea: jump to egress NodeNetworkPolicy rules" -j ANTREA-POL-EGRESS-RULES
--A ANTREA-POL-PRI-EGRESS-RULES -m conntrack --ctstate ESTABLISHED,RELATED -m comment --comment "Antrea: allow egress established or related packets" -j ACCEPT
--A ANTREA-POL-PRI-EGRESS-RULES -o lo -m comment --comment "Antrea: allow egress packets to loopback" -j ACCEPT
 -A ANTREA-POL-INGRESS-RULES -j ACCEPT -m comment --comment "mock rule"
+-A ANTREA-POL-PRE-EGRESS-RULES -m conntrack --ctstate ESTABLISHED,RELATED -m comment --comment "Antrea: allow egress established or related packets" -j ACCEPT
+-A ANTREA-POL-PRE-EGRESS-RULES -o lo -m comment --comment "Antrea: allow egress packets to loopback" -j ACCEPT
+-A ANTREA-POL-PRE-INGRESS-RULES -m conntrack --ctstate ESTABLISHED,RELATED -m comment --comment "Antrea: allow ingress established or related packets" -j ACCEPT
+-A ANTREA-POL-PRE-INGRESS-RULES -i lo -m comment --comment "Antrea: allow ingress packets from loopback" -j ACCEPT
 COMMIT
 *nat
 :ANTREA-PREROUTING - [0:0]
@@ -543,13 +562,14 @@ COMMIT
 			ctrl := gomock.NewController(t)
 			mockIPTables := iptablestest.NewMockInterface(ctrl)
 			c := &Client{iptables: mockIPTables,
-				networkConfig:            tt.networkConfig,
-				nodeConfig:               tt.nodeConfig,
-				proxyAll:                 tt.proxyAll,
-				isCloudEKS:               tt.isCloudEKS,
-				multicastEnabled:         tt.multicastEnabled,
-				connectUplinkToBridge:    tt.connectUplinkToBridge,
-				nodeNetworkPolicyEnabled: tt.nodeNetworkPolicyEnabled,
+				networkConfig:                          tt.networkConfig,
+				nodeConfig:                             tt.nodeConfig,
+				proxyAll:                               tt.proxyAll,
+				isCloudEKS:                             tt.isCloudEKS,
+				multicastEnabled:                       tt.multicastEnabled,
+				connectUplinkToBridge:                  tt.connectUplinkToBridge,
+				nodeNetworkPolicyEnabled:               tt.nodeNetworkPolicyEnabled,
+				nodeNetworkPolicyIPTablesDeterministic: true,
 			}
 			for mark, snatIP := range tt.markToSNATIP {
 				c.markToSNATIP.Store(mark, net.ParseIP(snatIP))
