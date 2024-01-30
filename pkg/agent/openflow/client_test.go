@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
 	"antrea.io/libOpenflow/openflow15"
 	"antrea.io/libOpenflow/protocol"
@@ -46,6 +47,8 @@ import (
 )
 
 const bridgeName = "dummy-br"
+
+const openflowMessageMaxSize = 64000
 
 var (
 	bridgeMgmtAddr = binding.GetMgmtAddress(ovsconfig.DefaultOVSRunDir, bridgeName)
@@ -1121,6 +1124,69 @@ func Test_client_InstallServiceGroup(t *testing.T) {
 			}
 		})
 	}
+}
+
+func getServiceBucketMaxSize(t *testing.T, ctrl *gomock.Controller) uint16 {
+	fakeOfTable := ovsoftest.NewMockTable(ctrl)
+	fakeNodeIPChecker := nodeiptest.NewFakeNodeIPChecker("2001::2")
+	ServiceLBTable.ofTable = fakeOfTable
+	defer func() {
+		ServiceLBTable.ofTable = nil
+	}()
+	fs := &featureService{
+		groupCache:    sync.Map{},
+		bridge:        binding.NewOFBridge(bridgeName, ""),
+		nodeIPChecker: fakeNodeIPChecker,
+	}
+	// To create a single-bucket group with maximum size, use a remote non-hostNetwork IPv6 Endpoint that has all
+	// available actions.
+	endpoint := proxy.NewBaseEndpointInfo("2001::1", "node1", "", 80, false, true, false, false, nil)
+	fakeOfTable.EXPECT().GetID().Return(uint8(1)).Times(1)
+	group := fs.serviceEndpointGroup(binding.GroupIDType(100), true, endpoint)
+
+	messages, err := group.GetBundleMessages(binding.AddMessage)
+	require.NoError(t, err)
+	require.Equal(t, 1, len(messages))
+	groupMod := messages[0].GetMessage().(*openflow15.GroupMod)
+	require.Equal(t, 1, len(groupMod.Buckets))
+	// Since this is a single-bucket group, the `BucketArrayLen` is the size of the bucket.
+	return groupMod.BucketArrayLen
+}
+
+func getMulticastBucketMaxSize(t *testing.T, ctrl *gomock.Controller) uint16 {
+	fs := &featureMulticast{
+		groupCache: sync.Map{},
+		bridge:     binding.NewOFBridge(bridgeName, ""),
+	}
+	fakeOfTable := ovsoftest.NewMockTable(ctrl)
+	MulticastOutputTable.ofTable = fakeOfTable
+	defer func() {
+		MulticastOutputTable.ofTable = nil
+	}()
+
+	// Create a single-bucket group with maximum size.
+	fakeOfTable.EXPECT().GetID().Return(uint8(1)).Times(1)
+	group := fs.multicastReceiversGroup(binding.GroupIDType(100), 0, nil, []net.IP{net.ParseIP("192.168.77.100")})
+
+	messages, err := group.GetBundleMessages(binding.AddMessage)
+	require.NoError(t, err)
+	require.Equal(t, 1, len(messages))
+	groupMod := messages[0].GetMessage().(*openflow15.GroupMod)
+	require.Equal(t, 1, len(groupMod.Buckets))
+	// Since this is a single-bucket group, the `BucketArrayLen` is the size of the bucket.
+	return groupMod.BucketArrayLen
+}
+
+func TestMaxBucketsPerMessage(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	groupModHeaderSize := uint16(unsafe.Sizeof(openflow15.GroupMod{}) - unsafe.Sizeof(openflow15.GroupMod{}.Buckets) - unsafe.Sizeof(openflow15.GroupMod{}.Properties))
+	serviceMaxBucketsPerMessage := int((openflowMessageMaxSize - groupModHeaderSize) / getServiceBucketMaxSize(t, ctrl))
+	multicastMaxBucketsPerMessage := int((openflowMessageMaxSize - groupModHeaderSize) / getMulticastBucketMaxSize(t, ctrl))
+
+	// Ensure that binding.MaxBucketsPerMessage is less than or equal to every feature's maximum supported buckets.
+	require.LessOrEqual(t, binding.MaxBucketsPerMessage, serviceMaxBucketsPerMessage)
+	require.LessOrEqual(t, binding.MaxBucketsPerMessage, multicastMaxBucketsPerMessage)
 }
 
 func Test_client_InstallEndpointFlows(t *testing.T) {
