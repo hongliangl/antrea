@@ -190,6 +190,10 @@ type ExternalInfo struct {
 	vlanSubnetIPv6  string
 	vlanGatewayIPv6 string
 	vlanID          int
+
+	externalFRRIPv4 string
+	externalFRRIPv6 string
+	externalFRRCID  string
 }
 
 var clusterInfo ClusterInfo
@@ -213,9 +217,12 @@ type TestOptions struct {
 	// the home directory of the control-plane Node. Note it doesn't affect the tests that redeploy Antrea themselves.
 	deployAntrea bool
 
-	externalServerIPs string
-	vlanSubnets       string
-	vlanID            int
+	externalAgnhostIPs string
+	vlanSubnets        string
+	vlanID             int
+
+	externalFRRIPs string
+	externalFRRCID string
 }
 
 type flowVisibilityTestOptions struct {
@@ -498,14 +505,14 @@ func (data *TestData) RunCommandOnNodeExt(nodeName, cmd string, envs map[string]
 }
 
 func (data *TestData) collectExternalInfo() error {
-	ips := strings.Split(testOptions.externalServerIPs, ",")
+	ips := strings.Split(testOptions.externalAgnhostIPs, ",")
 	for _, ip := range ips {
 		if ip == "" {
 			continue
 		}
 		parsedIP := net.ParseIP(ip)
 		if parsedIP == nil {
-			return fmt.Errorf("invalid external server IP %s", ip)
+			return fmt.Errorf("invalid external agnhost IP %s", ip)
 		}
 		if parsedIP.To4() != nil {
 			externalInfo.externalServerIPv4 = ip
@@ -532,6 +539,25 @@ func (data *TestData) collectExternalInfo() error {
 		}
 	}
 	externalInfo.vlanID = testOptions.vlanID
+
+	frrIPs := strings.Split(testOptions.externalFRRIPs, ",")
+	for _, ip := range frrIPs {
+		if ip == "" {
+			continue
+		}
+		parsedIP := net.ParseIP(ip)
+		if parsedIP == nil {
+			return fmt.Errorf("invalid external FRR IP %s", ip)
+		}
+		if parsedIP.To4() != nil {
+			externalInfo.externalFRRIPv4 = ip
+		} else {
+			externalInfo.externalFRRIPv6 = ip
+		}
+	}
+
+	externalInfo.externalFRRCID = testOptions.externalFRRCID
+
 	return nil
 }
 
@@ -2038,6 +2064,20 @@ func (data *TestData) updateServiceExternalTrafficPolicy(serviceName string, nod
 	return data.clientset.CoreV1().Services(data.testNamespace).Update(context.TODO(), svc, metav1.UpdateOptions{})
 }
 
+func (data *TestData) updateServiceInternalTrafficPolicy(serviceName string, nodeLocalInternal bool) (*corev1.Service, error) {
+	svc, err := data.clientset.CoreV1().Services(data.testNamespace).Get(context.TODO(), serviceName, metav1.GetOptions{})
+	if err != nil {
+		return svc, err
+	}
+	if nodeLocalInternal {
+		svc.Spec.InternalTrafficPolicy = ptr.To[corev1.ServiceInternalTrafficPolicyType](corev1.ServiceInternalTrafficPolicyLocal)
+	} else {
+		svc.Spec.InternalTrafficPolicy = ptr.To[corev1.ServiceInternalTrafficPolicyType](corev1.ServiceInternalTrafficPolicyCluster)
+	}
+
+	return data.clientset.CoreV1().Services(data.testNamespace).Update(context.TODO(), svc, metav1.UpdateOptions{})
+}
+
 func (data *TestData) updateService(serviceName string, mutateFunc func(service *corev1.Service)) (*corev1.Service, error) {
 	svc, err := data.clientset.CoreV1().Services(data.testNamespace).Get(context.TODO(), serviceName, metav1.GetOptions{})
 	if err != nil {
@@ -2874,6 +2914,23 @@ func (data *TestData) copyNodeFiles(fileName string, destDir string) error {
 // Pod will be scheduled on the specified Node (if nodeName is not empty).
 func (data *TestData) createAgnhostPodOnNode(name string, ns string, nodeName string, hostNetwork bool) error {
 	return NewPodBuilder(name, ns, agnhostImage).OnNode(nodeName).WithHostNetwork(hostNetwork).Create(data)
+}
+
+func (data *TestData) createAgnhostPodWithHTTPOnNode(name string, ns string, nodeName string, hostNetwork bool) error {
+	args := []string{"netexec", "--http-port=8080"}
+	ports := []corev1.ContainerPort{
+		{
+			Name:          "http",
+			ContainerPort: 8080,
+			Protocol:      corev1.ProtocolTCP,
+		},
+	}
+	return NewPodBuilder(name, ns, agnhostImage).
+		OnNode(nodeName).
+		WithArgs(args).
+		WithPorts(ports).
+		WithHostNetwork(hostNetwork).
+		Create(data)
 }
 
 // createAgnhostPodWithSAOnNode creates a Pod in the test namespace with a single

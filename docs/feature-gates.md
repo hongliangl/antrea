@@ -59,6 +59,7 @@ edit the Agent configuration in the
 | `EgressSeparateSubnet`        | Agent              | `false` | Alpha | v1.15         | N/A          | N/A        | No                 |                                               |
 | `NodeNetworkPolicy`           | Agent              | `false` | Alpha | v1.15         | N/A          | N/A        | Yes                |                                               |
 | `L7FlowExporter`              | Agent              | `false` | Alpha | v1.15         | N/A          | N/A        | Yes                |                                               |
+| `BGPPolicy`                   | Agent              | `false` | Alpha | v2.1          | N/A          | N/A        | No                 |                                               |
 
 ## Description and Requirements of Features
 
@@ -438,3 +439,8 @@ Refer to this [document](network-flow-visibility.md#l7-visibility) for more info
 #### Requirements for this Feature
 
 - Linux Nodes only.
+
+### BGPPolicy
+
+`BGPPolicy` allows users to advertise various types of IP addresses (e.g., ClusterIPs, ExternalIPs, LoadBalancerIPs) to
+external BGP peers, providing a flexible mechanism for integrating Kubernetes clusters with external BGP-enabled networks.

@@ -3820,6 +3820,9 @@ data:
     # Enable NodeLatencyMonitor to monitor the latency between Nodes.
     #  NodeLatencyMonitor: false
 
+    # Allow users to advertise Service IPs, Pod IPs, and Egress IPs to BGP peers.
+    #  BGPPolicy: false
+
     # Name of the OpenVSwitch bridge antrea-agent will create and use.
     # Make sure it doesn't conflict with your existing OpenVSwitch bridges.
     ovsBridge: "br-int"
@@ -4458,6 +4461,7 @@ rules:
   - apiGroups:
       - crd.antrea.io
     resources:
+      - bgppolicies
       - externalippools
       - ippools
       - trafficcontrols
@@ -4515,6 +4519,15 @@ rules:
       - create
       - patch
       - update
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    resourceNames:
+      - antrea-bgp-passwords
+    verbs:
+      - get
+      - watch
 ---
 # Source: antrea/templates/antctl/clusterrole.yaml
 kind: ClusterRole
@@ -5123,7 +5136,7 @@ spec:
         kubectl.kubernetes.io/default-container: antrea-agent
         # Automatically restart Pods with a RollingUpdate if the ConfigMap changes
         # See https://helm.sh/docs/howto/charts_tips_and_tricks/#automatically-roll-deployments
-        checksum/config: ba93df141f512a1f8483114b5994444c7231b298e7e9133483ddc1f4210ec395
+        checksum/config: 51ce7bc9b968bae31373973f2cae160e93ced8835cc703a2ed369f153dc1ca46
         checksum/ipsec-secret: d0eb9c52d0cd4311b6d252a951126bf9bea27ec05590bed8a394f0f792dcb2a4
       labels:
         app: antrea
@@ -5405,7 +5418,7 @@ spec:
       annotations:
         # Automatically restart Pod if the ConfigMap changes
         # See https://helm.sh/docs/howto/charts_tips_and_tricks/#automatically-roll-deployments
-        checksum/config: ba93df141f512a1f8483114b5994444c7231b298e7e9133483ddc1f4210ec395
+        checksum/config: 51ce7bc9b968bae31373973f2cae160e93ced8835cc703a2ed369f153dc1ca46
       labels:
         app: antrea
         component: antrea-controller

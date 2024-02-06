@@ -392,3 +392,8 @@ type OVSBridgeConfig struct {
 	// Names of physical interfaces to be connected to the bridge.
 	PhysicalInterfaces []string `yaml:"physicalInterfaces,omitempty"`
 }
+
+type BGPPolicyConfig struct {
+	// Name of the Secret storing passwords of BGP peers.
+	SecretName string `yaml:"secretName,omitempty"`
+}

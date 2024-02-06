@@ -38,4 +38,7 @@ const (
 
 	// L7FlowExporterAnnotationKey is the key of the L7 network flow export annotation that enables L7 network flow export for annotated Pod or Namespace based on the value of annotation which is direction of traffic.
 	L7FlowExporterAnnotationKey string = "visibility.antrea.io/l7-export"
+
+	// NodeBGPPolicyRouterIDAnnotationKey represents the key of the Node's BGP router ID in the Annotations of the Node.
+	NodeBGPPolicyRouterIDAnnotationKey string = "node.antrea.io/bgppolicy-router-id"
 )
