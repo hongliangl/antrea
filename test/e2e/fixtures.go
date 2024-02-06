@@ -686,6 +686,8 @@ func testMain(m *testing.M) int {
 	flag.StringVar(&testOptions.linuxVMs, "linuxVMs", "", "hostname of Linux VMs")
 	flag.StringVar(&testOptions.windowsVMs, "windowsVMs", "", "hostname of Windows VMs")
 	flag.StringVar(&testOptions.externalServerIPs, "external-server-ips", "", "IP addresses of external server, at most one IP per IP family")
+	flag.StringVar(&testOptions.externalFRRIPs, "external-frr-ips", "", "IP addresses of external FRR, at most one IP per IP family")
+	flag.StringVar(&testOptions.externalFRRCID, "external-frr-cid", "", "Container ID of external FRR")
 	flag.StringVar(&testOptions.vlanSubnets, "vlan-subnets", "", "IP subnets of the VLAN network the Nodes reside in, at most one subnet per IP family")
 	flag.IntVar(&testOptions.vlanID, "vlan-id", 0, "ID of the VLAN network the Nodes reside in")
 	flag.Parse()

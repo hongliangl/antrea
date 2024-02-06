@@ -190,6 +190,10 @@ type ExternalInfo struct {
 	vlanSubnetIPv6  string
 	vlanGatewayIPv6 string
 	vlanID          int
+
+	externalFRRIPv4 string
+	externalFRRIPv6 string
+	externalFRRCID  string
 }
 
 var clusterInfo ClusterInfo
@@ -216,6 +220,9 @@ type TestOptions struct {
 	externalServerIPs string
 	vlanSubnets       string
 	vlanID            int
+
+	externalFRRIPs string
+	externalFRRCID string
 }
 
 type flowVisibilityTestOptions struct {
@@ -532,6 +539,25 @@ func (data *TestData) collectExternalInfo() error {
 		}
 	}
 	externalInfo.vlanID = testOptions.vlanID
+
+	frrIPs := strings.Split(testOptions.externalFRRIPs, ",")
+	for _, ip := range frrIPs {
+		if ip == "" {
+			continue
+		}
+		parsedIP := net.ParseIP(ip)
+		if parsedIP == nil {
+			return fmt.Errorf("invalid external FRR IP %s", ip)
+		}
+		if parsedIP.To4() != nil {
+			externalInfo.externalFRRIPv4 = ip
+		} else {
+			externalInfo.externalFRRIPv6 = ip
+		}
+	}
+
+	externalInfo.externalFRRCID = testOptions.externalFRRCID
+
 	return nil
 }
 
