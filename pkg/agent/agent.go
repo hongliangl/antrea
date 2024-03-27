@@ -48,6 +48,7 @@ import (
 	"antrea.io/antrea/pkg/agent/route"
 	"antrea.io/antrea/pkg/agent/types"
 	"antrea.io/antrea/pkg/agent/util"
+	"antrea.io/antrea/pkg/agent/util/winnet"
 	"antrea.io/antrea/pkg/agent/wireguard"
 	"antrea.io/antrea/pkg/apis/crd/v1alpha1"
 	"antrea.io/antrea/pkg/client/clientset/versioned"
@@ -136,6 +137,7 @@ type Initializer struct {
 	stopCh                <-chan struct{}
 	nodeType              config.NodeType
 	externalNodeNamespace string
+	winnet                winnet.Interface // nolint: unused
 }
 
 func NewInitializer(
