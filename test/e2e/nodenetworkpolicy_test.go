@@ -29,7 +29,7 @@ import (
 
 const labelNodeHostname = "kubernetes.io/hostname"
 
-func initializeAntreaNodeNetworkPolicy(t *testing.T, data *TestData, toHostNetworkPod bool) {
+func initializeAntreaNodeNetworkPolicy(t *testing.T, data *TestData, testNodeToNode bool) {
 	p80 = 80
 	p81 = 81
 	p8080 = 8080
@@ -45,22 +45,32 @@ func initializeAntreaNodeNetworkPolicy(t *testing.T, data *TestData, toHostNetwo
 		}
 	}
 	nodes = make(map[string]string)
-	nodes["x"] = controlPlaneNodeName()
-	nodes["y"] = workerNodeName(1)
 	hostNetworks := make(map[string]bool)
+
 	hostNetworks["x"] = true
-	if toHostNetworkPod {
+	nodes["x"] = workerNodeName(0)
+
+	if testNodeToNode {
 		hostNetworks["y"] = true
 	} else {
 		hostNetworks["y"] = false
-		nodes["z"] = workerNodeName(1)
-		hostNetworks["z"] = false
 	}
-	allPods = []Pod{}
+	nodes["y"] = workerNodeName(1)
 
+	hostNetworks["z"] = false
+	nodes["z"] = workerNodeName(0)
+
+	allPods = []*Pod{}
 	for _, podName := range podsPerNamespace {
-		for _, ns := range namespaces {
-			allPods = append(allPods, NewPod(ns.Name, podName))
+		for key, ns := range namespaces {
+			pod := NewPod(ns.Name, podName)
+			if hostNetworks[key] {
+				pod = pod.SetHostNetwork()
+			}
+			if nodes[key] != "" {
+				pod = pod.SetNodeName(nodes[key])
+			}
+			allPods = append(allPods, pod)
 		}
 	}
 
@@ -68,7 +78,7 @@ func initializeAntreaNodeNetworkPolicy(t *testing.T, data *TestData, toHostNetwo
 	// k8sUtils is a global var
 	k8sUtils, err = NewKubernetesUtils(data)
 	failOnError(err, t)
-	ips, err := k8sUtils.Bootstrap(namespaces, podsPerNamespace, true, nodes, hostNetworks)
+	ips, err := k8sUtils.Bootstrap(namespaces, true, allPods)
 	failOnError(err, t)
 	podIPs = ips
 }
@@ -89,6 +99,7 @@ func TestAntreaNodeNetworkPolicy(t *testing.T) {
 	}
 	defer teardownTest(t, data)
 
+	// Test NodeNetworkPolicy between Nodes.
 	initializeAntreaNodeNetworkPolicy(t, data, true)
 
 	t.Run("Case=ACNPAllowNoDefaultIsolationTCP", func(t *testing.T) { testNodeACNPAllowNoDefaultIsolation(t, ProtocolTCP) })
@@ -115,6 +126,7 @@ func TestAntreaNodeNetworkPolicy(t *testing.T) {
 
 	k8sUtils.Cleanup(namespaces)
 
+	// Test NodeNetworkPolicy between Node and Pods.
 	initializeAntreaNodeNetworkPolicy(t, data, false)
 
 	t.Run("Case=ACNPNamespaceIsolation", func(t *testing.T) { testNodeACNPNamespaceIsolation(t) })

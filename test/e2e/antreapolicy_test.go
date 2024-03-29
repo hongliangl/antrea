@@ -52,8 +52,8 @@ var (
 	p8081            int32 = 8081
 	p8082            int32 = 8082
 	p8085            int32 = 8085
-	allPods          []Pod
-	podsByNamespace  map[string][]Pod
+	allPods          []*Pod
+	podsByNamespace  map[string][]*Pod
 	k8sUtils         *KubernetesUtils
 	allTestList      []*TestCase
 	podsPerNamespace []string
@@ -88,7 +88,7 @@ func failOnError(err error, t *testing.T) {
 // podToAddrTestStep is a single unit of testing the connectivity from a Pod to an
 // arbitrary destination address.
 type podToAddrTestStep struct {
-	clientPod            Pod
+	clientPod            *Pod
 	destAddr             string
 	destPort             int32
 	expectedConnectivity PodConnectivityMark
@@ -100,8 +100,8 @@ func getNS(ns string) string {
 }
 
 // Util function to get the runtime Pod struct of a test Pod.
-func getPod(ns, po string) Pod {
-	return Pod(namespaces[ns].Name + "/" + po)
+func getPod(ns, po string) *Pod {
+	return NewPod(namespaces[ns].Name, po)
 }
 
 // Util function to get the runtime Pod name of a test Pod.
@@ -127,8 +127,8 @@ func initialize(t *testing.T, data *TestData, customNamespaces map[string]TestNa
 	// This function "initialize" will be used more than once, and variable "allPods" is global.
 	// It should be empty every time when "initialize" is performed, otherwise there will be unexpected
 	// results.
-	allPods = []Pod{}
-	podsByNamespace = make(map[string][]Pod)
+	allPods = []*Pod{}
+	podsByNamespace = make(map[string][]*Pod)
 	podsPerNamespace = []string{"a", "b", "c"}
 	for _, podName := range podsPerNamespace {
 		for _, ns := range namespaces {
@@ -142,7 +142,7 @@ func initialize(t *testing.T, data *TestData, customNamespaces map[string]TestNa
 	// k8sUtils is a global var
 	k8sUtils, err = NewKubernetesUtils(data)
 	failOnError(err, t)
-	ips, err := k8sUtils.Bootstrap(namespaces, podsPerNamespace, true, nil, nil)
+	ips, err := k8sUtils.Bootstrap(namespaces, true, allPods)
 	failOnError(err, t)
 	podIPs = ips
 }
@@ -461,9 +461,9 @@ func testACNPSourcePort(t *testing.T) {
 		nil, nil, nil, false, nil, crdv1beta1.RuleActionDrop, "", "", nil)
 
 	reachability := NewReachability(allPods, Connected)
-	reachability.Expect(Pod(getNS("x")+"/b"), Pod(getNS("x")+"/a"), Dropped)
-	reachability.Expect(Pod(getNS("x")+"/b"), Pod(getNS("y")+"/a"), Dropped)
-	reachability.Expect(Pod(getNS("x")+"/b"), Pod(getNS("z")+"/a"), Dropped)
+	reachability.Expect(NewPod(getNS("x"), "b"), NewPod(getNS("x"), "a"), Dropped)
+	reachability.Expect(NewPod(getNS("x"), "b"), NewPod(getNS("y"), "a"), Dropped)
+	reachability.Expect(NewPod(getNS("x"), "b"), NewPod(getNS("z"), "a"), Dropped)
 	// After adding the dst port constraint of port 80, traffic on port 81 should not be affected.
 	updatedReachability := NewReachability(allPods, Connected)
 
@@ -969,14 +969,8 @@ func testACNPClusterGroupAppliedToPodAdd(t *testing.T, data *TestData) {
 		nil, nil, nil, nil, nil, crdv1beta1.RuleActionDrop, "", "", nil)
 	cp := []*CustomProbe{
 		{
-			SourcePod: CustomPod{
-				Pod:    NewPod(getNS("z"), "j"),
-				Labels: map[string]string{"pod": "j"},
-			},
-			DestPod: CustomPod{
-				Pod:    NewPod(getNS("x"), "j"),
-				Labels: map[string]string{"pod": "j"},
-			},
+			SourcePod:          NewPod(getNS("z"), "j").SetLabels(map[string]string{"pod": "j"}),
+			DestPod:            NewPod(getNS("x"), "j").SetLabels(map[string]string{"pod": "j"}),
 			ExpectConnectivity: Dropped,
 			Port:               p80,
 		},
@@ -1015,14 +1009,8 @@ func testACNPClusterGroupRefRulePodAdd(t *testing.T, data *TestData) {
 		nil, nil, nil, nil, nil, crdv1beta1.RuleActionDrop, cgName, "", nil)
 	cp := []*CustomProbe{
 		{
-			SourcePod: CustomPod{
-				Pod:    NewPod(getNS("x"), "k"),
-				Labels: map[string]string{"pod": "k"},
-			},
-			DestPod: CustomPod{
-				Pod:    NewPod(getNS("z"), "k"),
-				Labels: map[string]string{"pod": "k"},
-			},
+			SourcePod:          NewPod(getNS("x"), "k").SetLabels(map[string]string{"pod": "k"}),
+			DestPod:            NewPod(getNS("z"), "k").SetLabels(map[string]string{"pod": "k"}),
 			ExpectConnectivity: Dropped,
 			Port:               p80,
 		},
@@ -1328,14 +1316,8 @@ func testANNPGroupAppliedToPodAdd(t *testing.T, data *TestData) {
 		nil, nil, nil, nil, crdv1beta1.RuleActionDrop, "", "")
 	cp := []*CustomProbe{
 		{
-			SourcePod: CustomPod{
-				Pod:    NewPod(getNS("x"), "j"),
-				Labels: map[string]string{"pod": "j"},
-			},
-			DestPod: CustomPod{
-				Pod:    NewPod(getNS("x"), "d"),
-				Labels: map[string]string{"pod": "d"},
-			},
+			SourcePod:          NewPod(getNS("x"), "j").SetLabels(map[string]string{"pod": "j"}),
+			DestPod:            NewPod(getNS("x"), "d").SetLabels(map[string]string{"pod": "d"}),
 			ExpectConnectivity: Dropped,
 			Port:               p80,
 		},
@@ -1374,14 +1356,8 @@ func testANNPGroupServiceRefPodAdd(t *testing.T, data *TestData) {
 	svc2PodName := randName("test-pod-svc2-")
 	cp := []*CustomProbe{
 		{
-			SourcePod: CustomPod{
-				Pod:    NewPod(getNS("x"), svc2PodName),
-				Labels: map[string]string{"pod": svc2PodName, "app": "b"},
-			},
-			DestPod: CustomPod{
-				Pod:    NewPod(getNS("x"), svc1PodName),
-				Labels: map[string]string{"pod": svc1PodName, "app": "a"},
-			},
+			SourcePod:          NewPod(getNS("x"), svc2PodName).SetLabels(map[string]string{"pod": svc2PodName, "app": "b"}),
+			DestPod:            NewPod(getNS("x"), svc1PodName).SetLabels(map[string]string{"pod": svc1PodName, "app": "a"}),
 			ExpectConnectivity: Dropped,
 			Port:               p80,
 		},
@@ -1600,14 +1576,9 @@ func testANNPNestedGroupCreateAndUpdate(t *testing.T, data *TestData) {
 	// New member in grp-svc-x-a should be reflected in grp-nested as well.
 	cp := []*CustomProbe{
 		{
-			SourcePod: CustomPod{
-				Pod:    NewPod(getNS("x"), svc1PodName),
-				Labels: map[string]string{"pod": svc1PodName, "app": "a"},
-			},
-			DestPod: CustomPod{
-				Pod:    NewPod(getNS("x"), "test-add-pod-ns-x"),
-				Labels: map[string]string{"pod": "test-add-pod-ns-x"},
-			},
+			SourcePod: NewPod(getNS("x"), svc1PodName).SetLabels(map[string]string{"pod": svc1PodName, "app": "a"}),
+
+			DestPod:            NewPod(getNS("x"), "test-add-pod-ns-x").SetLabels(map[string]string{"pod": "test-add-pod-ns-x"}),
 			ExpectConnectivity: Dropped,
 			Port:               p80,
 		},
@@ -2081,13 +2052,13 @@ func testRejectServiceTraffic(t *testing.T, data *TestData, clientNamespace, ser
 
 	testcases := []podToAddrTestStep{
 		{
-			Pod(clientNamespace + "/agnhost-client"),
+			NewPod(clientNamespace, "agnhost-client"),
 			svc1.Spec.ClusterIP,
 			80,
 			Rejected,
 		},
 		{
-			Pod(clientNamespace + "/agnhost-client"),
+			NewPod(clientNamespace, "agnhost-client"),
 			svc2.Spec.ClusterIP,
 			80,
 			Rejected,
@@ -2165,13 +2136,13 @@ func testRejectNoInfiniteLoop(t *testing.T, data *TestData, clientNamespace, ser
 	if clusterInfo.podV4NetworkCIDR != "" {
 		testcases = append(testcases, []podToAddrTestStep{
 			{
-				Pod(clientNamespace + "/agnhost-client"),
+				NewPod(clientNamespace, "agnhost-client"),
 				server0IP.IPv4.String(),
 				80,
 				Rejected,
 			},
 			{
-				Pod(clientNamespace + "/agnhost-client"),
+				NewPod(clientNamespace, "agnhost-client"),
 				server1IP.IPv4.String(),
 				80,
 				Rejected,
@@ -2181,13 +2152,13 @@ func testRejectNoInfiniteLoop(t *testing.T, data *TestData, clientNamespace, ser
 	if clusterInfo.podV6NetworkCIDR != "" {
 		testcases = append(testcases, []podToAddrTestStep{
 			{
-				Pod(clientNamespace + "/agnhost-client"),
+				NewPod(clientNamespace, "agnhost-client"),
 				server0IP.IPv6.String(),
 				80,
 				Rejected,
 			},
 			{
-				Pod(clientNamespace + "/agnhost-client"),
+				NewPod(clientNamespace, "agnhost-client"),
 				server1IP.IPv6.String(),
 				80,
 				Rejected,
@@ -2787,14 +2758,8 @@ func testACNPClusterGroupServiceRefCreateAndUpdate(t *testing.T, data *TestData)
 	cgBuilder2Updated := cgBuilder2.SetServiceReference(getNS("y"), "svc3")
 	cp := []*CustomProbe{
 		{
-			SourcePod: CustomPod{
-				Pod:    NewPod(getNS("y"), svc3PodName),
-				Labels: map[string]string{"pod": svc3PodName, "app": "a"},
-			},
-			DestPod: CustomPod{
-				Pod:    NewPod(getNS("x"), svc1PodName),
-				Labels: map[string]string{"pod": svc1PodName, "app": "b"},
-			},
+			SourcePod:          NewPod(getNS("y"), svc3PodName).SetLabels(map[string]string{"pod": svc3PodName, "app": "a"}),
+			DestPod:            NewPod(getNS("x"), svc1PodName).SetLabels(map[string]string{"pod": svc1PodName, "app": "b"}),
 			ExpectConnectivity: Dropped,
 			Port:               p80,
 		},
@@ -2882,14 +2847,8 @@ func testACNPNestedClusterGroupCreateAndUpdate(t *testing.T, data *TestData) {
 	// New member in cg-svc-x-a should be reflected in cg-nested as well.
 	cp := []*CustomProbe{
 		{
-			SourcePod: CustomPod{
-				Pod:    NewPod(getNS("x"), svc1PodName),
-				Labels: map[string]string{"pod": svc1PodName, "app": "a"},
-			},
-			DestPod: CustomPod{
-				Pod:    NewPod(getNS("z"), "test-add-pod-ns-z"),
-				Labels: map[string]string{"pod": "test-add-pod-ns-z"},
-			},
+			SourcePod:          NewPod(getNS("x"), svc1PodName).SetLabels(map[string]string{"pod": svc1PodName, "app": "a"}),
+			DestPod:            NewPod(getNS("z"), "test-add-pod-ns-z").SetLabels(map[string]string{"pod": "test-add-pod-ns-z"}),
 			ExpectConnectivity: Dropped,
 			Port:               p80,
 		},
@@ -3481,7 +3440,7 @@ func testToServices(t *testing.T, data *TestData) {
 				Dropped,
 			},
 			{
-				Pod(getNS("z") + "/c"),
+				getPod("z", "c"),
 				service.Spec.ClusterIP,
 				service.Spec.Ports[0].Port,
 				Connected,
@@ -3753,13 +3712,13 @@ func testACNPICMPSupport(t *testing.T, data *TestData) {
 	if clusterInfo.podV4NetworkCIDR != "" {
 		testcases = append(testcases, []podToAddrTestStep{
 			{
-				Pod(fmt.Sprintf("%s/%s", data.testNamespace, clientName)),
+				NewPod(data.testNamespace, clientName),
 				server0IP.IPv4.String(),
 				-1,
 				Rejected,
 			},
 			{
-				Pod(fmt.Sprintf("%s/%s", data.testNamespace, clientName)),
+				NewPod(data.testNamespace, clientName),
 				server1IP.IPv4.String(),
 				-1,
 				Dropped,
@@ -3769,13 +3728,13 @@ func testACNPICMPSupport(t *testing.T, data *TestData) {
 	if clusterInfo.podV6NetworkCIDR != "" {
 		testcases = append(testcases, []podToAddrTestStep{
 			{
-				Pod(fmt.Sprintf("%s/%s", data.testNamespace, clientName)),
+				NewPod(data.testNamespace, clientName),
 				server0IP.IPv6.String(),
 				-1,
 				Rejected,
 			},
 			{
-				Pod(fmt.Sprintf("%s/%s", data.testNamespace, clientName)),
+				NewPod(data.testNamespace, clientName),
 				server1IP.IPv6.String(),
 				-1,
 				Dropped,
@@ -4156,18 +4115,18 @@ func executeTestsWithData(t *testing.T, testList []*TestCase, data *TestData) {
 
 func doProbe(t *testing.T, data *TestData, p *CustomProbe, protocol AntreaPolicyProtocol) {
 	// Bootstrap Pods
-	_, _, srcPodCleanupFunc := createAndWaitForPodWithLabels(t, data, data.createServerPodWithLabels, p.SourcePod.Pod.PodName(), p.SourcePod.Pod.Namespace(), p.Port, p.SourcePod.Labels)
+	_, _, srcPodCleanupFunc := createAndWaitForPodWithLabels(t, data, data.createServerPodWithLabels, p.SourcePod.PodName(), p.SourcePod.Namespace(), p.Port, p.SourcePod.Labels())
 	defer srcPodCleanupFunc()
-	_, _, dstPodCleanupFunc := createAndWaitForPodWithLabels(t, data, data.createServerPodWithLabels, p.DestPod.Pod.PodName(), p.DestPod.Pod.Namespace(), p.Port, p.DestPod.Labels)
+	_, _, dstPodCleanupFunc := createAndWaitForPodWithLabels(t, data, data.createServerPodWithLabels, p.DestPod.PodName(), p.DestPod.Namespace(), p.Port, p.DestPod.Labels())
 	defer dstPodCleanupFunc()
-	log.Tracef("Probing: %s -> %s", p.SourcePod.Pod.PodName(), p.DestPod.Pod.PodName())
-	connectivity, err := k8sUtils.Probe(p.SourcePod.Pod.Namespace(), p.SourcePod.Pod.PodName(), p.DestPod.Pod.Namespace(), p.DestPod.Pod.PodName(), p.Port, protocol, nil, &p.ExpectConnectivity)
+	log.Tracef("Probing: %s -> %s", p.SourcePod.PodName(), p.DestPod.PodName())
+	connectivity, err := k8sUtils.Probe(p.SourcePod.Namespace(), p.SourcePod.PodName(), p.DestPod.Namespace(), p.DestPod.PodName(), p.Port, protocol, nil, &p.ExpectConnectivity)
 	if err != nil {
 		t.Errorf("Failure -- could not complete probe: %v", err)
 	}
 	if connectivity != p.ExpectConnectivity {
 		t.Errorf("Failure -- wrong results for custom probe: Source %s/%s --> Dest %s/%s connectivity: %v, expected: %v",
-			p.SourcePod.Pod.Namespace(), p.SourcePod.Pod.PodName(), p.DestPod.Pod.Namespace(), p.DestPod.Pod.PodName(), connectivity, p.ExpectConnectivity)
+			p.SourcePod.Namespace(), p.SourcePod.PodName(), p.DestPod.Namespace(), p.DestPod.PodName(), connectivity, p.ExpectConnectivity)
 	}
 }
 

@@ -77,9 +77,9 @@ type TestStep struct {
 // can be tested against expected connectivity among those Pods.
 type CustomProbe struct {
 	// Create or update a source Pod.
-	SourcePod CustomPod
+	SourcePod *Pod
 	// Create or update a destination Pod.
-	DestPod CustomPod
+	DestPod *Pod
 	// Port on which the probe will be made.
 	Port int32
 	// Set the expected connectivity.
@@ -87,8 +87,8 @@ type CustomProbe struct {
 }
 
 type probeResult struct {
-	podFrom      Pod
-	podTo        Pod
+	podFrom      *Pod
+	podTo        *Pod
 	connectivity PodConnectivityMark
 	err          error
 }
@@ -997,7 +997,7 @@ func (k *KubernetesUtils) waitForPodInNamespace(ns string, pod string) ([]string
 	}
 }
 
-func (k *KubernetesUtils) waitForHTTPServers(allPods []Pod) error {
+func (k *KubernetesUtils) waitForHTTPServers(allPods []*Pod) error {
 	const maxTries = 10
 	log.Infof("waiting for HTTP servers (ports 80, 81 and 8080:8085) to become ready")
 
@@ -1030,13 +1030,16 @@ func (k *KubernetesUtils) waitForHTTPServers(allPods []Pod) error {
 	return fmt.Errorf("after %d tries, HTTP servers are not ready", maxTries)
 }
 
-func (k *KubernetesUtils) validateOnePort(allPods []Pod, reachability *Reachability, port int32, protocol utils.AntreaPolicyProtocol) {
+func (k *KubernetesUtils) validateOnePort(allPods []*Pod, reachability *Reachability, port int32, protocol utils.AntreaPolicyProtocol) {
 	numProbes := len(allPods) * len(allPods)
 	resultsCh := make(chan *probeResult, numProbes)
 	// TODO: find better metrics, this is only for POC.
-	oneProbe := func(podFrom, podTo Pod, port int32) {
-		log.Tracef("Probing: %s -> %s", podFrom, podTo)
-		expectedResult := reachability.Expected.Get(podFrom.String(), podTo.String())
+	oneProbe := func(podFrom, podTo *Pod, port int32) {
+		if !podFrom.IsHostNetwork() && podTo.IsHostNetwork() && (protocol == utils.ProtocolUDP || protocol == utils.ProtocolSCTP) {
+			return
+		}
+		log.Tracef("Probing: %s -> %s", podFrom.NamespacedName(), podTo.NamespacedName())
+		expectedResult := reachability.Expected.Get(podFrom.NamespacedName(), podTo.NamespacedName())
 		connectivity, err := k.Probe(podFrom.Namespace(), podFrom.PodName(), podTo.Namespace(), podTo.PodName(), port, protocol, nil, &expectedResult)
 		resultsCh <- &probeResult{podFrom, podTo, connectivity, err}
 	}
@@ -1048,7 +1051,7 @@ func (k *KubernetesUtils) validateOnePort(allPods []Pod, reachability *Reachabil
 	for i := 0; i < numProbes; i++ {
 		r := <-resultsCh
 		if r.err != nil {
-			log.Errorf("unable to perform probe %s -> %s: %v", r.podFrom, r.podTo, r.err)
+			log.Errorf("unable to perform probe %s -> %s: %v", r.podFrom.NamespacedName(), r.podTo.NamespacedName(), r.err)
 		}
 
 		// We will receive the connectivity from podFrom to podTo len(ports) times, where
@@ -1058,7 +1061,7 @@ func (k *KubernetesUtils) validateOnePort(allPods []Pod, reachability *Reachabil
 		// If the connectivity from podFrom to podTo has been observed and is different
 		// from the connectivity we received, store Error connectivity in reachability
 		// matrix.
-		prevConn := reachability.Observed.Get(r.podFrom.String(), r.podTo.String())
+		prevConn := reachability.Observed.Get(r.podFrom.NamespacedName(), r.podTo.NamespacedName())
 		if prevConn == Unknown {
 			reachability.Observe(r.podFrom, r.podTo, r.connectivity)
 		} else if prevConn != r.connectivity {
@@ -1071,7 +1074,7 @@ func (k *KubernetesUtils) validateOnePort(allPods []Pod, reachability *Reachabil
 // list of ports and a protocol. The connectivity from a Pod to another Pod should
 // be consistent across all provided ports. Otherwise, this connectivity will be
 // treated as Error.
-func (k *KubernetesUtils) Validate(allPods []Pod, reachability *Reachability, ports []int32, protocol utils.AntreaPolicyProtocol) {
+func (k *KubernetesUtils) Validate(allPods []*Pod, reachability *Reachability, ports []int32, protocol utils.AntreaPolicyProtocol) {
 	for _, port := range ports {
 		// we do not run all the probes in parallel as we have experienced that on some
 		// machines, this can cause a fraction of the probes to always fail, despite the
@@ -1083,12 +1086,12 @@ func (k *KubernetesUtils) Validate(allPods []Pod, reachability *Reachability, po
 	}
 }
 
-func (k *KubernetesUtils) ValidateRemoteCluster(remoteCluster *KubernetesUtils, allPods []Pod, reachability *Reachability, port int32, protocol utils.AntreaPolicyProtocol) {
+func (k *KubernetesUtils) ValidateRemoteCluster(remoteCluster *KubernetesUtils, allPods []*Pod, reachability *Reachability, port int32, protocol utils.AntreaPolicyProtocol) {
 	numProbes := len(allPods) * len(allPods)
 	resultsCh := make(chan *probeResult, numProbes)
-	oneProbe := func(podFrom, podTo Pod, port int32) {
-		log.Tracef("Probing: %s -> %s", podFrom, podTo)
-		expectedResult := reachability.Expected.Get(podFrom.String(), podTo.String())
+	oneProbe := func(podFrom, podTo *Pod, port int32) {
+		log.Tracef("Probing: %s -> %s", podFrom.NamespacedName(), podTo.NamespacedName())
+		expectedResult := reachability.Expected.Get(podFrom.NamespacedName(), podTo.NamespacedName())
 		connectivity, err := k.Probe(podFrom.Namespace(), podFrom.PodName(), podTo.Namespace(), podTo.PodName(), port, protocol, remoteCluster, &expectedResult)
 		resultsCh <- &probeResult{podFrom, podTo, connectivity, err}
 	}
@@ -1100,17 +1103,17 @@ func (k *KubernetesUtils) ValidateRemoteCluster(remoteCluster *KubernetesUtils, 
 	for i := 0; i < numProbes; i++ {
 		r := <-resultsCh
 		if r.err != nil {
-			log.Errorf("unable to perform probe %s -> %s in %s: %v", r.podFrom, r.podTo, k.ClusterName, r.err)
+			log.Errorf("unable to perform probe %s -> %s in %s: %v", r.podFrom.NamespacedName(), r.podTo.NamespacedName(), k.ClusterName, r.err)
 		}
-		prevConn := reachability.Observed.Get(r.podFrom.String(), r.podTo.String())
+		prevConn := reachability.Observed.Get(r.podFrom.NamespacedName(), r.podTo.NamespacedName())
 		if prevConn == Unknown {
 			reachability.Observe(r.podFrom, r.podTo, r.connectivity)
 		}
 	}
 }
 
-func (k *KubernetesUtils) Bootstrap(namespaces map[string]TestNamespaceMeta, podsPerNamespace []string, createNamespaces bool, nodeNames map[string]string, hostNetworks map[string]bool) (map[string][]string, error) {
-	for key, ns := range namespaces {
+func (k *KubernetesUtils) Bootstrap(namespaces map[string]TestNamespaceMeta, createNamespaces bool, allPods []*Pod) (map[string][]string, error) {
+	for _, ns := range namespaces {
 		if createNamespaces {
 			if ns.Labels == nil {
 				ns.Labels = make(map[string]string)
@@ -1121,36 +1124,26 @@ func (k *KubernetesUtils) Bootstrap(namespaces map[string]TestNamespaceMeta, pod
 				return nil, fmt.Errorf("unable to create/update ns %s: %w", ns, err)
 			}
 		}
-		var nodeName string
-		var hostNetwork bool
-		if nodeNames != nil {
-			nodeName = nodeNames[key]
-		}
-		if hostNetworks != nil {
-			hostNetwork = hostNetworks[key]
-		}
-		for _, pod := range podsPerNamespace {
-			log.Infof("Creating/updating Pod '%s/%s'", ns, pod)
-			deployment := ns.Name + pod
-			_, err := k.CreateOrUpdateDeployment(ns.Name, deployment, 1, map[string]string{"pod": pod, "app": pod}, nodeName, hostNetwork)
-			if err != nil {
-				return nil, fmt.Errorf("unable to create/update Deployment '%s/%s': %w", ns, pod, err)
-			}
+	}
+
+	for _, pod := range allPods {
+		log.Infof("Creating/updating Pod '%s'", pod.NamespacedName())
+		deployment := pod.Namespace() + pod.PodName()
+		ns := pod.Namespace()
+		podName := pod.PodName()
+		_, err := k.CreateOrUpdateDeployment(ns, deployment, 1, map[string]string{"pod": podName, "app": podName}, pod.NodeName(), pod.IsHostNetwork())
+		if err != nil {
+			return nil, fmt.Errorf("unable to create/update Deployment '%s/%s': %w", ns, deployment, err)
 		}
 	}
-	var allPods []Pod
-	podIPs := make(map[string][]string, len(podsPerNamespace)*len(namespaces))
-	for _, podName := range podsPerNamespace {
-		for _, ns := range namespaces {
-			allPods = append(allPods, NewPod(ns.Name, podName))
-		}
-	}
+
+	podIPs := make(map[string][]string, len(allPods))
 	for _, pod := range allPods {
 		ips, err := k.waitForPodInNamespace(pod.Namespace(), pod.PodName())
 		if ips == nil || err != nil {
-			return nil, fmt.Errorf("unable to wait for Pod '%s/%s': %w", pod.Namespace(), pod.PodName(), err)
+			return nil, fmt.Errorf("unable to wait for Pod '%s': %w", pod.NamespacedName(), err)
 		}
-		podIPs[pod.String()] = ips
+		podIPs[pod.NamespacedName()] = ips
 	}
 
 	// Ensure that all the HTTP servers have time to start properly.

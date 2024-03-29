@@ -21,37 +21,58 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-type Pod string
-
-type CustomPod struct {
-	Pod    Pod
-	Labels map[string]string
+type Pod struct {
+	name        string
+	namespace   string
+	hostNetwork bool
+	nodeName    string
+	labels      map[string]string
 }
 
-func NewPod(namespace string, podName string) Pod {
-	return Pod(fmt.Sprintf("%s/%s", namespace, podName))
-}
-
-func (pod Pod) String() string {
-	return string(pod)
-}
-
-func (pod Pod) split() (string, string) {
-	pieces := strings.Split(string(pod), "/")
-	if len(pieces) != 2 {
-		panic(fmt.Errorf("expected ns/pod, found %+v", pieces))
+func NewPod(namespace string, podName string) *Pod {
+	return &Pod{
+		name:      podName,
+		namespace: namespace,
 	}
-	return pieces[0], pieces[1]
 }
 
-func (pod Pod) Namespace() string {
-	ns, _ := pod.split()
-	return ns
+func (pod *Pod) SetHostNetwork() *Pod {
+	pod.hostNetwork = true
+	return pod
 }
 
-func (pod Pod) PodName() string {
-	_, podName := pod.split()
-	return podName
+func (pod *Pod) SetNodeName(nodeName string) *Pod {
+	pod.nodeName = nodeName
+	return pod
+}
+
+func (pod *Pod) NodeName() string {
+	return pod.nodeName
+}
+
+func (pod *Pod) SetLabels(labels map[string]string) *Pod {
+	pod.labels = labels
+	return pod
+}
+
+func (pod *Pod) NamespacedName() string {
+	return fmt.Sprintf("%s/%s", pod.namespace, pod.name)
+}
+
+func (pod *Pod) Namespace() string {
+	return pod.namespace
+}
+
+func (pod *Pod) PodName() string {
+	return pod.name
+}
+
+func (pod *Pod) IsHostNetwork() bool {
+	return pod.hostNetwork
+}
+
+func (pod *Pod) Labels() map[string]string {
+	return pod.labels
 }
 
 type PodConnectivityMark string
@@ -65,8 +86,8 @@ const (
 )
 
 type Connectivity struct {
-	From         Pod
-	To           Pod
+	From         *Pod
+	To           *Pod
 	Connectivity PodConnectivityMark
 }
 
@@ -209,15 +230,15 @@ func (tt *TruthTable) PrettyPrint(indent string) string {
 type Reachability struct {
 	Expected        *ConnectivityTable
 	Observed        *ConnectivityTable
-	Pods            []Pod
-	PodsByNamespace map[string][]Pod
+	Pods            []*Pod
+	PodsByNamespace map[string][]*Pod
 }
 
-func NewReachability(pods []Pod, defaultExpectation PodConnectivityMark) *Reachability {
+func NewReachability(pods []*Pod, defaultExpectation PodConnectivityMark) *Reachability {
 	var items []string
-	podsByNamespace := make(map[string][]Pod)
+	podsByNamespace := make(map[string][]*Pod)
 	for _, pod := range pods {
-		items = append(items, string(pod))
+		items = append(items, pod.NamespacedName())
 		podNS := pod.Namespace()
 		podsByNamespace[podNS] = append(podsByNamespace[podNS], pod)
 	}
@@ -233,7 +254,7 @@ func NewReachability(pods []Pod, defaultExpectation PodConnectivityMark) *Reacha
 func (r *Reachability) NewReachabilityWithSameExpectations() *Reachability {
 	var items []string
 	for _, pod := range r.Pods {
-		items = append(items, string(pod))
+		items = append(items, pod.NamespacedName())
 	}
 	return &Reachability{
 		Expected:        r.Expected,
@@ -245,41 +266,41 @@ func (r *Reachability) NewReachabilityWithSameExpectations() *Reachability {
 
 // ExpectConn is an experimental way to describe connectivity with named fields
 func (r *Reachability) ExpectConn(spec *Connectivity) {
-	if spec.From == "" && spec.To == "" {
+	if spec.From.NamespacedName() == "" && spec.To.NamespacedName() == "" {
 		panic("at most one of From and To may be empty, but both are empty")
 	}
-	if spec.From == "" {
+	if spec.From.NamespacedName() == "" {
 		r.ExpectAllIngress(spec.To, spec.Connectivity)
-	} else if spec.To == "" {
+	} else if spec.To.NamespacedName() == "" {
 		r.ExpectAllEgress(spec.From, spec.Connectivity)
 	} else {
 		r.Expect(spec.From, spec.To, spec.Connectivity)
 	}
 }
 
-func (r *Reachability) Expect(pod1 Pod, pod2 Pod, connectivity PodConnectivityMark) {
-	r.Expected.Set(string(pod1), string(pod2), connectivity)
+func (r *Reachability) Expect(pod1 *Pod, pod2 *Pod, connectivity PodConnectivityMark) {
+	r.Expected.Set(pod1.NamespacedName(), pod2.NamespacedName(), connectivity)
 }
 
-func (r *Reachability) ExpectSelf(allPods []Pod, connectivity PodConnectivityMark) {
+func (r *Reachability) ExpectSelf(allPods []*Pod, connectivity PodConnectivityMark) {
 	for _, p := range allPods {
-		r.Expected.Set(string(p), string(p), connectivity)
+		r.Expected.Set(p.NamespacedName(), p.NamespacedName(), connectivity)
 	}
 }
 
 // ExpectAllIngress defines that any traffic going into the pod will be allowed/dropped/rejected
-func (r *Reachability) ExpectAllIngress(pod Pod, connectivity PodConnectivityMark) {
-	r.Expected.SetAllTo(string(pod), connectivity)
+func (r *Reachability) ExpectAllIngress(pod *Pod, connectivity PodConnectivityMark) {
+	r.Expected.SetAllTo(pod.NamespacedName(), connectivity)
 	if connectivity != Connected {
-		log.Infof("Denying all traffic *to* %s", pod)
+		log.Infof("Denying all traffic *to* %s", pod.NamespacedName())
 	}
 }
 
 // ExpectAllEgress defines that any traffic going out of the pod will be allowed/dropped/rejected
-func (r *Reachability) ExpectAllEgress(pod Pod, connectivity PodConnectivityMark) {
-	r.Expected.SetAllFrom(string(pod), connectivity)
+func (r *Reachability) ExpectAllEgress(pod *Pod, connectivity PodConnectivityMark) {
+	r.Expected.SetAllFrom(pod.NamespacedName(), connectivity)
 	if connectivity != Connected {
-		log.Infof("Denying all traffic *from* %s", pod)
+		log.Infof("Denying all traffic *from* %s", pod.NamespacedName())
 	}
 }
 
@@ -287,7 +308,7 @@ func (r *Reachability) ExpectAllSelfNamespace(connectivity PodConnectivityMark) 
 	for _, pods := range r.PodsByNamespace {
 		for i := range pods {
 			for j := range pods {
-				r.Expected.Set(string(pods[i]), string(pods[j]), connectivity)
+				r.Expected.Set(pods[i].NamespacedName(), pods[j].NamespacedName(), connectivity)
 			}
 		}
 	}
@@ -300,28 +321,28 @@ func (r *Reachability) ExpectSelfNamespace(namespace string, connectivity PodCon
 	}
 	for i := range pods {
 		for j := range pods {
-			r.Expected.Set(string(pods[i]), string(pods[j]), connectivity)
+			r.Expected.Set(pods[i].NamespacedName(), pods[j].NamespacedName(), connectivity)
 		}
 	}
 }
 
-func (r *Reachability) ExpectIngressFromNamespace(pod Pod, namespace string, connectivity PodConnectivityMark) {
+func (r *Reachability) ExpectIngressFromNamespace(pod *Pod, namespace string, connectivity PodConnectivityMark) {
 	pods, ok := r.PodsByNamespace[namespace]
 	if !ok {
 		panic(fmt.Errorf("namespace %s is not found", namespace))
 	}
 	for i := range pods {
-		r.Expected.Set(string(pods[i]), string(pod), connectivity)
+		r.Expected.Set(pods[i].NamespacedName(), pod.NamespacedName(), connectivity)
 	}
 }
 
-func (r *Reachability) ExpectEgressToNamespace(pod Pod, namespace string, connectivity PodConnectivityMark) {
+func (r *Reachability) ExpectEgressToNamespace(pod *Pod, namespace string, connectivity PodConnectivityMark) {
 	pods, ok := r.PodsByNamespace[namespace]
 	if !ok {
 		panic(fmt.Errorf("namespace %s is not found", namespace))
 	}
 	for i := range pods {
-		r.Expected.Set(string(pod), string(pods[i]), connectivity)
+		r.Expected.Set(pod.NamespacedName(), pods[i].NamespacedName(), connectivity)
 	}
 }
 
@@ -345,8 +366,8 @@ func (r *Reachability) ExpectNamespaceEgressToNamespace(srcNamespace, dstNamespa
 	}
 }
 
-func (r *Reachability) Observe(pod1 Pod, pod2 Pod, connectivity PodConnectivityMark) {
-	r.Observed.Set(string(pod1), string(pod2), connectivity)
+func (r *Reachability) Observe(pod1 *Pod, pod2 *Pod, connectivity PodConnectivityMark) {
+	r.Observed.Set(pod1.NamespacedName(), pod2.NamespacedName(), connectivity)
 }
 
 func (r *Reachability) Summary() (trueObs int, falseObs int, comparison *TruthTable) {

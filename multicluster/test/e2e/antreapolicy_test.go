@@ -33,10 +33,10 @@ const (
 )
 
 var (
-	allPodsPerCluster    []antreae2e.Pod
+	allPodsPerCluster    []*antreae2e.Pod
 	perNamespacePods     []string
 	perClusterNamespaces map[string]antreae2e.TestNamespaceMeta
-	podsByNamespace      map[string][]antreae2e.Pod
+	podsByNamespace      map[string][]*antreae2e.Pod
 	clusterK8sUtilsMap   map[string]*antreae2e.KubernetesUtils
 )
 
@@ -58,8 +58,8 @@ func initializeForPolicyTest(t *testing.T, data *MCTestData) {
 		perClusterNamespaces[ns] = antreae2e.TestNamespaceMeta{Name: ns}
 	}
 
-	allPodsPerCluster = []antreae2e.Pod{}
-	podsByNamespace = make(map[string][]antreae2e.Pod)
+	allPodsPerCluster = []*antreae2e.Pod{}
+	podsByNamespace = make(map[string][]*antreae2e.Pod)
 	clusterK8sUtilsMap = make(map[string]*antreae2e.KubernetesUtils)
 
 	for _, podName := range perNamespacePods {
@@ -73,7 +73,7 @@ func initializeForPolicyTest(t *testing.T, data *MCTestData) {
 		k8sUtils, err := antreae2e.NewKubernetesUtils(&d)
 		failOnError(err, t)
 		if clusterName != leaderCluster {
-			_, err = k8sUtils.Bootstrap(perClusterNamespaces, perNamespacePods, true, nil, nil)
+			_, err = k8sUtils.Bootstrap(perClusterNamespaces, true, allPodsPerCluster)
 			failOnError(err, t)
 		}
 		clusterK8sUtilsMap[clusterName] = k8sUtils
