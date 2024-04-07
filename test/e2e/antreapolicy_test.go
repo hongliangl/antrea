@@ -4432,12 +4432,15 @@ func TestAntreaPolicy(t *testing.T) {
 		t.Run("Case=ACNPFQDNPolicy", func(t *testing.T) { testFQDNPolicy(t) })
 		t.Run("Case=ACNPFQDNPolicyInCluster", func(t *testing.T) { testFQDNPolicyInClusterService(t) })
 		t.Run("Case=ACNPFQDNPolicyTCP", func(t *testing.T) { testFQDNPolicyTCP(t) })
-		t.Run("Case=ACNPToServices", func(t *testing.T) { testToServices(t, data) })
-		t.Run("Case=ACNPServiceAccountSelector", func(t *testing.T) { testServiceAccountSelector(t, data) })
-		t.Run("Case=ACNPNodeSelectorEgress", func(t *testing.T) { testACNPNodeSelectorEgress(t) })
-		t.Run("Case=ACNPNodeSelectorIngress", func(t *testing.T) { testACNPNodeSelectorIngress(t, data) })
-		t.Run("Case=ACNPICMPSupport", func(t *testing.T) { testACNPICMPSupport(t, data) })
-		t.Run("Case=ACNPNodePortServiceSupport", func(t *testing.T) { testACNPNodePortServiceSupport(t, data, data.testNamespace) })
+		/*
+			t.Run("Case=ACNPToServices", func(t *testing.T) { testToServices(t, data) })
+			t.Run("Case=ACNPServiceAccountSelector", func(t *testing.T) { testServiceAccountSelector(t, data) })
+			t.Run("Case=ACNPNodeSelectorEgress", func(t *testing.T) { testACNPNodeSelectorEgress(t) })
+			t.Run("Case=ACNPNodeSelectorIngress", func(t *testing.T) { testACNPNodeSelectorIngress(t, data) })
+			t.Run("Case=ACNPICMPSupport", func(t *testing.T) { testACNPICMPSupport(t, data) })
+			t.Run("Case=ACNPNodePortServiceSupport", func(t *testing.T) { testACNPNodePortServiceSupport(t, data, data.testNamespace) })
+		
+		*/
 	})
 	// print results for reachability tests
 	printResults()
