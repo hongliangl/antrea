@@ -363,7 +363,7 @@ function run_test {
   fi
   sleep 1
 
-  RUN_OPT=""
+  RUN_OPT="TestAntreaPolicy"
   if [ -n "$run" ]; then
     RUN_OPT="-run $run"
   fi
