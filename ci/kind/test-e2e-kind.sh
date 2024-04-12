@@ -372,7 +372,7 @@ function run_test {
   external_server_ips=$(docker inspect $external_server_cid -f '{{.NetworkSettings.Networks.kind.IPAddress}},{{.NetworkSettings.Networks.kind.GlobalIPv6Address}}')
   EXTRA_ARGS="$vlan_args --external-server-ips $external_server_ips"
 
-  go test -v -timeout=$timeout $RUN_OPT -run TestAntreaPolicy antrea.io/antrea/test/e2e $flow_visibility_args -provider=kind --logs-export-dir=$ANTREA_LOG_DIR --skip-cases=$skiplist $coverage_args $EXTRA_ARGS
+  go test -v -timeout=$timeout $RUN_OPT antrea.io/antrea/test/e2e $flow_visibility_args -provider=kind --logs-export-dir=$ANTREA_LOG_DIR --skip-cases=$skiplist $coverage_args $EXTRA_ARGS
 }
 
 if [[ "$mode" == "" ]] || [[ "$mode" == "encap" ]]; then
