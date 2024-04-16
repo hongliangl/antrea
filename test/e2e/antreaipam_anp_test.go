@@ -39,8 +39,8 @@ func initializeAntreaIPAM(t *testing.T, data *TestData) {
 	// This function "initializeAntreaIPAM" will be used more than once, and variable "allPods" is global.
 	// It should be empty every time when "initializeAntreaIPAM" is performed, otherwise there will be unexpected
 	// results.
-	allPods = []Pod{}
-	podsByNamespace = make(map[string][]Pod)
+	allPods = []*Pod{}
+	podsByNamespace = make(map[string][]*Pod)
 	for _, ns := range antreaIPAMNamespaces {
 		namespaces[ns] = TestNamespaceMeta{Name: ns}
 	}
@@ -55,9 +55,9 @@ func initializeAntreaIPAM(t *testing.T, data *TestData) {
 	// k8sUtils is a global var
 	k8sUtils, err = NewKubernetesUtils(data)
 	failOnError(err, t)
-	_, err = k8sUtils.Bootstrap(regularNamespaces, podsPerNamespace, true, nil, nil)
+	_, err = k8sUtils.Bootstrap(regularNamespaces, true, allPods)
 	failOnError(err, t)
-	ips, err := k8sUtils.Bootstrap(namespaces, podsPerNamespace, false, nil, nil)
+	ips, err := k8sUtils.Bootstrap(namespaces, false, allPods)
 	failOnError(err, t)
 	podIPs = ips
 }
