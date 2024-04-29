@@ -43,9 +43,6 @@ var (
 
 	// setInterfaceARPAnnounce is meant to be overridden for testing.
 	setInterfaceARPAnnounce = func(ifaceName string, value int) error { return nil }
-
-	localHNSNetworkName = util.LocalHNSNetwork
-	localVMSwitchName   = util.LocalVMSwitch
 )
 
 func (i *Initializer) prepareHostNetwork() error {
@@ -61,14 +58,14 @@ func (i *Initializer) prepareHostNetwork() error {
 // prepareHNSNetworkAndOVSExtension creates HNS Network for containers, and enables OVS Extension on it.
 func (i *Initializer) prepareHNSNetworkAndOVSExtension() error {
 	// If the HNS Network already exists, return immediately.
-	hnsNetwork, err := hcsshim.GetHNSNetworkByName(localHNSNetworkName)
+	hnsNetwork, err := hcsshim.GetHNSNetworkByName(util.LocalHNSNetwork)
 	if err == nil {
 		// Enable OVS Extension on the HNS Network.
 		if err = util.EnableHNSNetworkExtension(hnsNetwork.Id, winnet.OVSExtensionID); err != nil {
 			return err
 		}
 		// Enable RSC for existing vSwitch.
-		if err = i.winnet.EnableRSCOnVSwitch(localHNSNetworkName); err != nil {
+		if err = i.winnet.EnableRSCOnVSwitch(util.LocalHNSNetwork); err != nil {
 			return err
 		}
 		// Save the uplink adapter name to check if the OVS uplink port has been created in prepareOVSBridge stage.
@@ -135,12 +132,12 @@ func (i *Initializer) prepareHNSNetworkAndOVSExtension() error {
 func (i *Initializer) prepareVMNetworkAndOVSExtension() error {
 	klog.V(2).Info("Setting up VM network")
 	// Check whether VM Switch is created
-	exists, err := i.winnet.VMSwitchExists(localVMSwitchName)
+	exists, err := i.winnet.VMSwitchExists(util.LocalVMSwitch)
 	if err != nil {
 		return err
 	}
 	if exists {
-		vmSwitchIFName, err := i.winnet.GetVMSwitchNetAdapterName(localVMSwitchName)
+		vmSwitchIFName, err := i.winnet.GetVMSwitchNetAdapterName(util.LocalVMSwitch)
 		if err != nil {
 			return err
 		}
@@ -175,29 +172,29 @@ func (i *Initializer) prepareVMNetworkAndOVSExtension() error {
 	}()
 
 	klog.V(2).InfoS("Creating VM switch", "uplinkIFName", uplinkIFName)
-	if err = i.winnet.AddVMSwitch(uplinkIFName, localVMSwitchName); err != nil {
+	if err = i.winnet.AddVMSwitch(uplinkIFName, util.LocalVMSwitch); err != nil {
 		return fmt.Errorf("failed to create VM switch for interface %s: %v", uplinkIFName, err)
 	}
-	enabled, err := i.winnet.IsVMSwitchOVSExtensionEnabled(localVMSwitchName)
+	enabled, err := i.winnet.IsVMSwitchOVSExtensionEnabled(util.LocalVMSwitch)
 	if err != nil {
 		return err
 	}
 	if !enabled {
-		if err = i.winnet.EnableVMSwitchOVSExtension(localVMSwitchName); err != nil {
+		if err = i.winnet.EnableVMSwitchOVSExtension(util.LocalVMSwitch); err != nil {
 			return err
 		}
 	}
 
 	defer func() {
 		if !success {
-			if err = i.winnet.RemoveVMSwitch(localVMSwitchName); err != nil {
+			if err = i.winnet.RemoveVMSwitch(util.LocalVMSwitch); err != nil {
 				klog.ErrorS(err, "Failed to remove VMSwitch")
 			}
 		}
 	}()
 
 	uplinkMACStr := strings.Replace(uplinkIface.HardwareAddr.String(), ":", "", -1)
-	if err = i.winnet.RenameVMNetworkAdapter(localVMSwitchName, uplinkMACStr, hostIFName, true); err != nil {
+	if err = i.winnet.RenameVMNetworkAdapter(util.LocalVMSwitch, uplinkMACStr, hostIFName, true); err != nil {
 		return fmt.Errorf("failed to rename VMNetworkAdapter as %s: %v", hostIFName, err)
 	}
 
@@ -214,7 +211,7 @@ func (i *Initializer) prepareOVSBridgeForK8sNode() error {
 // prepareOVSBridgeOnHNSNetwork adds local port and uplink to OVS bridge after the OVS Extension is enabled on HNSNetwork.
 // This function will delete OVS bridge and HNS network created by Antrea at failures.
 func (i *Initializer) prepareOVSBridgeOnHNSNetwork() error {
-	hnsNetwork, err := hcsshim.GetHNSNetworkByName(localHNSNetworkName)
+	hnsNetwork, err := hcsshim.GetHNSNetworkByName(util.LocalHNSNetwork)
 	defer func() {
 		// prepareOVSBridge only works on Windows platform. The operation has a chance to fail on the first time agent
 		// starts up when OVS bridge uplink and local interface have not been configured. If the operation fails, the
@@ -227,7 +224,7 @@ func (i *Initializer) prepareOVSBridgeOnHNSNetwork() error {
 		if err := i.ovsBridgeClient.Delete(); err != nil {
 			klog.Errorf("Failed to delete OVS bridge: %v", err)
 		}
-		if err := util.DeleteHNSNetwork(localHNSNetworkName); err != nil {
+		if err := util.DeleteHNSNetwork(util.LocalHNSNetwork); err != nil {
 			klog.Errorf("Failed to cleanup host networking: %v", err)
 		}
 	}()

@@ -46,7 +46,6 @@ const (
 var (
 	getHnsNetworkByNameFunc         = hcsshim.GetHNSNetworkByName
 	listHnsEndpointFunc             = hcsshim.HNSListEndpointRequest
-	setInterfaceMTUFunc             = winnet.SetNetAdapterMTU
 	hostInterfaceExistsFunc         = util.HostInterfaceExists
 	getNetInterfaceAddrsFunc        = getNetInterfaceAddrs
 	createHnsEndpointFunc           = createHnsEndpoint
@@ -61,6 +60,7 @@ var (
 type ifConfigurator struct {
 	hnsNetwork *hcsshim.HNSNetwork
 	epCache    *sync.Map
+	winnet     winnet.Interface
 }
 
 // disableTXChecksumOffload is ignored on Windows.
@@ -81,6 +81,7 @@ func newInterfaceConfigurator(ovsDatapathType ovsconfig.OVSDatapathType, isOvsHa
 	return &ifConfigurator{
 		hnsNetwork: hnsNetwork,
 		epCache:    epCache,
+		winnet:     &winnet.Handle{},
 	}, nil
 }
 
@@ -179,7 +180,7 @@ func (ic *ifConfigurator) configureContainerLink(
 		// and the hcsshim call is not synchronized from the observation.
 		return ic.addPostInterfaceCreateHook(infraContainerID, epName, containerAccess, func() error {
 			ifaceName := winnet.VirtualAdapterName(epName)
-			if err := setInterfaceMTUFunc(ifaceName, mtu); err != nil {
+			if err := ic.winnet.SetNetAdapterMTU(ifaceName, mtu); err != nil {
 				return fmt.Errorf("failed to configure MTU on container interface '%s': %v", ifaceName, err)
 			}
 			return nil

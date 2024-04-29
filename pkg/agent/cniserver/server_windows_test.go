@@ -41,6 +41,7 @@ import (
 	routetest "antrea.io/antrea/pkg/agent/route/testing"
 	agenttypes "antrea.io/antrea/pkg/agent/types"
 	"antrea.io/antrea/pkg/agent/util"
+	winnettest "antrea.io/antrea/pkg/agent/util/winnet/testing"
 	cnipb "antrea.io/antrea/pkg/apis/cni/v1beta1"
 	ovsconfigtest "antrea.io/antrea/pkg/ovs/ovsconfig/testing"
 	"antrea.io/antrea/pkg/util/channel"
@@ -49,6 +50,8 @@ import (
 var (
 	containerMACStr = "23:34:56:23:22:45"
 	dnsSearches     = []string{"a.b.c.d"}
+
+	mockWinnet *winnettest.MockInterface
 )
 
 func TestUpdateResultDNSConfig(t *testing.T) {
@@ -258,6 +261,7 @@ func newMockCNIServer(t *testing.T, controller *gomock.Controller, podUpdateNoti
 	mockOVSBridgeClient = ovsconfigtest.NewMockOVSBridgeClient(controller)
 	mockOFClient = openflowtest.NewMockClient(controller)
 	mockRoute = routetest.NewMockInterface(controller)
+	mockWinnet = winnettest.NewMockInterface(controller)
 	ifaceStore = interfacestore.NewInterfaceStore()
 	cniServer := newCNIServer(t)
 	cniServer.routeClient = mockRoute
@@ -266,6 +270,7 @@ func newMockCNIServer(t *testing.T, controller *gomock.Controller, podUpdateNoti
 	gateway := &config.GatewayConfig{Name: "", IPv4: gwIPv4, MAC: gwMAC}
 	cniServer.nodeConfig = &config.NodeConfig{Name: "node1", PodIPv4CIDR: nodePodCIDRv4, GatewayConfig: gateway}
 	cniServer.podConfigurator, _ = newPodConfigurator(mockOVSBridgeClient, mockOFClient, mockRoute, ifaceStore, gwMAC, "system", false, false, podUpdateNotifier)
+	cniServer.podConfigurator.ifConfigurator.(*ifConfigurator).winnet = mockWinnet
 	return cniServer
 }
 
@@ -289,18 +294,10 @@ func prepareSetup(t *testing.T, ipamType string, name string, containerID, infra
 }
 
 func TestCmdAdd(t *testing.T) {
-	controller := gomock.NewController(t)
-	ipamType := "windows-test"
-	ipamMock := ipamtest.NewMockIPAMDriver(controller)
-	ipam.ResetIPAMDriver(ipamType, ipamMock)
 	oriIPAMResult := &ipam.IPAMResult{Result: *ipamResult}
 	ctx := context.TODO()
 
 	containerdInfraContainer := generateUUID()
-
-	defer mockHostInterfaceExists()()
-	defer mockGetHnsNetworkByName()()
-	defer mockSetInterfaceMTU(nil)()
 
 	for _, tc := range []struct {
 		name                 string
@@ -360,6 +357,15 @@ func TestCmdAdd(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			controller := gomock.NewController(t)
+			ipamType := "windows-test"
+			ipamMock := ipamtest.NewMockIPAMDriver(controller)
+			ipam.ResetIPAMDriver(ipamType, ipamMock)
+
+			defer mockHostInterfaceExists()()
+			defer mockGetHnsNetworkByName()()
+			mockSetInterfaceMTU(nil)
+
 			isDocker := isDockerContainer(tc.netns)
 			testUtil := newHnsTestUtil(generateUUID(), tc.existingHnsEndpoints, isDocker, tc.isAttached, tc.hnsEndpointCreateErr, tc.endpointAttachErr)
 			testUtil.setFunctions()
@@ -442,7 +448,7 @@ func TestCmdDel(t *testing.T) {
 
 	defer mockHostInterfaceExists()()
 	defer mockGetHnsNetworkByName()()
-	defer mockSetInterfaceMTU(nil)()
+	defer mockSetInterfaceMTU(nil)
 
 	for _, tc := range []struct {
 		name           string
@@ -544,7 +550,7 @@ func TestCmdCheck(t *testing.T) {
 
 	defer mockHostInterfaceExists()()
 	defer mockGetHnsNetworkByName()()
-	defer mockSetInterfaceMTU(nil)()
+	defer mockSetInterfaceMTU(nil)
 	defer mockListHnsEndpoint(nil, nil)()
 	defer mockGetNetInterfaceAddrs(containerIPNet, nil)()
 	defer mockGetHnsEndpointByName(generateUUID(), mac)()
@@ -865,15 +871,6 @@ func mockListHnsEndpoint(endpoints []hcsshim.HNSEndpoint, listError error) func(
 	}
 }
 
-func mockSetInterfaceMTU(setMTUError error) func() {
-	originalSetInterfaceMTU := setInterfaceMTUFunc
-	setInterfaceMTUFunc = func(ifaceName string, mtu int) error {
-		if setMTUError == nil {
-			hostIfaces.Store(ifaceName, true)
-		}
-		return setMTUError
-	}
-	return func() {
-		setInterfaceMTUFunc = originalSetInterfaceMTU
-	}
+func mockSetInterfaceMTU(setMTUError error) {
+	mockWinnet.EXPECT().SetNetAdapterMTU(gomock.Any(), gomock.Any()).Return(setMTUError)
 }
