@@ -236,3 +236,5 @@ require (
 	sigs.k8s.io/kustomize/kyaml v0.14.3-0.20230601165947-6ce0bf390ce3 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.1 // indirect
 )
+
+replace github.com/vishvananda/netlink v1.2.1-beta.2.0.20240301213814-916f9685fa42 => github.com/hongliangl/netlink v0.0.0-20240517093158-98f54b93d87c
