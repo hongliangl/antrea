@@ -237,4 +237,4 @@ require (
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.1 // indirect
 )
 
-replace github.com/vishvananda/netlink v1.2.1-beta.2.0.20240301213814-916f9685fa42 => github.com/hongliangl/netlink v0.0.0-20240517093158-98f54b93d87c
+replace github.com/vishvananda/netlink v1.2.1-beta.2.0.20240301213814-916f9685fa42 => github.com/hongliangl/netlink v0.0.0-20240521100256-241046d89e1f
