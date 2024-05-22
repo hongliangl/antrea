@@ -51,7 +51,7 @@ require (
 	github.com/spf13/pflag v1.0.5
 	github.com/stretchr/testify v1.9.0
 	github.com/ti-mo/conntrack v0.5.0
-	github.com/vishvananda/netlink v1.2.1-beta.2
+	github.com/vishvananda/netlink v1.2.1-beta.2.0.20240301213814-916f9685fa42
 	github.com/vmware/go-ipfix v0.9.0
 	go.uber.org/mock v0.4.0
 	golang.org/x/crypto v0.23.0
@@ -236,3 +236,5 @@ require (
 	sigs.k8s.io/kustomize/kyaml v0.14.3-0.20230601165947-6ce0bf390ce3 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.1 // indirect
 )
+
+replace github.com/vishvananda/netlink v1.2.1-beta.2.0.20240301213814-916f9685fa42 => github.com/hongliangl/netlink v0.0.0-20240522071104-5eb2769f5779
