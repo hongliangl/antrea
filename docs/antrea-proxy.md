@@ -42,13 +42,18 @@ the introduction of `proxyAll`, Antrea relied on userspace kube-proxy, which is
 no longer actively maintained by the K8s community and is slower than other
 kube-proxy backends.
 
-Note that on Linux, even when `proxyAll` is enabled, kube-proxy will usually
-take priority and will keep handling NodePort Service traffic (unless the source
-is a Pod, which is pretty unusual as Pods typically access Services by
-ClusterIP). This is because kube-proxy rules typically come before the rules
-installed by AntreaProxy to redirect traffic to OVS. When kube-proxy is not
-deployed or is removed from the cluster, AntreaProxy will then handle all
-Service traffic.
+Note that on Linux, before Antrea v2.1, when `proxyAll` is enabled, kube-proxy
+will usually take priority over Antrea Proxy and will keep handling all kinds of
+Service traffic (unless the source is a Pod, which is pretty unusual as Pods
+typically access Services by ClusterIP). This is because kube-proxy rules typically
+come before the rules installed by AntreaProxy to redirect traffic to OVS. When
+kube-proxy is not deployed or is removed from the cluster, Antrea Proxy will then
+handle all Service traffic.
+
+Starting with Antrea v2.1, when `proxyAll` is enabled, AntreaProxy is capable
+of handling all kinds of Service traffic except ClusterIP, even if kube-proxy in
+iptables mode is present. This is accomplished by prioritizing the rules installed
+by Antrea Proxy redirecting Service traffic to OVS over those installed by kube-proxy.
 
 ### Removing kube-proxy
 
