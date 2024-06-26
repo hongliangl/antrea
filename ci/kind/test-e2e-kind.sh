@@ -317,8 +317,8 @@ function setup_cluster {
   if $extra_network && [[ "$mode" != "hybrid" ]]; then
     args="$args --extra-networks \"20.20.30.0/24\""
   fi
-  # Deploy an external server which could be used when testing Pod-to-External traffic.
-  args="$args --deploy-external-server $vlan_args"
+  # Deploy an external agnhost which could be used when testing Pod-to-External traffic.
+  args="$args --deploy-external-agnhost $vlan_args"
   if $bgp_policy; then
     args="$args --deploy-external-frr"
   fi
@@ -385,9 +385,9 @@ function run_test {
     np_evaluation_flag="--networkpolicy-evaluation"
   fi
 
-  external_server_cid=$(docker ps -f name="^antrea-external-server" --format '{{.ID}}')
-  external_server_ips=$(docker inspect $external_server_cid -f '{{.NetworkSettings.Networks.kind.IPAddress}},{{.NetworkSettings.Networks.kind.GlobalIPv6Address}}')
-  EXTRA_ARGS="$vlan_args --external-server-ips $external_server_ips"
+  external_agnhost_cid=$(docker ps -f name="^antrea-external-agnhost" --format '{{.ID}}')
+  external_agnhost_ips=$(docker inspect $external_agnhost_cid -f '{{.NetworkSettings.Networks.kind.IPAddress}},{{.NetworkSettings.Networks.kind.GlobalIPv6Address}}')
+  EXTRA_ARGS="$vlan_args --external-agnhost-ips $external_agnhost_ips"
 
   external_frr_cid=$(docker ps -f name="^antrea-external-frr" --format '{{.ID}}')
   external_frr_ips=$(docker inspect $external_frr_cid -f '{{.NetworkSettings.Networks.kind.IPAddress}},{{.NetworkSettings.Networks.kind.GlobalIPv6Address}}')
