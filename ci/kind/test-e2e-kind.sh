@@ -389,9 +389,11 @@ function run_test {
   external_agnhost_ips=$(docker inspect $external_agnhost_cid -f '{{.NetworkSettings.Networks.kind.IPAddress}},{{.NetworkSettings.Networks.kind.GlobalIPv6Address}}')
   EXTRA_ARGS="$vlan_args --external-agnhost-ips $external_agnhost_ips"
 
-  external_frr_cid=$(docker ps -f name="^antrea-external-frr" --format '{{.ID}}')
-  external_frr_ips=$(docker inspect $external_frr_cid -f '{{.NetworkSettings.Networks.kind.IPAddress}},{{.NetworkSettings.Networks.kind.GlobalIPv6Address}}')
-  EXTRA_ARGS="$EXTRA_ARGS --external-frr-cid $external_frr_cid --external-frr-ips $external_frr_ips"
+  if $bgp_policy; then
+    external_frr_cid=$(docker ps -f name="^antrea-external-frr" --format '{{.ID}}')
+    external_frr_ips=$(docker inspect $external_frr_cid -f '{{.NetworkSettings.Networks.kind.IPAddress}},{{.NetworkSettings.Networks.kind.GlobalIPv6Address}}')
+    EXTRA_ARGS="$EXTRA_ARGS --external-frr-cid $external_frr_cid --external-frr-ips $external_frr_ips"
+  fi
 
   go test -v -timeout=$timeout $RUN_OPT antrea.io/antrea/test/e2e $flow_visibility_args -provider=kind --logs-export-dir=$ANTREA_LOG_DIR $np_evaluation_flag --skip-cases=$skiplist $coverage_args $EXTRA_ARGS
 
