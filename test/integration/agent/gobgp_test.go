@@ -122,10 +122,12 @@ func TestGoBGPLifecycle(t *testing.T) {
 		peerKeys := sets.New[string]()
 		peers, err := server.GetPeers(ctx)
 		if err != nil {
+			t.Logf("Failed to get peers from server: %v", err)
 			return nil
 		}
 		for _, peer := range peers {
 			if peer.SessionState != bgp.SessionEstablished {
+				t.Logf("Session %s %s", peer.Address, peer.SessionState)
 				continue
 			}
 			peerKeys.Insert(fmt.Sprintf("%s-%d", peer.Address, peer.ASN))
