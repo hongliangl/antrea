@@ -216,6 +216,8 @@ type TestOptions struct {
 	externalServerIPs string
 	vlanSubnets       string
 	vlanID            int
+
+	externalFRRCID string
 }
 
 type flowVisibilityTestOptions struct {
