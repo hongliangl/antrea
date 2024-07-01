@@ -17,9 +17,13 @@ package e2e
 import (
 	"antrea.io/antrea/pkg/agent/bgp"
 	crdv1alpha1 "antrea.io/antrea/pkg/apis/crd/v1alpha1"
+	"antrea.io/antrea/pkg/features"
 	"antrea.io/antrea/test/e2e/providers/exec"
+	"context"
 	"fmt"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"strings"
@@ -31,39 +35,91 @@ type BGPPolicySpecBuilder struct {
 	Name string
 }
 
+var (
+	remoteASN = int32(65000)
+	localASN  = int32(64512)
+)
+
+func skipIfBGPPolicyDisabled(tb testing.TB) {
+	skipIfFeatureDisabled(tb, features.BGPPolicy, true, false)
+}
+
 func TestBGPPolicy(t *testing.T) {
-	var peers []bgp.PeerConfig
+	skipIfBGPPolicyDisabled(t)
+	data, err := setupTest(t)
+	if err != nil {
+		t.Fatalf("Error when setting up test: %v", err)
+	}
+	defer teardownTest(t, data)
+
+	var remotePeers []bgp.PeerConfig
 	for _, node := range clusterInfo.nodes {
-		peerIPv4 := bgp.PeerConfig{
-			BGPPeer: &crdv1alpha1.BGPPeer{
-				Address: node.ipv4Addr,
-				ASN:     64512,
-			},
-			//Password: node.name,
+		if node.ipv6Addr != "" {
+			peer := bgp.PeerConfig{
+				BGPPeer: &crdv1alpha1.BGPPeer{
+					Address: node.ipv4Addr,
+					ASN:     localASN,
+				},
+				//Password: node.name,
+			}
+			remotePeers = append(remotePeers, peer)
 		}
 		if node.ipv6Addr != "" {
-
+			peer := bgp.PeerConfig{
+				BGPPeer: &crdv1alpha1.BGPPeer{
+					Address: node.ipv6Addr,
+					ASN:     localASN,
+				},
+				//Password: node.name,
+			}
+			remotePeers = append(remotePeers, peer)
 		}
-		peerIPv4 := bgp.PeerConfig{
-			BGPPeer: &crdv1alpha1.BGPPeer{
-				Address: node.ipv4Addr,
-				ASN:     64512,
-			},
-			//Password: node.name,
-		}
-		peers = append(peers, peerIPv4)
 	}
-
-	remoteASN := int32(65000)
-	assert.NoError(t, configureFRRRouterBGP(t, remoteASN, 120, peers))
+	assert.NoError(t, configureFRRRouterBGP(t, remoteASN, 120, remotePeers))
 	defer func() {
 		assert.NoError(t, cleanupFRRRouterBGP(t, remoteASN))
 	}()
 
-	// Create Nginx Pods
-	// Service
-	// Create BGPPolicy
+	_, _, cleanupFunc := createAndWaitForPod(t, data, data.createNginxPodOnNode, "nginx-1", workerNodeName(0), data.testNamespace, false)
+	defer cleanupFunc()
+	_, _, cleanupFunc = createAndWaitForPod(t, data, data.createNginxPodOnNode, "nginx-2", workerNodeName(0), data.testNamespace, false)
+	defer cleanupFunc()
 
+	svcClusterIPv4, err := data.createNginxClusterIPService("nginx-svc-ipv4", data.testNamespace, false, ptr.To[corev1.IPFamily](corev1.IPv4Protocol))
+	require.NoError(t, err)
+	defer data.deleteService(svcClusterIPv4.Namespace, svcClusterIPv4.Name)
+	require.NotEqual(t, "", svcClusterIPv4.Spec.ClusterIP, "ClusterIP should not be empty")
+	svcClusterIPv6, err := data.createNginxClusterIPService("nginx-svc-ipv6", data.testNamespace, false, ptr.To[corev1.IPFamily](corev1.IPv6Protocol))
+	require.NoError(t, err)
+	defer data.deleteService(svcClusterIPv6.Namespace, svcClusterIPv6.Name)
+	require.NotEqual(t, "", svcClusterIPv6.Spec.ClusterIP, "ClusterIP should not be empty")
+
+	var localPeers []crdv1alpha1.BGPPeer
+	if externalInfo.externalFRRIPv4 != "" {
+		localPeers = append(localPeers, crdv1alpha1.BGPPeer{
+			Address: externalInfo.externalFRRIPv4,
+			ASN:     remoteASN,
+		})
+	}
+	if externalInfo.externalFRRIPv6 != "" {
+		localPeers = append(localPeers, crdv1alpha1.BGPPeer{
+			Address: externalInfo.externalFRRIPv6,
+			ASN:     remoteASN,
+		})
+	}
+	bpBuilder := &BGPPolicySpecBuilder{}
+
+	bp1 := bpBuilder.SetName("bp1").
+		SetListenPort(179).
+		SetLocalASN(localASN).
+		SetNodeSelector(map[string]string{"kubernetes.io/os": "linux"}).
+		SetAdvertiseServiceIPs([]crdv1alpha1.ServiceIPType{crdv1alpha1.ServiceIPTypeClusterIP}).
+		SetBGPPeers(localPeers).
+		Get()
+	_, err = data.crdClient.CrdV1alpha1().BGPPolicies().Create(context.TODO(), bp1, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	// Create BGPPolicy
 }
 
 // BGPPolicy builder
@@ -141,7 +197,7 @@ func (b *BGPPolicySpecBuilder) SetLocalASN(asn int32) *BGPPolicySpecBuilder {
 	return b
 }
 
-func (b *BGPPolicySpecBuilder) SetAdvertisements(nodeSelector map[string]string) *BGPPolicySpecBuilder {
+func (b *BGPPolicySpecBuilder) SetNodeSelector(nodeSelector map[string]string) *BGPPolicySpecBuilder {
 	b.Spec.NodeSelector = metav1.LabelSelector{
 		MatchLabels: nodeSelector,
 	}
