@@ -34,20 +34,36 @@ type BGPPolicySpecBuilder struct {
 func TestBGPPolicy(t *testing.T) {
 	var peers []bgp.PeerConfig
 	for _, node := range clusterInfo.nodes {
-		peer := bgp.PeerConfig{
+		peerIPv4 := bgp.PeerConfig{
 			BGPPeer: &crdv1alpha1.BGPPeer{
 				Address: node.ipv4Addr,
 				ASN:     64512,
 			},
-			Password: node.name,
+			//Password: node.name,
 		}
-		peers = append(peers, peer)
-	}
-	err := configureFRRRouterBGP(t, 65000, 120, peers)
-	assert.NoError(t, err)
+		if node.ipv6Addr != "" {
 
-	err = cleanupFRRRouterBGP(t, 65000)
-	assert.NoError(t, err)
+		}
+		peerIPv4 := bgp.PeerConfig{
+			BGPPeer: &crdv1alpha1.BGPPeer{
+				Address: node.ipv4Addr,
+				ASN:     64512,
+			},
+			//Password: node.name,
+		}
+		peers = append(peers, peerIPv4)
+	}
+
+	remoteASN := int32(65000)
+	assert.NoError(t, configureFRRRouterBGP(t, remoteASN, 120, peers))
+	defer func() {
+		assert.NoError(t, cleanupFRRRouterBGP(t, remoteASN))
+	}()
+
+	// Create Nginx Pods
+	// Service
+	// Create BGPPolicy
+
 }
 
 // BGPPolicy builder
