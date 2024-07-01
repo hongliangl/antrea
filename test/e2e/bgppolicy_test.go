@@ -28,6 +28,7 @@ import (
 	"k8s.io/utils/ptr"
 	"strings"
 	"testing"
+	"time"
 )
 
 type BGPPolicySpecBuilder struct {
@@ -77,22 +78,21 @@ func TestBGPPolicy(t *testing.T) {
 	}
 	assert.NoError(t, configureFRRRouterBGP(t, remoteASN, 120, remotePeers))
 	defer func() {
-		//assert.NoError(t, cleanupFRRRouterBGP(t, remoteASN))
+		assert.NoError(t, cleanupFRRRouterBGP(t, remoteASN))
 	}()
 
 	_, _, cleanupFunc := createAndWaitForPod(t, data, data.createNginxPodOnNode, "nginx-1", workerNodeName(0), data.testNamespace, false)
-	//defer cleanupFunc()
+	defer cleanupFunc()
 	_, _, cleanupFunc = createAndWaitForPod(t, data, data.createNginxPodOnNode, "nginx-2", workerNodeName(0), data.testNamespace, false)
-	//defer cleanupFunc()
-	_ = cleanupFunc
+	defer cleanupFunc()
 
 	svcClusterIPv4, err := data.createNginxClusterIPService("nginx-svc-ipv4", data.testNamespace, false, ptr.To[corev1.IPFamily](corev1.IPv4Protocol))
 	require.NoError(t, err)
-	//defer data.deleteService(svcClusterIPv4.Namespace, svcClusterIPv4.Name)
+	defer data.deleteService(svcClusterIPv4.Namespace, svcClusterIPv4.Name)
 	require.NotEqual(t, "", svcClusterIPv4.Spec.ClusterIP, "ClusterIP should not be empty")
 	svcClusterIPv6, err := data.createNginxClusterIPService("nginx-svc-ipv6", data.testNamespace, false, ptr.To[corev1.IPFamily](corev1.IPv6Protocol))
 	require.NoError(t, err)
-	//defer data.deleteService(svcClusterIPv6.Namespace, svcClusterIPv6.Name)
+	defer data.deleteService(svcClusterIPv6.Namespace, svcClusterIPv6.Name)
 	require.NotEqual(t, "", svcClusterIPv6.Spec.ClusterIP, "ClusterIP should not be empty")
 
 	var localPeers []crdv1alpha1.BGPPeer
@@ -120,7 +120,9 @@ func TestBGPPolicy(t *testing.T) {
 	_, err = data.crdClient.CrdV1alpha1().BGPPolicies().Create(context.TODO(), bp1, metav1.CreateOptions{})
 	require.NoError(t, err)
 
+	time.Sleep(time.Second * 300)
 	// Create BGPPolicy
+
 }
 
 // BGPPolicy builder
