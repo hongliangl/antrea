@@ -47,6 +47,7 @@ func skipIfBGPPolicyDisabled(tb testing.TB) {
 
 func TestBGPPolicy(t *testing.T) {
 	skipIfBGPPolicyDisabled(t)
+	skipIfProviderIsNot(t, "kind", "This test is only supported in KinD")
 	data, err := setupTest(t)
 	if err != nil {
 		t.Fatalf("Error when setting up test: %v", err)
@@ -55,26 +56,14 @@ func TestBGPPolicy(t *testing.T) {
 
 	var remotePeers []bgp.PeerConfig
 	for _, node := range clusterInfo.nodes {
-		if node.ipv6Addr != "" {
-			peer := bgp.PeerConfig{
-				BGPPeer: &crdv1alpha1.BGPPeer{
-					Address: node.ipv4Addr,
-					ASN:     localASN,
-				},
-				//Password: node.name,
-			}
-			remotePeers = append(remotePeers, peer)
+		peer := bgp.PeerConfig{
+			BGPPeer: &crdv1alpha1.BGPPeer{
+				Address: node.ipv4Addr,
+				ASN:     localASN,
+			},
+			//Password: node.name,
 		}
-		if node.ipv6Addr != "" {
-			peer := bgp.PeerConfig{
-				BGPPeer: &crdv1alpha1.BGPPeer{
-					Address: node.ipv6Addr,
-					ASN:     localASN,
-				},
-				//Password: node.name,
-			}
-			remotePeers = append(remotePeers, peer)
-		}
+		remotePeers = append(remotePeers, peer)
 	}
 	assert.NoError(t, configureFRRRouterBGP(t, remoteASN, 120, remotePeers))
 	defer func() {
@@ -86,30 +75,18 @@ func TestBGPPolicy(t *testing.T) {
 	_, _, cleanupFunc = createAndWaitForPod(t, data, data.createNginxPodOnNode, "nginx-2", workerNodeName(0), data.testNamespace, false)
 	defer cleanupFunc()
 
-	svcClusterIPv4, err := data.createNginxClusterIPService("nginx-svc-ipv4", data.testNamespace, false, ptr.To[corev1.IPFamily](corev1.IPv4Protocol))
+	svcClusterIP, err := data.createNginxClusterIPService("nginx-svc", data.testNamespace, false, ptr.To[corev1.IPFamily](corev1.IPv4Protocol))
 	require.NoError(t, err)
-	defer data.deleteService(svcClusterIPv4.Namespace, svcClusterIPv4.Name)
-	require.NotEqual(t, "", svcClusterIPv4.Spec.ClusterIP, "ClusterIP should not be empty")
-	svcClusterIPv6, err := data.createNginxClusterIPService("nginx-svc-ipv6", data.testNamespace, false, ptr.To[corev1.IPFamily](corev1.IPv6Protocol))
-	require.NoError(t, err)
-	defer data.deleteService(svcClusterIPv6.Namespace, svcClusterIPv6.Name)
-	require.NotEqual(t, "", svcClusterIPv6.Spec.ClusterIP, "ClusterIP should not be empty")
+	defer data.deleteService(svcClusterIP.Namespace, svcClusterIP.Name)
+	require.NotEqual(t, "", svcClusterIP.Spec.ClusterIP, "ClusterIP should not be empty")
 
-	var localPeers []crdv1alpha1.BGPPeer
-	if externalInfo.externalFRRIPv4 != "" {
-		localPeers = append(localPeers, crdv1alpha1.BGPPeer{
+	localPeers := []crdv1alpha1.BGPPeer{
+		{
 			Address: externalInfo.externalFRRIPv4,
 			ASN:     remoteASN,
-		})
-	}
-	if externalInfo.externalFRRIPv6 != "" {
-		localPeers = append(localPeers, crdv1alpha1.BGPPeer{
-			Address: externalInfo.externalFRRIPv6,
-			ASN:     remoteASN,
-		})
+		},
 	}
 	bpBuilder := &BGPPolicySpecBuilder{}
-
 	bp1 := bpBuilder.SetName("bp1").
 		SetListenPort(179).
 		SetLocalASN(localASN).

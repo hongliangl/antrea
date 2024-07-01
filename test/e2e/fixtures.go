@@ -68,6 +68,12 @@ func skipIfProviderIs(tb testing.TB, name string, reason string) {
 	}
 }
 
+func skipIfProviderIsNot(tb testing.TB, name string, reason string) {
+	if testOptions.providerName != name {
+		tb.Skipf("Skipping test for the '%s' provider: %s", name, reason)
+	}
+}
+
 func skipIfNotRequired(tb testing.TB, keys ...string) {
 	for _, v := range keys {
 		if strings.Contains(testOptions.skipCases, v) {
