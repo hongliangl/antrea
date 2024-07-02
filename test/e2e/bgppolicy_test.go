@@ -92,12 +92,13 @@ func TestBGPPolicy(t *testing.T) {
 		SetLocalASN(localASN).
 		SetNodeSelector(map[string]string{"kubernetes.io/os": "linux"}).
 		SetAdvertiseServiceIPs([]crdv1alpha1.ServiceIPType{crdv1alpha1.ServiceIPTypeClusterIP}).
+		SetAdvertisePodIPs().
 		SetBGPPeers(localPeers).
 		Get()
 	_, err = data.crdClient.CrdV1alpha1().BGPPolicies().Create(context.TODO(), bp1, metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	time.Sleep(time.Second * 300)
+	time.Sleep(time.Second * 3000)
 	// Create BGPPolicy
 
 }
@@ -113,8 +114,13 @@ func TestBGPPolicy(t *testing.T) {
 // Secret
 
 func configureFRRRouterBGP(t *testing.T, asn int32, gracefulRestartTime int, peers []bgp.PeerConfig) error {
-	var frrCommands []string
-	frrCommands = append(frrCommands, "configure terminal", fmt.Sprintf("router bgp %d", asn))
+	frrCommands := []string{
+		"configure terminal",
+		fmt.Sprintf("router bgp %d", asn),
+		"no bgp ebgp-requires-policy",
+		"no bgp network import-check",
+	}
+
 	if gracefulRestartTime != 0 {
 		frrCommands = append(frrCommands, fmt.Sprintf("bgp graceful-restart restart-time %d", gracefulRestartTime))
 	}
@@ -124,7 +130,7 @@ func configureFRRRouterBGP(t *testing.T, asn int32, gracefulRestartTime int, pee
 			frrCommands = append(frrCommands, fmt.Sprintf("neighbor %s password %s", peer.Address, peer.Password))
 		}
 		if peer.Port != nil {
-			frrCommands = append(frrCommands, fmt.Sprintf("neighbor %sport %d", peer.Address, *peer.Port))
+			frrCommands = append(frrCommands, fmt.Sprintf("neighbor %s port %d", peer.Address, *peer.Port))
 		}
 		if peer.MultihopTTL != nil {
 			frrCommands = append(frrCommands, fmt.Sprintf("neighbor %s ebgp-multihop %d", peer.Address, *peer.MultihopTTL))
