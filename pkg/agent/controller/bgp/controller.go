@@ -72,12 +72,6 @@ const (
 	ipv6Suffix = "/128"
 )
 
-var (
-	newBGPServerFn = func(globalConfig *bgp.GlobalConfig) bgp.Interface {
-		return gobgp.NewGoBGPServer(globalConfig)
-	}
-)
-
 type nodeToBGPPolicyBinding struct {
 	effectiveBP    string
 	alternativeBPs sets.Set[string]
@@ -94,10 +88,8 @@ type bgpPolicyState struct {
 	routerID string
 	// Routes to be advertised to BGP peers.
 	routes sets.Set[bgp.Route]
-	// Set of concatenated strings representing BGP peer IP addresses and ASNs.
-	// Example: "192.168.77.100-65000", "2001::1-65000".
-	peerKeys sets.Set[string]
-	// Map of concatenated strings (BGP peer IP addresses and ASNs) to their corresponding peer configurations.
+	// Map of concatenated strings (BGP peer IP addresses and ASNs, e.g., "192.168.77.100-65000", "2001::1-65000")
+	// to their corresponding peer configurations.
 	peerConfigs map[string]bgp.PeerConfig
 }
 
@@ -143,6 +135,8 @@ type Controller struct {
 
 	egressEnabled bool
 
+	newBGPServerFn func(globalConfig *bgp.GlobalConfig) bgp.Interface
+
 	queue workqueue.RateLimitingInterface
 }
 
@@ -183,7 +177,10 @@ func NewBGPPolicyController(ctx context.Context,
 		podIPv6CIDR:               nodeConfig.PodIPv6CIDR.String(),
 		nodeIPv4Addr:              nodeConfig.NodeIPv4Addr.IP.String(),
 		egressEnabled:             features.DefaultFeatureGate.Enabled(features.Egress),
-		queue:                     workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "bgpPolicyGroup"),
+		newBGPServerFn: func(globalConfig *bgp.GlobalConfig) bgp.Interface {
+			return gobgp.NewGoBGPServer(globalConfig)
+		},
+		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "bgpPolicyGroup"),
 	}
 	c.bgpPolicyInformer.AddEventHandlerWithResyncPeriod(
 		cache.ResourceEventHandlerFuncs{
@@ -412,7 +409,7 @@ func (c *Controller) syncBGPPolicy(bpName string) error {
 			}
 		}
 		// Start the new BGP server.
-		bgpServer := newBGPServerFn(globalConfig)
+		bgpServer := c.newBGPServerFn(globalConfig)
 		if err := bgpServer.Start(c.ctx); err != nil {
 			return fmt.Errorf("failed to start BGP server: %w", err)
 		}
@@ -425,11 +422,11 @@ func (c *Controller) syncBGPPolicy(bpName string) error {
 	}
 
 	// Reconcile BGP peers.
-	peerKeys, peerConfigs, err := c.getPeers(bp.Spec.BGPPeers)
+	peerConfigs, err := c.getPeerConfigs(bp.Spec.BGPPeers)
 	if err != nil {
 		return err
 	}
-	if err := c.reconcileBGPPeers(peerKeys, peerConfigs, bpState, needUpdateBGPServer); err != nil {
+	if err := c.reconcileBGPPeers(peerConfigs, bpState, needUpdateBGPServer); err != nil {
 		return err
 	}
 
@@ -444,13 +441,12 @@ func (c *Controller) syncBGPPolicy(bpName string) error {
 
 	// Update the BGPPolicy state.
 	bpState.routes = routes
-	bpState.peerKeys = peerKeys
 	bpState.peerConfigs = peerConfigs
 
 	return nil
 }
 
-func getPeerConfigs(peerKeys sets.Set[string], allPeerConfigs map[string]bgp.PeerConfig) []bgp.PeerConfig {
+func getPeerConfigsForKeys(peerKeys sets.Set[string], allPeerConfigs map[string]bgp.PeerConfig) []bgp.PeerConfig {
 	peerConfigs := make([]bgp.PeerConfig, 0, len(peerKeys))
 	for peer := range peerKeys {
 		peerConfigs = append(peerConfigs, allPeerConfigs[peer])
@@ -458,13 +454,18 @@ func getPeerConfigs(peerKeys sets.Set[string], allPeerConfigs map[string]bgp.Pee
 	return peerConfigs
 }
 
-func (c *Controller) reconcileBGPPeers(curPeerKeys sets.Set[string],
-	curPeerConfigs map[string]bgp.PeerConfig,
-	bpState *bgpPolicyState,
-	bgpServerUpdated bool) error {
+func getPeerKeys(peerConfigs map[string]bgp.PeerConfig) sets.Set[string] {
+	keys := sets.New[string]()
+	for key := range peerConfigs {
+		keys.Insert(key)
+	}
+	return keys
+}
 
-	prePeerKeys := bpState.peerKeys
+func (c *Controller) reconcileBGPPeers(curPeerConfigs map[string]bgp.PeerConfig, bpState *bgpPolicyState, bgpServerUpdated bool) error {
 	prePeerConfigs := bpState.peerConfigs
+	prePeerKeys := getPeerKeys(bpState.peerConfigs)
+	curPeerKeys := getPeerKeys(curPeerConfigs)
 
 	var peerToAddKeys sets.Set[string]
 	if !bgpServerUpdated {
@@ -472,7 +473,7 @@ func (c *Controller) reconcileBGPPeers(curPeerKeys sets.Set[string],
 	} else {
 		peerToAddKeys = curPeerKeys
 	}
-	peerConfigsToAdd := getPeerConfigs(peerToAddKeys, curPeerConfigs)
+	peerConfigsToAdd := getPeerConfigsForKeys(peerToAddKeys, curPeerConfigs)
 	for _, peer := range peerConfigsToAdd {
 		if err := bpState.bgpServer.AddPeer(c.ctx, peer); err != nil {
 			return err
@@ -489,7 +490,7 @@ func (c *Controller) reconcileBGPPeers(curPeerKeys sets.Set[string],
 				peerToUpdateKeys.Insert(peerKey)
 			}
 		}
-		peerToUpdateConfigs := getPeerConfigs(peerToUpdateKeys, curPeerConfigs)
+		peerToUpdateConfigs := getPeerConfigsForKeys(peerToUpdateKeys, curPeerConfigs)
 		for _, peer := range peerToUpdateConfigs {
 			if err := bpState.bgpServer.UpdatePeer(c.ctx, peer); err != nil {
 				return err
@@ -497,7 +498,7 @@ func (c *Controller) reconcileBGPPeers(curPeerKeys sets.Set[string],
 		}
 
 		peerToDeleteKeys := prePeerKeys.Difference(curPeerKeys)
-		peerToDeleteConfigs := getPeerConfigs(peerToDeleteKeys, prePeerConfigs)
+		peerToDeleteConfigs := getPeerConfigsForKeys(peerToDeleteKeys, prePeerConfigs)
 		for _, peer := range peerToDeleteConfigs {
 			if err := bpState.bgpServer.RemovePeer(c.ctx, peer); err != nil {
 				return err
@@ -570,12 +571,10 @@ func (c *Controller) newBGPPolicyState(bp *v1alpha1.BGPPolicy) *bgpPolicyState {
 	defer c.bgpPolicyStatesMutex.Unlock()
 
 	routes := make(sets.Set[bgp.Route])
-	peers := make(sets.Set[string])
 	peerConfigs := make(map[string]bgp.PeerConfig)
 
 	state := &bgpPolicyState{
 		routes:      routes,
-		peerKeys:    peers,
 		peerConfigs: peerConfigs,
 	}
 	c.bgpPolicyStates[bp.Name] = state
@@ -728,21 +727,16 @@ func (c *Controller) generateBGPPeerConfig(peer *v1alpha1.BGPPeer) bgp.PeerConfi
 	return bgpPeerConfig
 }
 
-func (c *Controller) getPeers(allPeers []v1alpha1.BGPPeer) (sets.Set[string], map[string]bgp.PeerConfig, error) {
-	peerKeys := sets.New[string]()
+func (c *Controller) getPeerConfigs(allPeers []v1alpha1.BGPPeer) (map[string]bgp.PeerConfig, error) {
 	peerConfigs := make(map[string]bgp.PeerConfig)
-
 	for i := range allPeers {
-		peerKey := generateBGPPeerKey(allPeers[i].Address, allPeers[i].ASN)
-		if c.enabledIPv4 && net.IsIPv4String(allPeers[i].Address) {
-			peerKeys.Insert(peerKey)
+		if c.enabledIPv4 && net.IsIPv4String(allPeers[i].Address) ||
+			c.enabledIPv6 && net.IsIPv6String(allPeers[i].Address) {
+			peerKey := generateBGPPeerKey(allPeers[i].Address, allPeers[i].ASN)
+			peerConfigs[peerKey] = c.generateBGPPeerConfig(&allPeers[i])
 		}
-		if c.enabledIPv6 && net.IsIPv6String(allPeers[i].Address) {
-			peerKeys.Insert(peerKey)
-		}
-		peerConfigs[peerKey] = c.generateBGPPeerConfig(&allPeers[i])
 	}
-	return peerKeys, peerConfigs, nil
+	return peerConfigs, nil
 }
 
 func generateBGPPeerKey(address string, asn int32) string {
@@ -886,6 +880,10 @@ func (c *Controller) addEndpointSlice(obj interface{}) {
 	if svc == nil {
 		return
 	}
+	if svc.Spec.ExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyTypeCluster &&
+		(svc.Spec.InternalTrafficPolicy == nil || *svc.Spec.InternalTrafficPolicy == corev1.ServiceInternalTrafficPolicyCluster) {
+		return
+	}
 	affectedBPs := c.filterAffectedBPsByService(svc)
 	if len(affectedBPs) == 0 {
 		return
@@ -900,6 +898,10 @@ func (c *Controller) updateEndpointSlice(oldObj, obj interface{}) {
 	eps := obj.(*discovery.EndpointSlice)
 	svc, _ := c.serviceLister.Services(eps.GetNamespace()).Get(eps.GetLabels()[discovery.LabelServiceName])
 	if svc == nil {
+		return
+	}
+	if svc.Spec.ExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyTypeCluster &&
+		(svc.Spec.InternalTrafficPolicy == nil || *svc.Spec.InternalTrafficPolicy == corev1.ServiceInternalTrafficPolicyCluster) {
 		return
 	}
 	affectedBPs := c.filterAffectedBPsByService(svc)

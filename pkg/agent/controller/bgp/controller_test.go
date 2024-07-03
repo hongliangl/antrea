@@ -59,7 +59,7 @@ var (
 	}
 
 	peer1ASN          = int32(65531)
-	peer1AuthPassword = "bpg-peer1" // #nosec G101
+	peer1AuthPassword = "bgp-peer1" // #nosec G101
 	ipv4Peer1Addr     = "192.168.77.251"
 	ipv6Peer1Addr     = "fec0::196:168:77:251"
 	ipv4Peer1         = generateBGPPeer(ipv4Peer1Addr, peer1ASN, 179, 120)
@@ -68,7 +68,7 @@ var (
 	ipv6Peer1Config   = generateBGPPeerConfig(&ipv6Peer1, peer1AuthPassword)
 
 	peer2ASN          = int32(65532)
-	peer2AuthPassword = "bpg-peer2" // #nosec G101
+	peer2AuthPassword = "bgp-peer2" // #nosec G101
 	ipv4Peer2Addr     = "192.168.77.252"
 	ipv6Peer2Addr     = "fec0::196:168:77:252"
 	ipv4Peer2         = generateBGPPeer(ipv4Peer2Addr, peer2ASN, 179, 120)
@@ -82,7 +82,7 @@ var (
 	updatedIPv6Peer2Config = generateBGPPeerConfig(&updatedIPv6Peer2, peer2AuthPassword)
 
 	peer3ASN          = int32(65533)
-	peer3AuthPassword = "bpg-peer3" // #nosec G101
+	peer3AuthPassword = "bgp-peer3" // #nosec G101
 	ipv4Peer3Addr     = "192.168.77.253"
 	ipv6Peer3Addr     = "fec0::196:168:77:253"
 	ipv4Peer3         = generateBGPPeer(ipv4Peer3Addr, peer3ASN, 179, 120)
@@ -202,6 +202,9 @@ func newFakeController(t *testing.T, objects []runtime.Object, crdObjects []runt
 			IPv6Enabled: ipv6Enabled,
 		})
 	bgpController.egressEnabled = true
+	bgpController.newBGPServerFn = func(_ *bgp.GlobalConfig) bgp.Interface {
+		return mockBGPServer
+	}
 
 	return &fakeController{
 		Controller:         bgpController,
@@ -211,16 +214,6 @@ func newFakeController(t *testing.T, objects []runtime.Object, crdObjects []runt
 		crdInformerFactory: crdInformerFactory,
 		client:             client,
 		informerFactory:    informerFactory,
-	}
-}
-
-func mockNewBGPServer(mockBGPServer bgp.Interface) func() {
-	originBGPServerFn := newBGPServerFn
-	newBGPServerFn = func(_ *bgp.GlobalConfig) bgp.Interface {
-		return mockBGPServer
-	}
-	return func() {
-		newBGPServerFn = originBGPServerFn
 	}
 }
 
@@ -437,7 +430,6 @@ func TestBGPPolicyAdd(t *testing.T) {
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			c := newFakeController(t, tt.objects, append(tt.crdObjects, tt.bp), tt.ipv4Enabled, tt.ipv6Enabled)
-			defer mockNewBGPServer(c.mockBGPServer)()
 
 			stopCh := make(chan struct{})
 			defer close(stopCh)
@@ -764,7 +756,6 @@ func TestBGPPolicyUpdate(t *testing.T) {
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			c := newFakeController(t, objects, crdObjects, true, true)
-			defer mockNewBGPServer(c.mockBGPServer)()
 
 			stopCh := make(chan struct{})
 			defer close(stopCh)
@@ -869,7 +860,6 @@ func TestBGPPolicyDelete(t *testing.T) {
 					ipv6Peer2,
 				})
 			c := newFakeController(t, []runtime.Object{node}, []runtime.Object{bp}, true, true)
-			defer mockNewBGPServer(c.mockBGPServer)()
 
 			stopCh := make(chan struct{})
 			defer close(stopCh)
@@ -1063,7 +1053,6 @@ func TestNodeUpdate(t *testing.T) {
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			c := newFakeController(t, []runtime.Object{tt.node}, crdObjects, !tt.ipv6Only, true)
-			defer mockNewBGPServer(c.mockBGPServer)()
 
 			stopCh := make(chan struct{})
 			defer close(stopCh)
@@ -1114,7 +1103,6 @@ func TestServiceLifecycle(t *testing.T) {
 		false,
 		[]v1alpha1.BGPPeer{ipv4Peer1})
 	c := newFakeController(t, []runtime.Object{node, ipv4LoadBalancerEps}, []runtime.Object{bp}, true, false)
-	defer mockNewBGPServer(c.mockBGPServer)()
 	mockBGPServer := c.mockBGPServer
 
 	stopCh := make(chan struct{})
@@ -1212,7 +1200,6 @@ func TestEgressLifecycle(t *testing.T) {
 		false,
 		[]v1alpha1.BGPPeer{ipv4Peer1})
 	c := newFakeController(t, []runtime.Object{node}, []runtime.Object{bp}, true, false)
-	defer mockNewBGPServer(c.mockBGPServer)()
 	mockBGPServer := c.mockBGPServer
 
 	stopCh := make(chan struct{})
@@ -1277,7 +1264,6 @@ func TestBGPSecretUpdate(t *testing.T) {
 		true,
 		[]v1alpha1.BGPPeer{ipv4Peer1, ipv4Peer2, ipv4Peer3})
 	c := newFakeController(t, []runtime.Object{node}, []runtime.Object{bp}, true, false)
-	defer mockNewBGPServer(c.mockBGPServer)()
 	mockBGPServer := c.mockBGPServer
 
 	stopCh := make(chan struct{})
@@ -1350,7 +1336,6 @@ func generateBGPPolicyState(listenPort int32,
 	prefixes []string,
 	peerConfigs []bgp.PeerConfig) *bgpPolicyState {
 	routes := sets.New[bgp.Route]()
-	peerKeys := sets.New[string]()
 	peerConfigMap := make(map[string]bgp.PeerConfig)
 
 	for _, prefix := range prefixes {
@@ -1358,7 +1343,6 @@ func generateBGPPolicyState(listenPort int32,
 	}
 	for _, peerConfig := range peerConfigs {
 		peerKey := generateBGPPeerKey(peerConfig.Address, peerConfig.ASN)
-		peerKeys.Insert(peerKey)
 		peerConfigMap[peerKey] = peerConfig
 	}
 
@@ -1367,7 +1351,6 @@ func generateBGPPolicyState(listenPort int32,
 		localASN:    localASN,
 		routerID:    routerID,
 		routes:      routes,
-		peerKeys:    peerKeys,
 		peerConfigs: peerConfigMap,
 	}
 }
@@ -1379,7 +1362,6 @@ func checkBGPPolicyState(t *testing.T, expected, got *bgpPolicyState) {
 		assert.Equal(t, expected.localASN, got.localASN)
 		assert.Equal(t, expected.routerID, got.routerID)
 		assert.Equal(t, expected.routes, got.routes)
-		assert.Equal(t, expected.peerKeys, got.peerKeys)
 		assert.Equal(t, expected.peerConfigs, got.peerConfigs)
 	}
 }
