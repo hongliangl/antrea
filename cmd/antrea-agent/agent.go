@@ -38,6 +38,7 @@ import (
 	"antrea.io/antrea/pkg/agent/cniserver"
 	"antrea.io/antrea/pkg/agent/cniserver/ipam"
 	"antrea.io/antrea/pkg/agent/config"
+	"antrea.io/antrea/pkg/agent/controller/bgp"
 	"antrea.io/antrea/pkg/agent/controller/egress"
 	"antrea.io/antrea/pkg/agent/controller/ipseccertificate"
 	"antrea.io/antrea/pkg/agent/controller/l7flowexporter"
@@ -104,7 +105,7 @@ var ipv4Localhost = net.ParseIP("127.0.0.1")
 
 // run starts Antrea agent with the given options and waits for termination signal.
 func run(o *Options) error {
-	klog.InfoS("Starting Antrea agent", "version", version.GetFullVersion())
+	klog.InfoS("Starting Antrea Agent", "version", version.GetFullVersion())
 
 	// Create K8s Clientset, CRD Clientset, Multicluster CRD Clientset and SharedInformerFactory for the given config.
 	k8sClient, _, crdClient, _, mcClient, _, err := k8s.CreateClients(o.config.ClientConnection, o.config.KubeAPIServerOverride)
@@ -731,15 +732,33 @@ func run(o *Options) error {
 		go ipamController.Run(stopCh)
 	}
 
+	var secondaryNetworkController *secondarynetwork.Controller
 	if features.DefaultFeatureGate.Enabled(features.SecondaryNetwork) {
-		defer secondarynetwork.RestoreHostInterfaceConfiguration(&o.config.SecondaryNetwork)
-		if err := secondarynetwork.Initialize(
+		secondaryNetworkController, err = secondarynetwork.NewController(
 			o.config.ClientConnection, o.config.KubeAPIServerOverride,
-			k8sClient, localPodInformer.Get(), nodeConfig.Name,
-			podUpdateChannel, stopCh,
-			&o.config.SecondaryNetwork, ovsdbConnection); err != nil {
-			return fmt.Errorf("failed to initialize secondary network: %v", err)
+			k8sClient, localPodInformer.Get(),
+			podUpdateChannel,
+			&o.config.SecondaryNetwork, ovsdbConnection)
+		if err != nil {
+			return fmt.Errorf("failed to create secondary network controller: %w", err)
 		}
+	}
+
+	if features.DefaultFeatureGate.Enabled(features.BGPPolicy) {
+		bgpPolicyInformer := crdInformerFactory.Crd().V1alpha1().BGPPolicies()
+		bgpController, err := bgp.NewBGPPolicyController(nodeInformer,
+			serviceInformer,
+			egressInformer,
+			bgpPolicyInformer,
+			endpointSliceInformer,
+			o.enableEgress,
+			k8sClient,
+			nodeConfig,
+			networkConfig)
+		if err != nil {
+			return err
+		}
+		go bgpController.Run(ctx)
 	}
 
 	if features.DefaultFeatureGate.Enabled(features.TrafficControl) {
@@ -757,6 +776,17 @@ func run(o *Options) error {
 	//  Start the localPodInformer
 	if localPodInformer.Evaluated() {
 		go localPodInformer.Get().Run(stopCh)
+	}
+
+	var nodeLatencyMonitor *monitortool.NodeLatencyMonitor
+	if features.DefaultFeatureGate.Enabled(features.NodeLatencyMonitor) && o.nodeType == config.K8sNode {
+		nodeLatencyMonitor = monitortool.NewNodeLatencyMonitor(
+			antreaClientProvider,
+			nodeInformer,
+			nodeLatencyMonitorInformer,
+			nodeConfig,
+			networkConfig.TrafficEncapMode,
+		)
 	}
 
 	informerFactory.Start(stopCh)
@@ -864,6 +894,15 @@ func run(o *Options) error {
 			return fmt.Errorf("failed to connect uplink to OVS bridge: %w", err)
 		}
 	}
+	// secondaryNetworkController Initialize must be run after FlowRestoreComplete for the case that Node
+	// IPs are moved to the secondary OVS bridge
+	if features.DefaultFeatureGate.Enabled(features.SecondaryNetwork) {
+		defer secondaryNetworkController.Restore()
+		if err = secondaryNetworkController.Initialize(); err != nil {
+			return fmt.Errorf("failed to initialize secondary network: %v", err)
+		}
+		go secondaryNetworkController.Run(stopCh)
+	}
 
 	// statsCollector collects stats and reports to the antrea-controller periodically. For now it's only used for
 	// NetworkPolicy stats and Multicast stats.
@@ -950,19 +989,12 @@ func run(o *Options) error {
 		go flowExporter.Run(stopCh)
 	}
 
-	// Start the node latency monitor.
-	if features.DefaultFeatureGate.Enabled(features.NodeLatencyMonitor) && o.nodeType == config.K8sNode {
-		nodeLatencyMonitor := monitortool.NewNodeLatencyMonitor(
-			antreaClientProvider,
-			nodeInformer,
-			nodeLatencyMonitorInformer,
-			nodeConfig,
-			networkConfig.TrafficEncapMode,
-		)
+	// Start the node latency monitor if applicable.
+	if nodeLatencyMonitor != nil {
 		go nodeLatencyMonitor.Run(stopCh)
 	}
 
 	<-stopCh
-	klog.Info("Stopping Antrea agent")
+	klog.InfoS("Stopping Antrea Agent")
 	return nil
 }

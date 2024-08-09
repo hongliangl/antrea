@@ -1,5 +1,5 @@
 ---
-# Source: crds/antreaagentinfo.yaml
+# Source: antrea/crds/antreaagentinfo.yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -152,7 +152,7 @@ spec:
       - aai
 
 ---
-# Source: crds/antreacontrollerinfo.yaml
+# Source: antrea/crds/antreacontrollerinfo.yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -301,7 +301,7 @@ spec:
       - aci
 
 ---
-# Source: crds/bgppolicy.yaml
+# Source: antrea/crds/bgppolicy.yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -430,7 +430,7 @@ spec:
     kind: BGPPolicy
 
 ---
-# Source: crds/clustergroup.yaml
+# Source: antrea/crds/clustergroup.yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -575,7 +575,7 @@ spec:
       - cg
 
 ---
-# Source: crds/clusternetworkpolicy.yaml
+# Source: antrea/crds/clusternetworkpolicy.yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -1361,7 +1361,7 @@ spec:
       - acnp
 
 ---
-# Source: crds/egress.yaml
+# Source: antrea/crds/egress.yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -1527,7 +1527,7 @@ spec:
       - eg
 
 ---
-# Source: crds/externalentity.yaml
+# Source: antrea/crds/externalentity.yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -1582,7 +1582,7 @@ spec:
       - ee
 
 ---
-# Source: crds/externalippool.yaml
+# Source: antrea/crds/externalippool.yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -1710,7 +1710,7 @@ spec:
       - eip
 
 ---
-# Source: crds/externalnode.yaml
+# Source: antrea/crds/externalnode.yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -1762,7 +1762,7 @@ spec:
       - en
 
 ---
-# Source: crds/group.yaml
+# Source: antrea/crds/group.yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -1893,7 +1893,7 @@ spec:
       - grp
 
 ---
-# Source: crds/ippool.yaml
+# Source: antrea/crds/ippool.yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -2153,7 +2153,7 @@ spec:
       - ipp
 
 ---
-# Source: crds/networkpolicy.yaml
+# Source: antrea/crds/networkpolicy.yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -2816,7 +2816,7 @@ spec:
       - anp
 
 ---
-# Source: crds/nodelatencymonitor.yaml
+# Source: antrea/crds/nodelatencymonitor.yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -2867,7 +2867,7 @@ spec:
       - nlm
 
 ---
-# Source: crds/supportbundlecollection.yaml
+# Source: antrea/crds/supportbundlecollection.yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -3016,7 +3016,7 @@ spec:
       - sbc
 
 ---
-# Source: crds/tier.yaml
+# Source: antrea/crds/tier.yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -3061,7 +3061,7 @@ spec:
       - tr
 
 ---
-# Source: crds/traceflow.yaml
+# Source: antrea/crds/traceflow.yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -3371,7 +3371,7 @@ spec:
       - tf
 
 ---
-# Source: crds/trafficcontrol.yaml
+# Source: antrea/crds/trafficcontrol.yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -3807,6 +3807,10 @@ data:
     # Enable NodeLatencyMonitor to monitor the latency between Nodes.
     #  NodeLatencyMonitor: false
 
+    # Allow users to initiate BGP process on selected Kubernetes Nodes and advertise Service IPs, Pod IPs and Egress IPs to
+    # remote BGP peers.
+    #  BGPPolicy: false
+
     # Name of the OpenVSwitch bridge antrea-agent will create and use.
     # Make sure it doesn't conflict with your existing OpenVSwitch bridges.
     ovsBridge: "br-int"
@@ -3887,6 +3891,7 @@ data:
     # Default MTU to use for the host gateway interface and the network interface of each Pod.
     # If omitted, antrea-agent will discover the MTU of the Node's primary interface and
     # also adjust MTU to accommodate for tunnel encapsulation overhead (if applicable).
+    # If the MTU is updated, the new value will only be applied to new workloads.
     defaultMTU: 0
 
     # packetInRate defines the OVS controller packet rate limits for different
@@ -4038,7 +4043,7 @@ data:
     antreaProxy:
       # To disable AntreaProxy, set this to false.
       enable: true
-      # ProxyAll tells antrea-agent to proxy all Service traffic, including NodePort, LoadBalancer, and ClusterIP traffic,
+      # proxyAll tells antrea-agent to proxy all Service traffic, including NodePort, LoadBalancer, and ClusterIP traffic,
       # regardless of where they come from. Therefore, running kube-proxy is no longer required.
       # Note that this option is experimental. If kube-proxy is removed, option kubeAPIServerOverride must be used to access
       # apiserver directly.
@@ -4055,7 +4060,7 @@ data:
       # External IPs of LoadBalancer Services. This is useful when the external LoadBalancer provides additional
       # capabilities (e.g. TLS termination) and it is desirable for Pod-to-ExternalIP traffic to be sent to the
       # external LoadBalancer instead of being load-balanced to an Endpoint directly by AntreaProxy.
-      # Note that setting ProxyLoadBalancerIPs to false usually only makes sense when ProxyAll is set to true and
+      # Note that setting ProxyLoadBalancerIPs to false usually only makes sense when proxyAll is set to true and
       # kube-proxy is removed from the cluster, otherwise kube-proxy will still load-balance this traffic.
       proxyLoadBalancerIPs: true
       # The value of the "service.kubernetes.io/service-proxy-name" label for AntreaProxy to match. If it is set,
@@ -4445,6 +4450,7 @@ rules:
   - apiGroups:
       - crd.antrea.io
     resources:
+      - bgppolicies
       - externalippools
       - ippools
       - trafficcontrols
@@ -4502,6 +4508,16 @@ rules:
       - create
       - patch
       - update
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    resourceNames:
+      - antrea-bgp-passwords
+    verbs:
+      - get
+      - list
+      - watch
 ---
 # Source: antrea/templates/antctl/clusterrole.yaml
 kind: ClusterRole
@@ -5110,7 +5126,7 @@ spec:
         kubectl.kubernetes.io/default-container: antrea-agent
         # Automatically restart Pods with a RollingUpdate if the ConfigMap changes
         # See https://helm.sh/docs/howto/charts_tips_and_tricks/#automatically-roll-deployments
-        checksum/config: aca23e21519e0fc112647f23d3ce6f92a3dea0bc7ebf1c6d7a7eed2dbe80f0a3
+        checksum/config: 616b79b8deedba740ff992ca870b346c64c1dde5e3381436dc2cb24c0bd98ead
       labels:
         app: antrea
         component: antrea-agent
@@ -5346,7 +5362,7 @@ spec:
       annotations:
         # Automatically restart Pod if the ConfigMap changes
         # See https://helm.sh/docs/howto/charts_tips_and_tricks/#automatically-roll-deployments
-        checksum/config: aca23e21519e0fc112647f23d3ce6f92a3dea0bc7ebf1c6d7a7eed2dbe80f0a3
+        checksum/config: 616b79b8deedba740ff992ca870b346c64c1dde5e3381436dc2cb24c0bd98ead
       labels:
         app: antrea
         component: antrea-controller

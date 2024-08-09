@@ -39,6 +39,8 @@ jobs:
         show-progress: false
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
+      with:
+        driver: docker
     - name: Build Antrea Docker image with code coverage support
       run: |
         ./hack/build-antrea-linux-all.sh --pull --coverage
@@ -113,10 +115,11 @@ jobs:
         path: test-e2e-encap-coverage.tar.gz
         retention-days: 30
     - name: Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         file: '*.cov.out*'
+        disable_search: true
         flags: kind-e2e-tests
         name: codecov-test-e2e-encap
         directory: test-e2e-encap-coverage
@@ -169,6 +172,7 @@ jobs:
           --coverage \
           --encap-mode encap \
           --proxy-all \
+          --no-kube-proxy \
           --feature-gates LoadBalancerModeDSR=true \
           --load-balancer-mode dsr \
           --node-ipam
@@ -181,10 +185,11 @@ jobs:
         path: test-e2e-encap-non-default-coverage.tar.gz
         retention-days: 30
     - name: Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         file: '*.cov.out*'
+        disable_search: true
         flags: kind-e2e-tests
         name: codecov-test-e2e-encap-non-default
         directory: test-e2e-encap-non-default-coverage
@@ -241,6 +246,7 @@ jobs:
             --node-ipam \
             --extra-vlan \
             --multicast \
+            --bgp-policy \
             --networkpolicy-evaluation
       - name: Tar coverage files
         run: tar -czf test-e2e-encap-all-features-enabled-coverage.tar.gz test-e2e-encap-all-features-enabled-coverage
@@ -251,10 +257,11 @@ jobs:
           path: test-e2e-encap-all-features-enabled-coverage.tar.gz
           retention-days: 30
       - name: Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           file: '*.cov.out*'
+          disable_search: true
           flags: kind-e2e-tests
           name: codecov-test-e2e-encap-all-features-enabled
           directory: test-e2e-encap-all-features-enabled-coverage
@@ -313,10 +320,11 @@ jobs:
         path: test-e2e-noencap-coverage.tar.gz
         retention-days: 30
     - name: Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         file: '*.cov.out*'
+        disable_search: true
         flags: kind-e2e-tests
         name: codecov-test-e2e-noencap
         directory: test-e2e-noencap-coverage
@@ -375,10 +383,11 @@ jobs:
         path: test-e2e-hybrid-coverage.tar.gz
         retention-days: 30
     - name: Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         file: '*.cov.out*'
+        disable_search: true
         flags: kind-e2e-tests
         name: codecov-test-e2e-hybrid
         directory: test-e2e-hybrid-coverage
@@ -449,10 +458,11 @@ jobs:
           path: test-e2e-fa-coverage.tar.gz
           retention-days: 30
       - name: Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           file: '*.cov.out*'
+          disable_search: true
           flags: kind-e2e-tests
           name: codecov-test-e2e-fa
           directory: test-e2e-fa-coverage

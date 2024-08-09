@@ -47,10 +47,11 @@ jobs:
     - name: Run unit tests
       run: make test-unit
     - name: Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         file: .coverage/coverage-unit.txt
+        disable_search: true
         flags: unit-tests
         name: codecov-unit-test
         fail_ci_if_error: ${{ github.event_name == 'push' }}
@@ -72,10 +73,11 @@ jobs:
       - name: Run unit tests
         run: make test-unit
       - name: Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           file: .coverage/coverage-unit.txt
+          disable_search: true
           flags: unit-tests
           name: codecov-unit-test
           fail_ci_if_error: ${{ github.event_name == 'push' }}
@@ -103,10 +105,11 @@ jobs:
           cd multicluster
           make test-integration
       - name: Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: .coverage/coverage-integration.txt,multicluster/.coverage/coverage-integration.txt
+          disable_search: true
           flags: integration-tests
           name: codecov-integration-test
           fail_ci_if_error: ${{ github.event_name == 'push' }}

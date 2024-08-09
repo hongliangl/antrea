@@ -207,15 +207,15 @@ duration of syncing internal-networkpolicy
 #### Antrea Proxy Metrics
 
 - **antrea_proxy_sync_proxy_rules_duration_seconds:** SyncProxyRules duration
-of AntreaProxy in seconds
+of Antrea Proxy in seconds
 - **antrea_proxy_total_endpoints_installed:** The number of Endpoints
-installed by AntreaProxy
+installed by Antrea Proxy
 - **antrea_proxy_total_endpoints_updates:** The cumulative number of Endpoint
-updates received by AntreaProxy
+updates received by Antrea Proxy
 - **antrea_proxy_total_services_installed:** The number of Services installed
-by AntreaProxy
+by Antrea Proxy
 - **antrea_proxy_total_services_updates:** The cumulative number of Service
-updates received by AntreaProxy
+updates received by Antrea Proxy
 
 ### Common Metrics Provided by Infrastructure
 
@@ -477,6 +477,9 @@ to a non-default GODEBUG=multipartmaxparts=... setting.
 - **go_godebug_non_default_behavior_multipathtcp_events_total:** The number
 of non-default behaviors executed by the net package due to a non-default
 GODEBUG=multipathtcp=... setting.
+- **go_godebug_non_default_behavior_netedns0_events_total:** The number
+of non-default behaviors executed by the net package due to a non-default
+GODEBUG=netedns0=... setting.
 - **go_godebug_non_default_behavior_panicnil_events_total:** The number of
 non-default behaviors executed by the runtime package due to a non-default
 GODEBUG=panicnil=... setting.
