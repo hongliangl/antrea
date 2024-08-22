@@ -114,6 +114,7 @@ func TestAntreaNodeNetworkPolicy(t *testing.T) {
 	t.Run("Case=ACNPTierOverride", func(t *testing.T) { testNodeACNPTierOverride(t) })
 	t.Run("Case=ACNPCustomTiers", func(t *testing.T) { testNodeACNPCustomTiers(t) })
 	t.Run("Case=ACNPPriorityConflictingRule", func(t *testing.T) { testNodeACNPPriorityConflictingRule(t) })
+	t.Run("Case=ACNPAuditLogging", func(t *testing.T) { testNodeACNPAuditLogging(t, data) })
 
 	k8sUtils.Cleanup(namespaces)
 
@@ -890,4 +891,22 @@ func testNodeACNPNestedIPBlockClusterGroupCreateAndUpdate(t *testing.T) {
 		{"ACNP Drop Ingress From Node x to Pod y/a and z/a with nested ClusterGroup with ipBlocks", []*TestStep{testStep, testStep2}},
 	}
 	executeTests(t, testCase)
+}
+
+func testNodeACNPAuditLogging(t *testing.T, data *TestData) {
+	logLabel := "test-labels-thisPartShouldBeTruncated"
+	builder := &ClusterNetworkPolicySpecBuilder{}
+	builder = builder.SetName("acnp-drop-x-to-y-egress").
+		SetPriority(1.0).
+		SetAppliedToGroup([]ACNPAppliedToSpec{{NodeSelector: map[string]string{labelNodeHostname: nodes["x"]}}})
+	builder.AddEgress(ProtocolTCP, &p80, nil, nil, nil, nil, nil, nil, nil, nil, map[string]string{labelNodeHostname: nodes["y"]}, nil,
+		nil, nil, nil, nil, nil, crdv1beta1.RuleActionDrop, "", "", nil)
+	builder.AddEgressLogging(logLabel)
+
+	acnp, err := k8sUtils.CreateOrUpdateACNP(builder.Get())
+	failOnError(err, t)
+	failOnError(data.waitForACNPRealized(t, acnp.Name, policyRealizedTimeout), t)
+
+	// generate some traffic that will be dropped by acnp-drop-x-to-y-egress.
+	k8sUtils.Probe(getNS("x"), "a", getNS("y"), "a", p80, ProtocolTCP, nil, nil)
 }
