@@ -91,6 +91,8 @@ var (
 	// reg0[23]:
 	CtStateNotRestoredRegMark = binding.NewOneBitZeroRegMark(0, 23)
 	CtStateRestoredRegMark    = binding.NewOneBitRegMark(0, 23)
+	// reg0[24]:
+	L7NPEnforceRegMark = binding.NewOneBitRegMark(0, 24)
 	// reg0[25..32]: Field to indicate Antrea-native policy packetIn operations
 	PacketInOperationField = binding.NewRegField(0, 25, 32)
 

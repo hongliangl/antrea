@@ -226,7 +226,7 @@ func (f *featureNetworkPolicy) getRequiredTables() []*Table {
 			AntreaPolicyIngressRuleTable,
 		)
 		if f.enableL7NetworkPolicy {
-			tables = append(tables, TrafficControlTable) // For L7 NetworkPolicy.
+			tables = append(tables, L3ClassifierTable, TrafficControlTable) // For L7 NetworkPolicy.
 		}
 		if f.enableMulticast {
 			tables = append(tables,

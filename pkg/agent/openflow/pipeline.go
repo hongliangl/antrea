@@ -124,7 +124,8 @@ var (
 	// Tables of pipelineIP are declared below.
 
 	// Tables in stageClassifier:
-	ClassifierTable = newTable("Classifier", stageClassifier, pipelineIP, defaultDrop)
+	L3ClassifierTable = newTable("L3Classifier", stageClassifier, pipelineIP)
+	ClassifierTable   = newTable("Classifier", stageClassifier, pipelineIP, defaultDrop)
 
 	// Tables in stageValidation:
 	SpoofGuardTable           = newTable("SpoofGuard", stageValidation, pipelineIP, defaultDrop)

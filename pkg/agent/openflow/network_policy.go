@@ -1031,6 +1031,10 @@ func (c *clause) addAddrFlows(featureNetworkPolicy *featureNetworkPolicy, addrTy
 	return conjMatchFlowContextChanges
 }
 
+func (c *clause) addL7AddrClassifyFlows(featureNetworkPolicy *featureNetworkPolicy, addrType types.AddressType, addresses []types.Address, priority *uint16) []*conjMatchFlowContextChange {
+
+}
+
 // addServiceFlows translates the specified Antrea Service to conjunctiveMatchFlow,
 // and returns corresponding conjMatchFlowContextChange.
 func (c *clause) addServiceFlows(featureNetworkPolicy *featureNetworkPolicy, services []v1beta2.Service, priority *uint16, enableLogging bool) []*conjMatchFlowContextChange {
