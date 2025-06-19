@@ -836,6 +836,10 @@ func testProxyInterNodeHairpinCases(data *TestData, t *testing.T, hostNetwork bo
 	}
 
 	t.Run("InterNode/ClusterIP", func(t *testing.T) {
+		// If kube-proxy is running, kube-proxy takes precedence over AntreaProxy to handle the ClusterIP traffic, skip
+		// the test.
+		skipIfKubeProxyEnabled(t, data)
+
 		clientIP, err := probeClientIPFromNode(node, clusterIPUrl, data)
 		require.NoError(t, err, "ClusterIP hairpin should be able to be connected")
 		require.Equal(t, expectedClientIP, clientIP)
@@ -1092,7 +1096,8 @@ func TestProxyLoadBalancerModeDSR(t *testing.T) {
 	defer teardownTest(t, data)
 	skipIfProxyDisabled(t, data)
 	skipIfProxyAllDisabled(t, data)
-	skipIfEncapModeIsNot(t, data, config.TrafficEncapModeEncap)
+	skipIfEncapModeIs(t, data, config.TrafficEncapModeNoEncap)
+	skipIfEncapModeIs(t, data, config.TrafficEncapModeNetworkPolicyOnly)
 
 	ingressNode := controlPlaneNodeName()
 	backendNode1 := workerNodeName(1)
