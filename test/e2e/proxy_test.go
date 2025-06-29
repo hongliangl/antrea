@@ -1092,7 +1092,8 @@ func TestProxyLoadBalancerModeDSR(t *testing.T) {
 	defer teardownTest(t, data)
 	skipIfProxyDisabled(t, data)
 	skipIfProxyAllDisabled(t, data)
-	skipIfEncapModeIsNot(t, data, config.TrafficEncapModeEncap)
+	skipIfEncapModeIs(t, data, config.TrafficEncapModeNoEncap)
+	skipIfEncapModeIs(t, data, config.TrafficEncapModeNetworkPolicyOnly)
 
 	ingressNode := controlPlaneNodeName()
 	backendNode1 := workerNodeName(1)
@@ -1121,12 +1122,12 @@ func TestProxyLoadBalancerModeDSR(t *testing.T) {
 		withSessionAffinity bool
 	}{
 		{
-			name:                "IPv4,withSessionAffinity",
-			withSessionAffinity: true,
-		},
-		{
 			name:                "IPv4,withoutSessionAffinity",
 			withSessionAffinity: false,
+		},
+		{
+			name:                "IPv4,withSessionAffinity",
+			withSessionAffinity: true,
 		},
 	}
 	for _, tc := range testCases {
