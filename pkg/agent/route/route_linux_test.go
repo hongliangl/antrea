@@ -150,6 +150,26 @@ func TestSyncNeighbors(t *testing.T) {
 	assert.NoError(t, c.syncNeighbor())
 }
 
+func TestSyncIPRules(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockNetlink := netlinktest.NewMockInterface(ctrl)
+
+	c := &Client{
+		netlink:     mockNetlink,
+		egressRules: sync.Map{},
+	}
+
+	rule1 := &netlink.Rule{Family: netlink.FAMILY_V4, Table: 100, Mark: uint32(0xf), Mask: ptr.To(uint32(0xf))}
+	rule2 := &netlink.Rule{Family: netlink.FAMILY_V6, Table: 101, Mark: uint32(0xf), Mask: ptr.To(uint32(0xf))}
+	mockNetlink.EXPECT().RuleList(netlink.FAMILY_ALL).Return([]netlink.Rule{*rule1}, nil)
+	mockNetlink.EXPECT().RuleAdd(rule2)
+
+	c.egressRules.Store(100, rule1)
+	c.egressRules.Store(101, rule2)
+
+	assert.NoError(t, c.syncIPRule())
+}
+
 func TestRestoreEgressRoutesAndRules(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockNetlink := netlinktest.NewMockInterface(ctrl)
@@ -2225,7 +2245,7 @@ func TestEgressRule(t *testing.T) {
 			}
 			tt.expectedCalls(mockNetlink.EXPECT())
 
-			assert.NoError(t, c.AddEgressRule(tt.tableID, tt.mark))
+			assert.NoError(t, c.AddEgressRule(tt.tableID, tt.mark, false))
 			assert.NoError(t, c.DeleteEgressRule(tt.tableID, tt.mark))
 		})
 	}

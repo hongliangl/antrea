@@ -152,6 +152,8 @@ type Client struct {
 	clusterNodeIP6s sync.Map
 	// egressRoutes caches ip routes about Egresses.
 	egressRoutes sync.Map
+	// egressRules caches ip rules about Egresses.
+	egressRules sync.Map
 	// The latest calculated Service CIDRs can be got from serviceCIDRProvider.
 	serviceCIDRProvider servicecidr.Interface
 	// nodeNetworkPolicyIPSetsIPv4 caches all existing IPv4 ipsets for NodeNetworkPolicy.
@@ -319,6 +321,9 @@ func (c *Client) syncIPInfra() {
 	if err := c.syncNeighbor(); err != nil {
 		klog.ErrorS(err, "Failed to sync neighbor")
 	}
+	if err := c.syncIPRule(); err != nil {
+		klog.ErrorS(err, "Failed to sync ip rule")
+	}
 
 	klog.V(3).Info("Successfully synced iptables, ipset, route and neighbor")
 }
@@ -467,6 +472,54 @@ func (c *Client) syncNeighbor() error {
 			return restoreNeighbor(v.(*netlink.Neigh))
 		})
 	}
+
+	return nil
+}
+
+type ipRuleKey struct {
+	family int
+	mark   uint32
+	mask   uint32
+	table  int
+}
+
+// syncIPRule ensures that necessary ip rules managed by Antrea.
+func (c *Client) syncIPRule() error {
+	ruleList, err := c.netlink.RuleList(netlink.FAMILY_ALL)
+	if err != nil {
+		return err
+	}
+	ruleKeys := sets.New[ipRuleKey]()
+	for i := range ruleList {
+		rule := ruleList[i]
+		// Only process rules with both mark and mask, as Antrea currently adds only such rules.
+		if rule.Mark != 0 && rule.Mask != nil {
+			ruleKeys.Insert(ipRuleKey{
+				family: rule.Family,
+				mark:   rule.Mark,
+				mask:   *rule.Mask,
+				table:  rule.Table,
+			})
+		}
+	}
+	restoreRule := func(rule *netlink.Rule) bool {
+		if ruleKeys.Has(ipRuleKey{
+			family: rule.Family,
+			mark:   rule.Mark,
+			mask:   *rule.Mask,
+			table:  rule.Table,
+		}) {
+			return true
+		}
+		if err := c.netlink.RuleAdd(rule); err != nil {
+			klog.ErrorS(err, "failed to sync ip rule", "RUle", rule)
+			return false
+		}
+		return true
+	}
+	c.egressRules.Range(func(_, v interface{}) bool {
+		return restoreRule(v.(*netlink.Rule))
+	})
 
 	return nil
 }
@@ -1873,14 +1926,20 @@ func (c *Client) DeleteEgressRoutes(tableID uint32) error {
 	return nil
 }
 
-func (c *Client) AddEgressRule(tableID uint32, mark uint32) error {
+func (c *Client) AddEgressRule(tableID uint32, mark uint32, isIPv6 bool) error {
+	family := netlink.FAMILY_V4
+	if isIPv6 {
+		family = netlink.FAMILY_V6
+	}
 	rule := netlink.NewRule()
 	rule.Table = int(tableID)
 	rule.Mark = mark
 	rule.Mask = ptr.To(types.SNATIPMarkMask)
+	rule.Family = family
 	if err := c.netlink.RuleAdd(rule); err != nil {
 		return fmt.Errorf("error adding ip rule %v: %w", rule, err)
 	}
+	c.egressRules.Store(tableID, rule)
 	return nil
 }
 
@@ -1894,6 +1953,7 @@ func (c *Client) DeleteEgressRule(tableID uint32, mark uint32) error {
 			return fmt.Errorf("error deleting ip rule %v: %w", rule, err)
 		}
 	}
+	c.egressRules.Delete(tableID)
 	return nil
 }
 
