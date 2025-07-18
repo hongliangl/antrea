@@ -659,11 +659,33 @@ func (c *Controller) addNodeRoute(nodeName string, node *corev1.Node) error {
 				return err
 			}
 			peerGatewayIPs.IPv6 = peerGatewayIP
+
+			if c.networkConfig.TrafficEncapMode == config.TrafficEncapModeNoEncap {
+				if err := c.routeClient.AddTcFilterRedirect(c.nodeConfig.PodIPv6CIDR,
+					peerPodCIDR,
+					c.nodeConfig.GatewayConfig.LinkIndex,
+					c.nodeConfig.NodeTransportInterfaceIndex,
+					nil,
+					nil); err != nil {
+					return err
+				}
+			}
 		} else {
 			if err := c.routeClient.AddRoutes(peerPodCIDR, nodeName, peerNodeIPs.IPv4, peerGatewayIP); err != nil {
 				return err
 			}
 			peerGatewayIPs.IPv4 = peerGatewayIP
+
+			if c.networkConfig.TrafficEncapMode == config.TrafficEncapModeNoEncap {
+				if err := c.routeClient.AddTcFilterRedirect(c.nodeConfig.PodIPv4CIDR,
+					peerPodCIDR,
+					c.nodeConfig.GatewayConfig.LinkIndex,
+					c.nodeConfig.NodeTransportInterfaceIndex,
+					nil,
+					nil); err != nil {
+					return err
+				}
+			}
 		}
 	}
 

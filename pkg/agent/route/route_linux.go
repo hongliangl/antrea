@@ -2458,3 +2458,65 @@ func (c *Client) DeleteNodeNetworkPolicyIPTables(iptablesChains []string, isIPv6
 
 	return nil
 }
+
+func (c *Client) AddTcQdiscClsAct(ifindex int) error {
+	qdisc := &netlink.Clsact{
+		QdiscAttrs: netlink.QdiscAttrs{
+			LinkIndex: ifindex,
+			Parent:    netlink.HANDLE_CLSACT,
+		},
+	}
+	err := c.netlink.QdiscReplace(qdisc)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Client) AddTcFilterRedirect(srcCIDR, destCIDR *net.IPNet, sourceIndex, destIndex int, mark, mask *uint32) error {
+	var protocol uint16
+	if destCIDR.IP.To4() == nil {
+		protocol = unix.ETH_P_IPV6
+	} else {
+		protocol = unix.ETH_P_IP
+	}
+
+	var srcIP net.IP
+	var srcIPMask net.IPMask
+	if srcCIDR != nil {
+		srcIP = srcCIDR.IP
+		srcIPMask = srcCIDR.Mask
+	}
+
+	filter := &netlink.Flower{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: sourceIndex,
+			Parent:    netlink.HANDLE_MIN_INGRESS,
+			Protocol:  protocol,
+			//Priority:  1,
+			//Chain:     ptr.To(uint32(0)),
+			//Handle:    uint32(1),
+		},
+		EthType:    protocol,
+		SrcIP:      srcIP,
+		SrcIPMask:  srcIPMask,
+		DestIP:     destCIDR.IP,
+		DestIPMask: destCIDR.Mask,
+		Actions: []netlink.Action{
+			netlink.NewMirredAction(destIndex),
+		},
+	}
+	if mark != nil {
+		action := netlink.NewSkbEditAction()
+		action.Mark = mark
+		action.Mask = mask
+		filter.Actions = append(filter.Actions, action)
+	}
+
+	err := c.netlink.FilterReplace(filter)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}

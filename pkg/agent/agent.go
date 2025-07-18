@@ -712,7 +712,14 @@ func (i *Initializer) setupGatewayInterface() error {
 	if err := i.setTXChecksumOffloadOnGateway(); err != nil {
 		return err
 	}
-
+	if i.networkConfig.TrafficEncapMode == config.TrafficEncapModeNoEncap {
+		if err := i.setInterfacesTcQdisc(); err != nil {
+			return err
+		}
+		if err := i.setTcRedirectOnTransport(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -993,18 +1000,19 @@ func (i *Initializer) initK8sNodeLocalConfig(nodeName string) error {
 	}
 
 	i.nodeConfig = &config.NodeConfig{
-		Name:                       nodeName,
-		Type:                       config.K8sNode,
-		OVSBridge:                  i.ovsBridge,
-		DefaultTunName:             defaultTunInterfaceName,
-		NodeIPv4Addr:               nodeIPv4Addr,
-		NodeIPv6Addr:               nodeIPv6Addr,
-		NodeTransportInterfaceName: transportInterface.Name,
-		NodeTransportIPv4Addr:      transportIPv4Addr,
-		NodeTransportIPv6Addr:      transportIPv6Addr,
-		UplinkNetConfig:            new(config.AdapterNetConfig),
-		NodeTransportInterfaceMTU:  transportInterface.MTU,
-		WireGuardConfig:            i.wireGuardConfig,
+		Name:                        nodeName,
+		Type:                        config.K8sNode,
+		OVSBridge:                   i.ovsBridge,
+		DefaultTunName:              defaultTunInterfaceName,
+		NodeIPv4Addr:                nodeIPv4Addr,
+		NodeIPv6Addr:                nodeIPv6Addr,
+		NodeTransportInterfaceName:  transportInterface.Name,
+		NodeTransportIPv4Addr:       transportIPv4Addr,
+		NodeTransportIPv6Addr:       transportIPv6Addr,
+		UplinkNetConfig:             new(config.AdapterNetConfig),
+		NodeTransportInterfaceMTU:   transportInterface.MTU,
+		NodeTransportInterfaceIndex: transportInterface.Index,
+		WireGuardConfig:             i.wireGuardConfig,
 	}
 
 	i.networkConfig.InterfaceMTU, err = i.getInterfaceMTU(transportInterface)

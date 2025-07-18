@@ -22,6 +22,7 @@ package openflow
 import (
 	"net"
 
+	"antrea.io/antrea/pkg/agent/config"
 	binding "antrea.io/antrea/pkg/ovs/openflow"
 )
 
@@ -91,5 +92,38 @@ func (f *featurePodConnectivity) l3FwdFlowToRemoteViaRouting(localGatewayMAC net
 	remoteGatewayMAC net.HardwareAddr,
 	peerIP net.IP,
 	peerPodCIDR *net.IPNet) []binding.Flow {
-	return []binding.Flow{f.l3FwdFlowToRemoteViaGW(localGatewayMAC, *peerPodCIDR)}
+	var flows []binding.Flow
+	flows = append(flows, f.l3FwdFlowToRemoteViaGW(localGatewayMAC, *peerPodCIDR))
+
+	if f.networkConfig.TrafficEncapMode == config.TrafficEncapModeNoEncap {
+		cookieID := f.cookieAllocator.Request(f.category).Raw()
+		ipProtocol := getIPProtocol(peerIP)
+		var srcPodCIDR net.IPNet
+		if ipProtocol == binding.ProtocolIPv6 {
+			srcPodCIDR = *f.nodeConfig.PodIPv6CIDR
+		} else {
+			srcPodCIDR = *f.nodeConfig.PodIPv4CIDR
+		}
+
+		flows = append(flows,
+			L3ForwardingTable.ofTable.BuildFlow(priorityHigh).
+				Cookie(cookieID).
+				MatchProtocol(ipProtocol).
+				MatchSrcIPNet(srcPodCIDR).
+				MatchDstIPNet(*peerPodCIDR).
+				Action().SetSrcMAC(f.nodeConfig.GatewayConfig.MAC).
+				Action().SetDstMAC(remoteGatewayMAC).
+				Action().LoadRegMark(ToGatewayRegMark).
+				Action().GotoTable(L3DecTTLTable.GetID()).
+				Done(),
+			L2ForwardingCalcTable.ofTable.BuildFlow(priorityNormal).
+				Cookie(cookieID).
+				MatchDstMAC(remoteGatewayMAC).
+				Action().LoadToRegField(TargetOFPortField, f.gatewayPort).
+				Action().LoadRegMark(OutputToOFPortRegMark).
+				Action().GotoStage(stageConntrack).
+				Done())
+	}
+
+	return flows
 }

@@ -17,6 +17,7 @@ package openflow
 import (
 	"encoding/binary"
 	"fmt"
+	"k8s.io/utils/ptr"
 	"net"
 	"sort"
 	"sync"
@@ -548,7 +549,16 @@ func (f *featurePodConnectivity) gatewayClassifierFlows() []binding.Flow {
 	flows = append(flows, ClassifierTable.ofTable.BuildFlow(priorityNormal).
 		Cookie(f.cookieAllocator.Request(f.category).Raw()).
 		MatchInPort(f.gatewayPort).
+		MatchPktMark(0, ptr.To(types.RemotePodSourceMark)).
 		Action().LoadRegMark(FromGatewayRegMark, FromExternalRegMark).
+		Action().GotoStage(stageValidation).
+		Done())
+
+	flows = append(flows, ClassifierTable.ofTable.BuildFlow(priorityNormal).
+		Cookie(f.cookieAllocator.Request(f.category).Raw()).
+		MatchInPort(f.gatewayPort).
+		MatchPktMark(types.RemotePodSourceMark, ptr.To(types.RemotePodSourceMark)).
+		Action().LoadRegMark(FromGatewayRegMark, RewriteMACRegMark).
 		Action().GotoStage(stageValidation).
 		Done())
 	return flows
@@ -1300,7 +1310,7 @@ func (f *featurePodConnectivity) l3FwdFlowToGateway() []binding.Flow {
 	for ipProtocol, gatewayIP := range f.gatewayIPs {
 		flows = append(flows,
 			// This generates the flow to match the packets destined for Antrea gateway.
-			L3ForwardingTable.ofTable.BuildFlow(priorityHigh).
+			L3ForwardingTable.ofTable.BuildFlow(priorityNormal+1).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
 				MatchDstIP(gatewayIP).
@@ -1309,7 +1319,7 @@ func (f *featurePodConnectivity) l3FwdFlowToGateway() []binding.Flow {
 				Action().GotoTable(L3DecTTLTable.GetID()).
 				Done(),
 			// This generates the flow to match the reply packets of connection with FromGatewayCTMark.
-			L3ForwardingTable.ofTable.BuildFlow(priorityHigh).
+			L3ForwardingTable.ofTable.BuildFlow(priorityNormal+1).
 				Cookie(cookieID).
 				MatchProtocol(ipProtocol).
 				MatchCTMark(FromGatewayCTMark).
