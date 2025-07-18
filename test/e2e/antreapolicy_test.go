@@ -5098,6 +5098,7 @@ func TestAntreaPolicy(t *testing.T) {
 	defer teardownTest(t, data)
 
 	initialize(t, data, nil)
+	time.Sleep(3600 * time.Second)
 
 	// This test group only provides one case for each CR, including ACNP, ANNP, Tier,
 	// ClusterGroup and Group to make sure the corresponding validation webhooks is

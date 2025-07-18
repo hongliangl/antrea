@@ -121,4 +121,8 @@ type Interface interface {
 
 	// DeleteNodeNetworkPolicyIPTables deletes iptables chains and rules within the chains for NodeNetworkPolicy.
 	DeleteNodeNetworkPolicyIPTables(iptablesChains []string, isIPv6 bool) error
+
+	AddTcQdiscClsAct(ifindex int) error
+
+	AddTcFilterRedirect(srcCIDR, destCIDR *net.IPNet, sourceIndex, destIndex int, mark, mask *uint32) error
 }

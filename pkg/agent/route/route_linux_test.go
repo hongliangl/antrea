@@ -16,6 +16,7 @@ package route
 
 import (
 	"fmt"
+	"github.com/stretchr/testify/require"
 	"net"
 	"sync"
 	"testing"
@@ -2520,4 +2521,10 @@ func TestClearConntrackEntryForService(t *testing.T) {
 			assert.NoError(t, c.ClearConntrackEntryForService(tc.svcIP, tc.svcPort, tc.endpointIP, tc.protocol))
 		})
 	}
+}
+
+func TestTCFilter(t *testing.T) {
+	c := &Client{}
+	err := c.AddTCRule()
+	require.NoError(t, err)
 }

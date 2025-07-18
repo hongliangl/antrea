@@ -18,8 +18,10 @@
 package agent
 
 import (
+	"antrea.io/antrea/pkg/agent/types"
 	"context"
 	"fmt"
+	"k8s.io/utils/ptr"
 	"net"
 	"time"
 
@@ -270,6 +272,45 @@ func (i *Initializer) setTXChecksumOffloadOnGateway() error {
 			return fmt.Errorf("error when disabling TX checksum offload on %s: %v", i.hostGateway, err)
 		}
 		klog.InfoS("Disabled TX checksum offload on host gateway interface", "hostGateway", i.hostGateway)
+	}
+	return nil
+}
+
+func (i *Initializer) setInterfacesTcQdisc() error {
+	err := i.routeClient.AddTcQdiscClsAct(i.nodeConfig.GatewayConfig.LinkIndex)
+	if err != nil {
+		return fmt.Errorf("error when adding tc qdisc on host gateway interface: %w", err)
+	}
+	err = i.routeClient.AddTcQdiscClsAct(i.nodeConfig.NodeTransportInterfaceIndex)
+	if err != nil {
+		return fmt.Errorf("error when adding tc qdisc on host transport interface: %w", err)
+	}
+	return nil
+}
+
+func (i *Initializer) setTcRedirectOnTransport() error {
+	if i.nodeConfig.PodIPv4CIDR != nil {
+		err := i.routeClient.AddTcFilterRedirect(nil,
+			i.nodeConfig.PodIPv4CIDR,
+			i.nodeConfig.NodeTransportInterfaceIndex,
+			i.nodeConfig.GatewayConfig.LinkIndex,
+			ptr.To(types.RemotePodSourceMark),
+			ptr.To(types.RemotePodSourceMark),
+		)
+		if err != nil {
+			return fmt.Errorf("error when adding tc redirect filter to host gateway on host tranport interface: %w", err)
+		}
+	}
+	if i.nodeConfig.PodIPv6CIDR != nil {
+		err := i.routeClient.AddTcFilterRedirect(nil,
+			i.nodeConfig.PodIPv6CIDR,
+			i.nodeConfig.NodeTransportInterfaceIndex,
+			i.nodeConfig.GatewayConfig.LinkIndex,
+			ptr.To(types.RemotePodSourceMark),
+			ptr.To(types.RemotePodSourceMark))
+		if err != nil {
+			return fmt.Errorf("error when adding tc redirect filter to host gateway on host tranport interface: %w", err)
+		}
 	}
 	return nil
 }
