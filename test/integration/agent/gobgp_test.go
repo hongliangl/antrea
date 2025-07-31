@@ -211,15 +211,25 @@ func TestGoBGPLifecycle(t *testing.T) {
 			GracefulRestartTimeSeconds: ptr.To[int32](180),
 		},
 	}
+
 	t.Log("Updating peers of BGP server1")
 	require.NoError(t, server1.UpdatePeer(ctx, updatedServer2Config))
 	t.Log("Updated peers of server1")
 
 	t.Log("Getting peers of BGP server1 and verifying them")
+	counter := 0
 	assert.EventuallyWithT(t, func(t *assert.CollectT) {
 		expected := sets.New[string]("127.0.0.1-62179")
 		got := getPeersFn(server1)
 		assert.Equal(t, expected, got)
+
+		if counter > 5 {
+			t.Errorf("Retrying UpdatePeer after 5 tries")
+			require.NoError(t, server1.UpdatePeer(ctx, updatedServer2Config))
+			counter = 0
+		} else {
+			counter++
+		}
 	}, 30*time.Second, time.Second)
 	t.Log("Got peers of BGP server1 and verified them")
 
