@@ -118,6 +118,7 @@ type proxier struct {
 	serviceStringMapMutex sync.Mutex
 
 	serviceHealthServer healthcheck.ServiceHealthServer
+	healthzServer       *healthcheck.ProxyHealthServer
 	numLocalEndpoints   map[apimachinerytypes.NamespacedName]int
 
 	// syncedOnce returns true if the proxier has synced rules at least once.
@@ -1010,6 +1011,9 @@ func (p *proxier) syncProxyRules() {
 	p.removeStaleServices()
 	p.installServices()
 
+	if p.healthzServer != nil {
+		p.healthzServer.Updated(p.isIPv6)
+	}
 	if p.serviceHealthServer != nil {
 		if err := p.serviceHealthServer.SyncServices(serviceUpdateResult.HCServiceNodePorts); err != nil {
 			klog.ErrorS(err, "Error syncing healthcheck Services")
@@ -1037,6 +1041,9 @@ func (p *proxier) syncProxyRules() {
 }
 
 func (p *proxier) SyncLoop() {
+	if p.healthzServer != nil {
+		p.healthzServer.Updated(p.isIPv6)
+	}
 	p.runner.Loop(p.stopChan)
 }
 
@@ -1055,6 +1062,9 @@ func (p *proxier) OnEndpointsUpdate(oldEndpoints, endpoints *corev1.Endpoints) {
 		metrics.EndpointsUpdatesTotal.Inc()
 	}
 	if p.endpointsChanges.OnEndpointUpdate(oldEndpoints, endpoints) && p.isInitialized() {
+		if p.healthzServer != nil {
+			p.healthzServer.QueuedUpdate(p.isIPv6)
+		}
 		p.runner.Run()
 	}
 }
@@ -1074,6 +1084,9 @@ func (p *proxier) OnEndpointsSynced() {
 func (p *proxier) OnEndpointSliceAdd(endpointSlice *discovery.EndpointSlice) {
 	klog.V(2).InfoS("Processing EndpointSlice ADD event", "EndpointSlice", klog.KObj(endpointSlice))
 	if p.endpointsChanges.OnEndpointSliceUpdate(endpointSlice, false) && p.isInitialized() {
+		if p.healthzServer != nil {
+			p.healthzServer.QueuedUpdate(p.isIPv6)
+		}
 		p.runner.Run()
 	}
 }
@@ -1081,6 +1094,9 @@ func (p *proxier) OnEndpointSliceAdd(endpointSlice *discovery.EndpointSlice) {
 func (p *proxier) OnEndpointSliceUpdate(oldEndpointSlice, newEndpointSlice *discovery.EndpointSlice) {
 	klog.V(2).InfoS("Processing EndpointSlice UPDATE event", "EndpointSlice", klog.KObj(newEndpointSlice))
 	if p.endpointsChanges.OnEndpointSliceUpdate(newEndpointSlice, false) && p.isInitialized() {
+		if p.healthzServer != nil {
+			p.healthzServer.QueuedUpdate(p.isIPv6)
+		}
 		p.runner.Run()
 	}
 }
@@ -1088,6 +1104,9 @@ func (p *proxier) OnEndpointSliceUpdate(oldEndpointSlice, newEndpointSlice *disc
 func (p *proxier) OnEndpointSliceDelete(endpointSlice *discovery.EndpointSlice) {
 	klog.V(2).InfoS("Processing EndpointSlice DELETE event", "EndpointSlice", klog.KObj(endpointSlice))
 	if p.endpointsChanges.OnEndpointSliceUpdate(endpointSlice, true) && p.isInitialized() {
+		if p.healthzServer != nil {
+			p.healthzServer.QueuedUpdate(p.isIPv6)
+		}
 		p.runner.Run()
 	}
 }
@@ -1115,6 +1134,9 @@ func (p *proxier) OnServiceUpdate(oldService, service *corev1.Service) {
 	}
 	if p.serviceChanges.OnServiceUpdate(oldService, service) {
 		if p.isInitialized() {
+			if p.healthzServer != nil {
+				p.healthzServer.QueuedUpdate(p.isIPv6)
+			}
 			p.runner.Run()
 		}
 	}
@@ -1151,7 +1173,12 @@ func (p *proxier) OnNodeAdd(node *corev1.Node) {
 	p.serviceEndpointsMapsMutex.Unlock()
 	klog.V(4).InfoS("Updated proxier Node labels", "labels", node.Labels)
 
-	p.syncProxyRules()
+	if p.isInitialized() {
+		if p.healthzServer != nil {
+			p.healthzServer.QueuedUpdate(p.isIPv6)
+		}
+		p.runner.Run()
+	}
 }
 
 // OnNodeUpdate is called whenever modification of an existing
@@ -1173,7 +1200,12 @@ func (p *proxier) OnNodeUpdate(oldNode, node *corev1.Node) {
 	p.serviceEndpointsMapsMutex.Unlock()
 	klog.V(4).InfoS("Updated proxier Node labels", "labels", node.Labels)
 
-	p.syncProxyRules()
+	if p.isInitialized() {
+		if p.healthzServer != nil {
+			p.healthzServer.QueuedUpdate(p.isIPv6)
+		}
+		p.runner.Run()
+	}
 }
 
 // OnNodeDelete is called whenever deletion of an existing node
@@ -1186,7 +1218,12 @@ func (p *proxier) OnNodeDelete(node *corev1.Node) {
 	p.nodeLabels = nil
 	p.serviceEndpointsMapsMutex.Unlock()
 
-	p.syncProxyRules()
+	if p.isInitialized() {
+		if p.healthzServer != nil {
+			p.healthzServer.QueuedUpdate(p.isIPv6)
+		}
+		p.runner.Run()
+	}
 }
 
 // OnNodeSynced is called once all the initial event handlers were
@@ -1382,6 +1419,7 @@ func newProxier(
 	}
 
 	var serviceHealthServer healthcheck.ServiceHealthServer
+	var healthzServer *healthcheck.ProxyHealthServer
 	if proxyAllEnabled {
 		if serviceHealthServerDisabled {
 			klog.V(2).InfoS("Service health check server will not be run")
@@ -1390,8 +1428,10 @@ func newProxier(
 			for i, address := range nodePortAddresses {
 				nodePortAddressesString[i] = address.String()
 			}
-			serviceHealthServer = healthcheck.NewServiceHealthServer(hostname, nil, nodePortAddressesString)
+			serviceHealthServer = healthcheck.NewServiceHealthServer(hostname, nil, nodePortAddressesString, nil)
+			healthzServer = healthcheck.NewProxyHealthServer("", time.Second)
 		}
+
 	}
 
 	// TODO: The label selector nonHeadlessServiceSelector was added to pass the Kubernetes e2e test
@@ -1433,6 +1473,7 @@ func newProxier(
 		proxyLoadBalancerIPs:              proxyLoadBalancerIPs,
 		hostname:                          hostname,
 		serviceHealthServer:               serviceHealthServer,
+		healthzServer:                     healthzServer,
 		numLocalEndpoints:                 map[apimachinerytypes.NamespacedName]int{},
 		supportNestedService:              supportNestedService,
 		defaultLoadBalancerMode:           defaultLoadBalancerMode,
