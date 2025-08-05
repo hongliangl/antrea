@@ -28,7 +28,7 @@ import (
 
 // ServiceInfo is the internal struct for caching service information.
 type ServiceInfo struct {
-	*k8sproxy.BaseServiceInfo
+	*k8sproxy.BaseServicePortInfo
 	// cache for performance
 	OFProtocol openflow.Protocol
 	// IsNested means the Service's Endpoints could be another Service's ClusterIP.
@@ -52,8 +52,8 @@ func getLoadBalancerMode(service *corev1.Service) *config.LoadBalancerMode {
 }
 
 // NewServiceInfo returns a new k8sproxy.ServicePort which abstracts a serviceInfo.
-func NewServiceInfo(port *corev1.ServicePort, service *corev1.Service, baseInfo *k8sproxy.BaseServiceInfo) k8sproxy.ServicePort {
-	info := &ServiceInfo{BaseServiceInfo: baseInfo}
+func NewServiceInfo(port *corev1.ServicePort, service *corev1.Service, baseInfo *k8sproxy.BaseServicePortInfo) k8sproxy.ServicePort {
+	info := &ServiceInfo{BaseServicePortInfo: baseInfo}
 	info.IsNested = mccommon.IsMulticlusterService(service)
 	info.LoadBalancerMode = getLoadBalancerMode(service)
 	if utilnet.IsIPv6(baseInfo.ClusterIP()) {

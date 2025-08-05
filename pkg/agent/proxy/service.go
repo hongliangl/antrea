@@ -53,6 +53,6 @@ func (sh *serviceChangesTracker) Synced() bool {
 	return sh.initialized
 }
 
-func (sh *serviceChangesTracker) Update(serviceMap k8sproxy.ServiceMap) k8sproxy.UpdateServiceMapResult {
+func (sh *serviceChangesTracker) Update(serviceMap k8sproxy.ServicePortMap) k8sproxy.UpdateServiceMapResult {
 	return serviceMap.Update(sh.tracker)
 }

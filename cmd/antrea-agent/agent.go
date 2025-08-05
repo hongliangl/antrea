@@ -449,7 +449,8 @@ func run(o *Options) error {
 
 	var proxier proxy.Proxier
 	if o.enableAntreaProxy {
-		proxier, err = proxy.NewProxier(nodeConfig.Name,
+		proxier, err = proxy.NewProxier(ctx,
+			nodeConfig.Name,
 			k8sClient,
 			serviceInformer,
 			endpointsInformer,

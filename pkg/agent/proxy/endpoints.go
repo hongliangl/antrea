@@ -51,17 +51,14 @@ type endpointsChangesTracker struct {
 	initialized bool
 	// changes contains endpoints changes since the last checkoutChanges call.
 	changes    map[apimachinerytypes.NamespacedName]*endpointsChange
-	sliceCache *EndpointSliceCache
+	sliceCache *k8sproxy.EndpointSliceCache
 }
 
-func newEndpointsChangesTracker(hostname string, enableEndpointSlice bool, isIPv6 bool) *endpointsChangesTracker {
+func newEndpointsChangesTracker(hostname string,  isIPv6 bool) *endpointsChangesTracker {
 	tracker := &endpointsChangesTracker{
 		hostname: hostname,
 		changes:  map[apimachinerytypes.NamespacedName]*endpointsChange{},
-	}
-
-	if enableEndpointSlice {
-		tracker.sliceCache = NewEndpointSliceCache(hostname, isIPv6)
+		sliceCache: k8sproxy.NewEndpointSliceCache(hostname, isIPv6)
 	}
 	return tracker
 }
@@ -132,7 +129,7 @@ func (t *endpointsChangesTracker) OnEndpointSliceUpdate(endpointSlice *discovery
 	t.Lock()
 	defer t.Unlock()
 
-	changeNeeded := t.sliceCache.updatePending(endpointSlice, removeSlice)
+	changeNeeded := t.sliceCache.UpdatePending(endpointSlice, removeSlice)
 
 	return changeNeeded
 }
@@ -221,7 +218,7 @@ func (t *endpointsChangesTracker) Update(em types.EndpointsMap, numLocalEndpoint
 		for spn, endpoints := range change.current {
 			em[spn] = endpoints
 			for _, endpoint := range endpoints {
-				if endpoint.GetIsLocal() && endpoint.IsReady() {
+				if endpoint.IsLocal() && endpoint.IsReady() {
 					numLocalEndpoints[spn.NamespacedName] += 1
 				}
 			}

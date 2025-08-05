@@ -62,7 +62,7 @@ func (p *proxier) categorizeEndpoints(endpoints map[string]k8sproxy.Endpoint, sv
 		if !ep.IsReady() {
 			return false
 		}
-		if !ep.GetIsLocal() {
+		if !ep.IsLocal() {
 			return false
 		}
 		return true
@@ -74,7 +74,7 @@ func (p *proxier) categorizeEndpoints(endpoints map[string]k8sproxy.Endpoint, sv
 	if len(localEndpoints) == 0 && p.endpointSliceEnabled {
 		useServingTerminatingEndpoints = true
 		localEndpoints = filterEndpoints(endpoints, func(ep k8sproxy.Endpoint) bool {
-			if ep.GetIsLocal() && ep.IsServing() && ep.IsTerminating() {
+			if ep.IsLocal() && ep.IsServing() && ep.IsTerminating() {
 				return true
 			}
 			return false
@@ -140,7 +140,7 @@ func (p *proxier) canUseTopology(endpoints map[string]k8sproxy.Endpoint, svcInfo
 			continue
 		}
 		// If any of the Endpoints do not have zone hints, we bail out.
-		if endpoint.GetZoneHints().Len() == 0 {
+		if endpoint.ZoneHints().Len() == 0 {
 			klog.V(7).InfoS("Skipping topology aware Endpoint filtering since one or more Endpoints is missing a zone hint")
 			return false
 		}
@@ -150,7 +150,7 @@ func (p *proxier) canUseTopology(endpoints map[string]k8sproxy.Endpoint, svcInfo
 			klog.V(2).InfoS("Skipping topology aware Endpoint filtering since Node is missing label", "label", v1.LabelTopologyZone)
 			return false
 		}
-		if endpoint.GetZoneHints().Has(zone) {
+		if endpoint.ZoneHints().Has(zone) {
 			hasEndpointForZone = true
 		}
 	}
@@ -167,7 +167,7 @@ func (p *proxier) canUseTopology(endpoints map[string]k8sproxy.Endpoint, svcInfo
 // topology constraints. (It assumes that canUseTopology() returned true.)
 func availableForTopology(endpoint k8sproxy.Endpoint, nodeLabels map[string]string) bool {
 	zone := nodeLabels[v1.LabelTopologyZone]
-	return endpoint.GetZoneHints().Has(zone)
+	return endpoint.ZoneHints().Has(zone)
 }
 
 // filterEndpoints filters endpoints according to predicate

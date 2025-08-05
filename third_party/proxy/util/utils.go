@@ -43,14 +43,15 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/klog/v2"
-	utilnet "k8s.io/utils/net"
+	netutils "k8s.io/utils/net"
 )
 
 var (
@@ -72,14 +73,14 @@ func ShouldSkipService(service *v1.Service, skipServices sets.Set[string], servi
 	if !serviceLabelSelector.Matches(labels.Set(service.Labels)) {
 		return true
 	}
-	// If ClusterIP is "None" or empty, skip proxying
-	if service.Spec.ClusterIP == v1.ClusterIPNone || service.Spec.ClusterIP == "" {
-		klog.V(3).Infof("Skipping service %s in namespace %s due to clusterIP = %q", service.Name, service.Namespace, service.Spec.ClusterIP)
+	// if ClusterIP is "None" or empty, skip proxying
+	if service.Spec.ClusterIP != v1.ClusterIPNone && service.Spec.ClusterIP != "" {
+		klog.V(3).InfoS("Skipping service due to cluster IP", "service", klog.KObj(service), "clusterIP", service.Spec.ClusterIP)
 		return true
 	}
 	// Even if ClusterIP is set, ServiceTypeExternalName services don't get proxied
 	if service.Spec.Type == v1.ServiceTypeExternalName {
-		klog.V(3).Infof("Skipping service %s in namespace %s due to Type=ExternalName", service.Name, service.Namespace)
+		klog.V(3).InfoS("Skipping service due to Type=ExternalName", "service", klog.KObj(service))
 		return true
 	}
 	if skipServices.Len() == 0 {
@@ -89,14 +90,13 @@ func ShouldSkipService(service *v1.Service, skipServices sets.Set[string], servi
 		klog.InfoS("Skipping service because it matches skipServices list", "service", klog.KObj(service))
 		return true
 	}
-
 	return false
 }
 
 // LogAndEmitIncorrectIPVersionEvent logs and emits incorrect IP version event.
-func LogAndEmitIncorrectIPVersionEvent(recorder record.EventRecorder, fieldName, fieldValue, svcNamespace, svcName string, svcUID types.UID) {
+func LogAndEmitIncorrectIPVersionEvent(recorder events.EventRecorder, fieldName, fieldValue, svcNamespace, svcName string, svcUID types.UID) {
 	errMsg := fmt.Sprintf("%s in %s has incorrect IP version", fieldValue, fieldName)
-	klog.Errorf("%s (service %s/%s).", errMsg, svcNamespace, svcName)
+	klog.ErrorS(nil, "Incorrect IP version", "service", klog.KRef(svcNamespace, svcName), "field", fieldName, "value", fieldValue)
 	if recorder != nil {
 		recorder.Eventf(
 			&v1.ObjectReference{
@@ -104,18 +104,18 @@ func LogAndEmitIncorrectIPVersionEvent(recorder record.EventRecorder, fieldName,
 				Name:      svcName,
 				Namespace: svcNamespace,
 				UID:       svcUID,
-			}, v1.EventTypeWarning, "KubeProxyIncorrectIPVersion", errMsg)
+			}, nil, v1.EventTypeWarning, "KubeProxyIncorrectIPVersion", "GatherEndpoints", errMsg)
 	}
 }
 
 // FilterIncorrectIPVersion filters out the incorrect IP version case from a slice of IP strings.
 func FilterIncorrectIPVersion(ipStrings []string, isIPv6Mode bool) ([]string, []string) {
-	return filterWithCondition(ipStrings, isIPv6Mode, utilnet.IsIPv6String)
+	return filterWithCondition(ipStrings, isIPv6Mode, netutils.IsIPv6String)
 }
 
 // FilterIncorrectCIDRVersion filters out the incorrect IP version case from a slice of CIDR strings.
 func FilterIncorrectCIDRVersion(ipStrings []string, isIPv6Mode bool) ([]string, []string) {
-	return filterWithCondition(ipStrings, isIPv6Mode, utilnet.IsIPv6CIDRString)
+	return filterWithCondition(ipStrings, isIPv6Mode, netutils.IsIPv6CIDRString)
 }
 
 func filterWithCondition(strs []string, expectedCondition bool, conditionFunc func(string) bool) ([]string, []string) {
@@ -139,7 +139,7 @@ func GetClusterIPByFamily(ipFamily v1.IPFamily, service *v1.Service) string {
 		}
 
 		IsIPv6Family := (ipFamily == v1.IPv6Protocol)
-		if IsIPv6Family == utilnet.IsIPv6String(service.Spec.ClusterIP) {
+		if IsIPv6Family == netutils.IsIPv6String(service.Spec.ClusterIP) {
 			return service.Spec.ClusterIP
 		}
 
@@ -158,14 +158,21 @@ func GetClusterIPByFamily(ipFamily v1.IPFamily, service *v1.Service) string {
 }
 
 // MapIPsByIPFamily maps a slice of IPs to their respective IP families (v4 or v6)
-func MapIPsByIPFamily(ipStrings []string) map[v1.IPFamily][]string {
-	ipFamilyMap := map[v1.IPFamily][]string{}
-	for _, ip := range ipStrings {
-		// Handle only the valid IPs
-		if ipFamily, err := getIPFamilyFromIP(ip); err == nil {
+func MapIPsByIPFamily(ipStrings []string) map[v1.IPFamily][]net.IP {
+	ipFamilyMap := map[v1.IPFamily][]net.IP{}
+	for _, ipStr := range ipStrings {
+		ip := netutils.ParseIPSloppy(ipStr)
+		if ip != nil {
+			// Since ip is parsed ok, GetIPFamilyFromIP will never return v1.IPFamilyUnknown
+			ipFamily := GetIPFamilyFromIP(ip)
 			ipFamilyMap[ipFamily] = append(ipFamilyMap[ipFamily], ip)
 		} else {
-			klog.Errorf("Skipping invalid IP: %s", ip)
+			// ExternalIPs may not be validated by the api-server.
+			// Specifically empty strings validation, which yields into a lot
+			// of bad error logs.
+			if len(strings.TrimSpace(ipStr)) != 0 {
+				klog.ErrorS(nil, "Skipping invalid IP", "ip", ipStr)
+			}
 		}
 	}
 	return ipFamilyMap
@@ -177,7 +184,7 @@ func getIPFamilyFromIP(ipStr string) (v1.IPFamily, error) {
 		return "", ErrAddressNotAllowed
 	}
 
-	if utilnet.IsIPv6(netIP) {
+	if netutils.IsIPv6(netIP) {
 		return v1.IPv6Protocol, nil
 	}
 	return v1.IPv4Protocol, nil
@@ -192,35 +199,41 @@ func OtherIPFamily(ipFamily v1.IPFamily) v1.IPFamily {
 	return v1.IPv6Protocol
 }
 
-// MapCIDRsByIPFamily maps a slice of IPs to their respective IP families (v4 or v6)
-func MapCIDRsByIPFamily(cidrStrings []string) map[v1.IPFamily][]string {
-	ipFamilyMap := map[v1.IPFamily][]string{}
-	for _, cidr := range cidrStrings {
-		// Handle only the valid CIDRs
-		if ipFamily := getIPFamilyFromCIDR(cidr); ipFamily != v1.IPFamilyUnknown {
-			ipFamilyMap[ipFamily] = append(ipFamilyMap[ipFamily], cidr)
-		} else {
-			klog.Errorf("Skipping invalid cidr: %s", cidr)
+// MapCIDRsByIPFamily maps a slice of CIDRs to their respective IP families (v4 or v6)
+func MapCIDRsByIPFamily(cidrsStrings []string) map[v1.IPFamily][]*net.IPNet {
+	ipFamilyMap := map[v1.IPFamily][]*net.IPNet{}
+	for _, cidrStrUntrimmed := range cidrsStrings {
+		cidrStr := strings.TrimSpace(cidrStrUntrimmed)
+		_, cidr, err := netutils.ParseCIDRSloppy(cidrStr)
+		if err != nil {
+			// Ignore empty strings. Same as in MapIPsByIPFamily
+			if len(cidrStr) != 0 {
+				klog.ErrorS(err, "Invalid CIDR ignored", "CIDR", cidrStr)
+			}
+			continue
 		}
+		// since we just succefully parsed the CIDR, IPFamilyOfCIDR will never return "IPFamilyUnknown"
+		ipFamily := convertToV1IPFamily(netutils.IPFamilyOfCIDR(cidr))
+		ipFamilyMap[ipFamily] = append(ipFamilyMap[ipFamily], cidr)
 	}
 	return ipFamilyMap
 }
 
 // GetIPFamilyFromIP Returns the IP family of ipStr, or IPFamilyUnknown if ipStr can't be parsed as an IP
-func GetIPFamilyFromIP(ipStr string) v1.IPFamily {
-	return convertToV1IPFamily(utilnet.IPFamilyOfString(ipStr))
+func GetIPFamilyFromIP(ip net.IP) v1.IPFamily {
+	return convertToV1IPFamily(netutils.IPFamilyOf(ip))
 }
 
 func getIPFamilyFromCIDR(cidrStr string) v1.IPFamily {
-	return convertToV1IPFamily(utilnet.IPFamilyOfCIDRString(cidrStr))
+	return convertToV1IPFamily(netutils.IPFamilyOfCIDRString(cidrStr))
 }
 
 // Convert netutils.IPFamily to v1.IPFamily
-func convertToV1IPFamily(ipFamily utilnet.IPFamily) v1.IPFamily {
+func convertToV1IPFamily(ipFamily netutils.IPFamily) v1.IPFamily {
 	switch ipFamily {
-	case utilnet.IPv4:
+	case netutils.IPv4:
 		return v1.IPv4Protocol
-	case utilnet.IPv6:
+	case netutils.IPv6:
 		return v1.IPv6Protocol
 	}
 
