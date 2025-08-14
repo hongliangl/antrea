@@ -1,4 +1,4 @@
-// Copyright 2024 Antrea Authors
+// Copyright 2025 Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,6 +27,8 @@ package testing
 import (
 	reflect "reflect"
 
+	openflow "antrea.io/antrea/pkg/ovs/openflow"
+	proxy "antrea.io/antrea/third_party/proxy"
 	gomock "go.uber.org/mock/gomock"
 	v1 "k8s.io/api/core/v1"
 	v10 "k8s.io/api/discovery/v1"
@@ -54,6 +56,37 @@ func NewMockProvider(ctrl *gomock.Controller) *MockProvider {
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockProvider) EXPECT() *MockProviderMockRecorder {
 	return m.recorder
+}
+
+// GetServiceByIP mocks base method.
+func (m *MockProvider) GetServiceByIP(serviceStr string) (proxy.ServicePortName, bool) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetServiceByIP", serviceStr)
+	ret0, _ := ret[0].(proxy.ServicePortName)
+	ret1, _ := ret[1].(bool)
+	return ret0, ret1
+}
+
+// GetServiceByIP indicates an expected call of GetServiceByIP.
+func (mr *MockProviderMockRecorder) GetServiceByIP(serviceStr any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetServiceByIP", reflect.TypeOf((*MockProvider)(nil).GetServiceByIP), serviceStr)
+}
+
+// GetServiceFlowKeys mocks base method.
+func (m *MockProvider) GetServiceFlowKeys(serviceName, namespace string) ([]string, []openflow.GroupIDType, bool) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetServiceFlowKeys", serviceName, namespace)
+	ret0, _ := ret[0].([]string)
+	ret1, _ := ret[1].([]openflow.GroupIDType)
+	ret2, _ := ret[2].(bool)
+	return ret0, ret1, ret2
+}
+
+// GetServiceFlowKeys indicates an expected call of GetServiceFlowKeys.
+func (mr *MockProviderMockRecorder) GetServiceFlowKeys(serviceName, namespace any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetServiceFlowKeys", reflect.TypeOf((*MockProvider)(nil).GetServiceFlowKeys), serviceName, namespace)
 }
 
 // OnEndpointSliceAdd mocks base method.
