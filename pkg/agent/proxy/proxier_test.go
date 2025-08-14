@@ -28,11 +28,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discovery "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 	apimachinerytypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/rand"
-	"k8s.io/client-go/informers"
-	"k8s.io/client-go/kubernetes/fake"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"k8s.io/component-base/metrics/legacyregistry"
 	"k8s.io/component-base/metrics/testutil"
@@ -481,20 +481,28 @@ func newFakeProxier(routeClient route.Interface, ofClient openflow.Client, nodeP
 	if o.serviceProxyNameSet {
 		serviceProxyName = testServiceProxyName
 	}
-	fakeClient := fake.NewSimpleClientset()
-	fakeNodeIPChecker := nodeipmock.NewFakeNodeIPChecker()
-	informerFactory := informers.NewSharedInformerFactory(fakeClient, 0)
+	topologyAwareHintsEnabled := o.endpointSliceEnabled && features.DefaultFeatureGate.Enabled(features.TopologyAwareHints)
+	serviceTrafficDistributionEnabled := o.endpointSliceEnabled && features.DefaultFeatureGate.Enabled(features.ServiceTrafficDistribution)
+
+	// TODO: The label selector nonHeadlessServiceSelector was added to pass the Kubernetes e2e test
+	//  'Services should implement service.kubernetes.io/headless'. You can find the test case at:
+	//  https://github.com/kubernetes/kubernetes/blob/027ac5a426a261ba6b66a40e79e123e75e9baf5b/test/e2e/network/service.go#L2281
+	//  However, in AntreaProxy, headless Services are skipped by checking the ClusterIP.
+	nonHeadlessServiceSelector, _ := labels.NewRequirement(corev1.IsHeadlessService, selection.DoesNotExist, nil)
+	var serviceProxyNameSelector *labels.Requirement
+	if serviceProxyName == "" {
+		serviceProxyNameSelector, _ = labels.NewRequirement(labelServiceProxyName, selection.DoesNotExist, nil)
+	} else {
+		serviceProxyNameSelector, _ = labels.NewRequirement(labelServiceProxyName, selection.DoubleEquals, []string{serviceProxyName})
+	}
+	serviceLabelSelector := labels.NewSelector()
+	serviceLabelSelector = serviceLabelSelector.Add(*serviceProxyNameSelector, *nonHeadlessServiceSelector)
+
 	p, _ := newProxier(hostname,
-		serviceProxyName,
-		fakeClient,
-		informerFactory.Core().V1().Services(),
-		informerFactory.Core().V1().Endpoints(),
-		informerFactory.Discovery().V1().EndpointSlices(),
-		informerFactory.Core().V1().Nodes(),
 		ofClient,
 		isIPv6,
 		routeClient,
-		fakeNodeIPChecker,
+		nodeipmock.NewFakeNodeIPChecker(),
 		nodePortAddresses,
 		o.proxyAllEnabled,
 		[]string{skippedServiceNN, skippedClusterIP},
@@ -503,6 +511,11 @@ func newFakeProxier(routeClient route.Interface, ofClient openflow.Client, nodeP
 		types.NewGroupCounter(groupIDAllocator, make(chan string, 100)),
 		o.supportNestedService,
 		o.serviceHealthServerDisabled,
+		o.endpointSliceEnabled,
+		topologyAwareHintsEnabled,
+		serviceTrafficDistributionEnabled,
+		nil,
+		serviceLabelSelector,
 	)
 	p.runner = k8sproxy.NewBoundedFrequencyRunner(componentName, p.syncProxyRules, time.Second, 30*time.Second, 2)
 	p.endpointsChanges = newEndpointsChangesTracker(hostname, o.endpointSliceEnabled, isIPv6)
