@@ -82,6 +82,7 @@ require (
 	k8s.io/kubelet v0.33.1
 	k8s.io/utils v0.0.0-20241104100929-3ea5e8cea738
 	sigs.k8s.io/controller-runtime v0.21.0
+	sigs.k8s.io/knftables v0.0.18
 	sigs.k8s.io/mcs-api v0.1.0
 	sigs.k8s.io/network-policy-api v0.1.1
 	sigs.k8s.io/yaml v1.4.0
@@ -246,12 +247,15 @@ require (
 	k8s.io/kms v0.33.1 // indirect
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.31.2 // indirect
 	sigs.k8s.io/json v0.0.0-20241010143419-9aa6b5e7a4b3 // indirect
-	sigs.k8s.io/knftables v0.0.18 // indirect
 	sigs.k8s.io/kustomize/api v0.19.0 // indirect
 	sigs.k8s.io/kustomize/kyaml v0.19.0 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.6.0 // indirect
 )
 
-// remove this when https://github.com/mdlayher/ndp/pull/32 gets merged
-replace github.com/mdlayher/ndp => github.com/antrea-io/ndp v0.0.0-20241107040829-6f35f2e50f4c
+replace (
+	// remove this when https://github.com/mdlayher/ndp/pull/32 gets merged
+	github.com/mdlayher/ndp => github.com/antrea-io/ndp v0.0.0-20241107040829-6f35f2e50f4c
+	// remove this when https://github.com/kubernetes-sigs/knftables/pull/31 is included in a new release
+	sigs.k8s.io/knftables => github.com/hongliangl/knftables v0.0.0-20250918115845-04a72ee5e2d5
+)
