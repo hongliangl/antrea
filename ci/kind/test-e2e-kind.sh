@@ -468,7 +468,7 @@ if [[ "$mode" == "" ]] || [[ "$mode" == "encap" ]]; then
   if [[ $test_only == "false" ]];then
     setup_cluster "--images \"$COMMON_IMAGES\""
   fi
-  run_test encap
+  run_test hybrid
 fi
 if [[ "$mode" == "" ]] || [[ "$mode" == "noEncap" ]]; then
   echo "======== Test noencap mode =========="
