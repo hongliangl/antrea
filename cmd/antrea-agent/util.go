@@ -15,8 +15,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/klog/v2"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -78,4 +83,73 @@ func parsePortRange(portRangeStr string) (start, end int, err error) {
 	}
 
 	return start, end, nil
+}
+
+func getPodCIDRs(o *Options, k8sClient clientset.Interface) []*net.IPNet {
+	// Get Pod CIDR from agent config
+	podCIDRStr := o.config.PodCIDR
+
+	if podCIDRStr == "" {
+		// Try kube-proxy ConfigMap
+		if cidr := extractPodCIDRFromConfigMap(
+			k8sClient,
+			"kube-system",
+			"kube-proxy",
+			"config.conf",
+			"clusterCIDR",
+		); cidr != "" {
+			podCIDRStr = cidr
+		}
+	}
+
+	if podCIDRStr == "" {
+		// Try kubeadm-config ConfigMap
+		if cidr := extractPodCIDRFromConfigMap(k8sClient,
+			"kube-system",
+			"kubeadm-config",
+			"ClusterConfiguration",
+			"podSubnet",
+		); cidr != "" {
+			podCIDRStr = cidr
+		}
+	}
+
+	if podCIDRStr == "" {
+		klog.Info("No Pod CIDR was found")
+		return nil
+	}
+
+	var podCIDRs []*net.IPNet
+	for _, cidrStr := range strings.Split(podCIDRStr, ",") {
+		cidrStr = strings.TrimSpace(cidrStr)
+		_, cidr, err := net.ParseCIDR(cidrStr)
+		if err != nil {
+			klog.ErrorS(err, "Failed to parse Pod CIDR", "Pod CIDR", cidrStr)
+			continue
+		}
+		podCIDRs = append(podCIDRs, cidr)
+	}
+
+	return podCIDRs
+}
+
+func extractPodCIDRFromConfigMap(client clientset.Interface, namespace, name, key, patternKey string) string {
+	cm, err := client.CoreV1().ConfigMaps(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+	if err != nil {
+		klog.V(2).ErrorS(err, "Failed to get ConfigMap", "namespace", namespace, "name", name)
+		return ""
+	}
+	data, ok := cm.Data[key]
+	if !ok {
+		klog.V(2).InfoS("Key is not found from ConfigMap", "namespace", namespace, "name", name, "key", key)
+		return ""
+	}
+
+	pattern := fmt.Sprintf(`(?m)^\s*%s\s*:\s*"?([0-9a-fA-F.:/,\s]+)"?`, patternKey)
+	re := regexp.MustCompile(pattern)
+	match := re.FindStringSubmatch(data)
+	if len(match) < 2 {
+		return ""
+	}
+	return match[1]
 }

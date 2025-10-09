@@ -144,6 +144,10 @@ rules:
       - configmaps
     resourceNames:
       - antrea-ca
+      {{- if eq .Values.trafficEncapMode "networkPolicyOnly" }}
+      - kube-proxy
+      - kubeadm-config
+      {{- end }}
     verbs:
       - get
       - watch

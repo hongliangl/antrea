@@ -1832,6 +1832,7 @@ func writeLine(buf *bytes.Buffer, words ...string) {
 // MigrateRoutesToGw moves routes (including assigned IP addresses if any) from link linkName to
 // host gateway.
 func (c *Client) MigrateRoutesToGw(linkName string) error {
+	time.Sleep(time.Second)
 	gwLink, err := c.netlink.LinkByName(c.nodeConfig.GatewayConfig.Name)
 	if err != nil {
 		return fmt.Errorf("failed to get link %s: %w", c.nodeConfig.GatewayConfig.Name, err)

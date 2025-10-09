@@ -362,7 +362,20 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 			} else {
 				ob.Action = crdv1beta1.ActionForwardedOutOfNetwork
 			}
-		} else if outputPort == gwPort { // noEncap or networkPolicyOnly
+		} else if c.networkConfig.TrafficEncapMode == config.TrafficEncapModeNetworkPolicyOnly && outputPort == gwPort { // networkPolicyOnly
+			isPodIP := false
+			for _, podCIDR := range c.podCIDRs {
+				if podCIDR.Contains(netIPDst) {
+					isPodIP = true
+					break
+				}
+			}
+			if isPodIP {
+				ob.Action = crdv1beta1.ActionForwarded
+			} else {
+				ob.Action = crdv1beta1.ActionForwardedOutOfNetwork
+			}
+		} else if c.networkConfig.TrafficEncapMode == config.TrafficEncapModeNoEncap && outputPort == gwPort { // noEncap
 			// TODO: update this and above case if noEncap mode supports Egress feature
 			isPodIP := false
 			if c.podSubnetChecker != nil {

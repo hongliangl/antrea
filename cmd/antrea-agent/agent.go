@@ -666,6 +666,11 @@ func run(o *Options) error {
 		}
 	}
 
+	var podCIDRs []*net.IPNet
+	if networkConfig.TrafficEncapMode.IsNetworkPolicyOnly() {
+		podCIDRs = getPodCIDRs(o, k8sClient)
+	}
+
 	var traceflowController *traceflow.Controller
 	if features.DefaultFeatureGate.Enabled(features.Traceflow) {
 		traceflowController = traceflow.NewTraceflowController(
@@ -681,6 +686,7 @@ func run(o *Options) error {
 			networkConfig,
 			nodeConfig,
 			serviceCIDRNet,
+			podCIDRs,
 			o.enableAntreaProxy)
 	}
 

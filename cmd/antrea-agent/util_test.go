@@ -15,6 +15,11 @@
 package main
 
 import (
+	agentconfig "antrea.io/antrea/pkg/config/agent"
+	"context"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 	"net"
 	"testing"
 
@@ -121,4 +126,148 @@ func TestParsePortRange(t *testing.T) {
 
 		})
 	}
+}
+
+func TestExtractPodCIDRFromConfigMap(t *testing.T) {
+	tests := []struct {
+		name         string
+		cmData       map[string]string
+		patternKey   string
+		expectedCIDR string
+	}{
+		{
+			name: "match",
+			cmData: map[string]string{
+				"config.conf": `
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+clusterCIDR: 10.244.0.0/16,fd00:10:244::/56
+mode: iptables
+`,
+			},
+			patternKey:   "clusterCIDR",
+			expectedCIDR: "10.244.0.0/16,fd00:10:244::/56\n",
+		},
+		{
+			name: "missing key",
+			cmData: map[string]string{
+				"wrong.conf": "",
+			},
+			patternKey:   "clusterCIDR",
+			expectedCIDR: "",
+		},
+		{
+			name: "no CIDR match",
+			cmData: map[string]string{
+				"config.conf": `mode: iptables`,
+			},
+			patternKey:   "clusterCIDR",
+			expectedCIDR: "",
+		},
+		{
+			name: "wrong pattern key",
+			cmData: map[string]string{
+				"config.conf": `
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+clusterCIDR: 10.244.0.0/16,fd00:10:244::/56
+mode: iptables
+`,
+			},
+			patternKey:   "clusterCIDRs",
+			expectedCIDR: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := fake.NewClientset(&corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kube-proxy",
+					Namespace: "kube-system",
+				},
+				Data: tt.cmData,
+			})
+
+			cidr := extractPodCIDRFromConfigMap(client, "kube-system", "kube-proxy", "config.conf", tt.patternKey)
+			require.Equal(t, tt.expectedCIDR, cidr)
+		})
+	}
+}
+
+func TestGetPodCIDRs(t *testing.T) {
+	tests := []struct {
+		name          string
+		optionsCIDR   string
+		configMaps    []*corev1.ConfigMap
+		expectedCIDRs []*net.IPNet
+	}{
+		{
+			name:          "CIDR from options config",
+			optionsCIDR:   "10.244.0.0/16,  fd00:10:244::/56",
+			expectedCIDRs: []*net.IPNet{mustParseCIDR("10.244.0.0/16"), mustParseCIDR("fd00:10:244::/56")},
+		},
+		{
+			name: "CIDR from kube-proxy ConfigMap fallback",
+			configMaps: []*corev1.ConfigMap{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "kube-proxy",
+						Namespace: "kube-system",
+					},
+					Data: map[string]string{
+						"config.conf": `
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+clusterCIDR: 10.244.0.0/16
+mode: iptables
+`,
+					},
+				},
+			},
+			expectedCIDRs: []*net.IPNet{mustParseCIDR("10.244.0.0/16")},
+		},
+		{
+			name: "CIDR from kubeadm-config fallback",
+			configMaps: []*corev1.ConfigMap{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "kubeadm-config",
+						Namespace: "kube-system",
+					},
+					Data: map[string]string{
+						"ClusterConfiguration": `
+networking:
+      dnsDomain: cluster.local
+      podSubnet: fd00:10:244::/56
+      serviceSubnet: fd00:10:96::/112
+`,
+					},
+				},
+			},
+			expectedCIDRs: []*net.IPNet{mustParseCIDR("fd00:10:244::/56")},
+		},
+		{
+			name: "No CIDR found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := fake.NewClientset()
+			for _, cm := range tt.configMaps {
+				_, err := client.CoreV1().ConfigMaps(cm.Namespace).Create(context.TODO(), cm, metav1.CreateOptions{})
+				require.NoError(t, err)
+			}
+
+			o := &Options{
+				config: &agentconfig.AgentConfig{
+					PodCIDR: tt.optionsCIDR,
+				},
+			}
+			require.Equal(t, tt.expectedCIDRs, getPodCIDRs(o, client))
+		})
+	}
+}
+
+func mustParseCIDR(s string) *net.IPNet {
+	_, ipnet, _ := net.ParseCIDR(s)
+	return ipnet
 }

@@ -4161,6 +4161,12 @@ data:
     #
     trafficEncapMode: "encap"
 
+    # The aggregated cluster-wide Pod CIDR (not the per-Node Pod CIDR).
+    # This field is applicable only in networkPolicyOnly mode and ignored in other traffic modes. It can be left empty,
+    # but it is recommended to specify the correct Pod CIDR, as some features may not function properly otherwise.
+    # Example: "10.10.0.0/16" for IPv4-only, or "10.10.0.0/16,fd00::/12" for dual-stack.
+    podCIDR: ""
+
     # Whether or not to SNAT (using the Node IP) the egress traffic from a Pod to the external network.
     # This option is for the noEncap traffic mode only, and the default value is false. In the noEncap
     # mode, if the cluster's Pod CIDR is reachable from the external network, then the Pod traffic to
@@ -5512,7 +5518,7 @@ spec:
         kubectl.kubernetes.io/default-container: antrea-agent
         # Automatically restart Pods with a RollingUpdate if the ConfigMap changes
         # See https://helm.sh/docs/howto/charts_tips_and_tricks/#automatically-roll-deployments
-        checksum/config: b1759a7185fce7308723e0f322796b8d22e55847448b94fc47085e08c36504ae
+        checksum/config: a4b289d8717a1d8fbadfcacd1f9501cb989dae15845db062538b03052e5f0f3e
         checksum/ipsec-secret: d0eb9c52d0cd4311b6d252a951126bf9bea27ec05590bed8a394f0f792dcb2a4
       labels:
         app: antrea
@@ -5804,7 +5810,7 @@ spec:
       annotations:
         # Automatically restart Pod if the ConfigMap changes
         # See https://helm.sh/docs/howto/charts_tips_and_tricks/#automatically-roll-deployments
-        checksum/config: b1759a7185fce7308723e0f322796b8d22e55847448b94fc47085e08c36504ae
+        checksum/config: a4b289d8717a1d8fbadfcacd1f9501cb989dae15845db062538b03052e5f0f3e
       labels:
         app: antrea
         component: antrea-controller
