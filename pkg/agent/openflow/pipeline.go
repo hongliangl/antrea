@@ -1371,11 +1371,11 @@ func (f *featurePodConnectivity) l3FwdFlowsToRemoteViaTun(localGatewayMAC net.Ha
 // Egress connections and these packets should be sent to remote Pods via tunnel.
 func (f *featurePodConnectivity) l3FwdFlowEgressReturnViaTun(localGatewayMAC net.HardwareAddr, peerSubnet net.IPNet, tunnelPeer net.IP) binding.Flow {
 	ipProtocol := getIPProtocol(peerSubnet.IP)
-	flow := L3ForwardingTable.ofTable.BuildFlow(priorityNormal+1).
+	flow := L3ForwardingTable.ofTable.BuildFlow(priorityNormal + 1).
 		Cookie(f.cookieAllocator.Request(f.category).Raw()).
 		MatchProtocol(ipProtocol).
-		MatchRegMark(FromGatewayRegMark).                                                            // Match packets received on local gateway only, ensuring they are reply Egress packets.
-		MatchPktMark(types.EgressNoEncapReturnToRemoteMark, &types.EgressNoEncapReturnToRemoteMark). // Match Egress packets only. This mark is loaded by the iptables rule matching reply Egress packets.
+		MatchRegMark(FromGatewayRegMark). // Match packets received on local gateway only, ensuring they are reply Egress packets.
+		MatchCTMark(FromTunnelCTMark).    // Match packets originated from the tunnel.
 		MatchDstIPNet(peerSubnet).
 		Action().SetSrcMAC(localGatewayMAC).  // Rewrite src MAC to local gateway MAC.
 		Action().SetDstMAC(GlobalVirtualMAC). // Rewrite dst MAC to virtual MAC.
