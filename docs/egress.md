@@ -505,5 +505,23 @@ Node Tuning Operator will reconcile the CR and update
 with label `network-role=egress-gateway`). Please refer to the OpenShift
 document about [Using the Node Tuning Operator](https://docs.openshift.com/container-platform/4.16/scalability_and_performance/using-node-tuning-operator.html).
 
-Additionally, it has been observed that the `rp_filter` update by Antrea takes no
-effect on some Linux releases since this releases have strict security
+Additionally, it has been observed that on some Linux distributions Node, updates to
+`rp_filter` performed by Antrea may not take effect as expected. This can occur
+when default distribution- or administrator-provided sysctl configuration files
+are automatically re-applied to network interfaces when new interfaces are added.
+In such environments, the `rp_filter` values configured by Antrea may be overridden
+when Antrea-managed interfaces are created.
+
+To ensure that the required `rp_filter` settings are consistently applied for Antrea
+Egress, an optional init container can be enabled to install an Antrea-specific sysctl
+configuration file and explicitly apply it during startup. This can be done by installing
+Antrea with the following option enabled:
+
+```bash
+helm upgrade --install antrea antrea/antrea \
+  --namespace kube-system \
+  --set antreaSysctlInit.enable=true
+```
+
+This approach makes the required sysctl configuration explicit and avoids relying on
+distribution-specific behavior when network interfaces are created.
