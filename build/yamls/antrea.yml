@@ -5730,6 +5730,20 @@ spec:
           operator: Exists
       serviceAccountName: antrea-agent
       initContainers:
+        - name: antrea-sysctl-init
+          image: "antrea/antrea-agent-ubuntu:latest"
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 50m
+          command: ["antrea-sysctl-init"]
+          args:
+            - "--host-gateway-name=antrea-gw0"
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: host-sysctl-dir
+              mountPath: /host/etc/sysctl.d
         - name: install-cni
           image: "antrea/antrea-agent-ubuntu:latest"
           imagePullPolicy: IfNotPresent
@@ -5933,6 +5947,10 @@ spec:
         - name: host-pod-resources
           hostPath:
             path: /var/lib/kubelet/pod-resources
+            type: Directory
+        - name: host-sysctl-dir
+          hostPath:
+            path: /etc/sysctl.d
             type: Directory
 ---
 # Source: antrea/templates/controller/deployment.yaml

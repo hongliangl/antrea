@@ -37,7 +37,7 @@ Kubernetes: `>= 1.23.0-0`
 | agent.antreaOVS.resources | object | `{"requests":{"cpu":"200m"}}` | Resource requests and limits for the antrea-ovs container. |
 | agent.antreaOVS.securityContext.capabilities | list | `["SYS_NICE","NET_ADMIN","SYS_ADMIN","IPC_LOCK"]` | Capabilities for the antrea-ovs container. |
 | agent.antreaOVS.securityContext.privileged | bool | `false` | Whether to run the antrea-ovs container as privileged. |
-| agent.antreaSysctlInit.enable | bool | `false` | Enable the sysctl override. When enabled, the init container will do the process. |
+| agent.antreaSysctlInit.enable | bool | `true` | Enable the sysctl override. When enabled, the init container will do the process. |
 | agent.antreaSysctlInit.hostSysctlDir | string | `"/etc/sysctl.d"` | Path to the sysctl configuration directory on the host. |
 | agent.antreaSysctlInit.resources | object | `{"requests":{"cpu":"50m"}}` | Resource requests and limits for the antrea-sysctl-init init container. |
 | agent.antreaSysctlInit.securityContext.privileged | bool | `true` | Whether to run the antrea-sysctl-init container as privileged. |

@@ -504,3 +504,6 @@ Node Tuning Operator will reconcile the CR and update
 `net.ipv4.conf.all.rp_filter` to `2` for all the matched Nodes (e.g. all Nodes
 with label `network-role=egress-gateway`). Please refer to the OpenShift
 document about [Using the Node Tuning Operator](https://docs.openshift.com/container-platform/4.16/scalability_and_performance/using-node-tuning-operator.html).
+
+Additionally, it has been observed that the `rp_filter` update by Antrea takes no
+effect on some Linux releases since this releases have strict security
