@@ -320,22 +320,20 @@ func (c *Client) Initialize(nodeConfig *config.NodeConfig, done func()) error {
 		klog.Info("Initialized iptables")
 	}()
 
-	if c.hostNetworkAccelerationEnabled || c.hostNetworkNFTables && c.proxyAll {
-		nftables, err := nftables.New(c.networkConfig.IPv4Enabled, c.networkConfig.IPv6Enabled)
-		if err != nil {
-			if c.proxyAll && c.hostNetworkNFTables {
-				// ProxyAll depends on nftables; fail if unavailable.
-				return fmt.Errorf("failed to create nftables instance: %w", err)
-			}
-			// Host-network acceleration is optional; skip gracefully.
-			if c.hostNetworkAccelerationEnabled {
-				klog.ErrorS(err, "Failed to create nftables instance, skipping host network acceleration")
-			}
-		} else {
-			c.nftables = nftables
-			if err := c.syncNFTables(context.TODO()); err != nil {
-				return fmt.Errorf("failed to initialize nftables: %w", err)
-			}
+	nftables, err := nftables.New(c.networkConfig.IPv4Enabled, c.networkConfig.IPv6Enabled)
+	if err != nil {
+		if c.proxyAll && c.hostNetworkNFTables {
+			// ProxyAll depends on nftables; fail if unavailable.
+			return fmt.Errorf("failed to create nftables instance: %w", err)
+		}
+		// Host-network acceleration is optional; skip gracefully.
+		if c.hostNetworkAccelerationEnabled {
+			klog.ErrorS(err, "Failed to create nftables instance, skipping host network acceleration")
+		}
+	} else {
+		c.nftables = nftables
+		if err := c.syncNFTables(context.TODO()); err != nil {
+			return fmt.Errorf("failed to initialize nftables: %w", err)
 		}
 	}
 
