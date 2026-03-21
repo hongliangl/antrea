@@ -3117,23 +3117,6 @@ func (f *featureService) gatewaySNATFlows() []binding.Flow {
 			CTDone().
 			Done())
 
-		if f.networkConfig.TrafficEncapMode == config.TrafficEncapModeNoEncap {
-			// This generates the flow to match the first packets of externally-originated connections towards external
-			// Service addresses, where selected Endpoints are remote Pods in noEncap mode. In this case, SNAT is still
-			// required to keep the reply path symmetric but it should not be treated as hairpin traffic.
-			flows = append(flows, SNATMarkTable.ofTable.BuildFlow(priorityHigh).
-				Cookie(cookieID).
-				MatchProtocol(ipProtocol).
-				MatchCTStateNew(true).
-				MatchCTStateTrk(true).
-				MatchRegMark(FromGatewayRegMark, FromExternalRegMark, ToGatewayRegMark, ToExternalAddressRegMark, RemoteEndpointRegMark, NotDSRServiceRegMark).
-				Action().CT(true, SNATMarkTable.GetNext(), f.dnatCtZones[ipProtocol], f.ctZoneSrcField).
-				LoadToCtMark(ConnSNATCTMark).
-				MoveToCtMarkField(PktSourceField, ConnSourceCTMarkField).
-				CTDone().
-				Done())
-		}
-
 		var pktDstRegMarks []*binding.RegMark
 		if f.networkConfig.TrafficEncapMode.SupportsEncap() {
 			pktDstRegMarks = append(pktDstRegMarks, ToTunnelRegMark)
