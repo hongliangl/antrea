@@ -1545,10 +1545,8 @@ func (c *Client) initServiceIPRoutes() error {
 		if err := c.addVirtualServiceIPRoute(false); err != nil {
 			return err
 		}
-		if c.hostNetworkAccelerationEnabled {
-			if err := c.addPodCIDRNetworkNeighbor(false); err != nil {
-				return err
-			}
+		if err := c.addPodCIDRNetworkNeighbor(false); err != nil {
+			return err
 		}
 		if err := c.addVirtualNodePortDNATIPRoute(false); err != nil {
 			return err
@@ -1558,10 +1556,8 @@ func (c *Client) initServiceIPRoutes() error {
 		if err := c.addVirtualServiceIPRoute(true); err != nil {
 			return err
 		}
-		if c.hostNetworkAccelerationEnabled {
-			if err := c.addPodCIDRNetworkNeighbor(true); err != nil {
-				return err
-			}
+		if err := c.addPodCIDRNetworkNeighbor(true); err != nil {
+			return err
 		}
 		if err := c.addVirtualNodePortDNATIPRoute(true); err != nil {
 			return err

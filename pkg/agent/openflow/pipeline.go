@@ -732,10 +732,8 @@ func (f *featureService) snatConntrackFlows() []binding.Flow {
 		// the Pod CIDR network address is used so that SNAT packets can be delivered to the Node via its uplink
 		// interface. In other cases, the virtual IP is used.
 		snatIP := f.virtualIPs[ipProtocol]
-		if f.hostNetworkAccelerationEnabled {
-			if podCIDR := f.podCIDRs[ipProtocol]; podCIDR != nil {
-				snatIP = podCIDR.IP.Mask(podCIDR.Mask)
-			}
+		if podCIDR := f.podCIDRs[ipProtocol]; podCIDR != nil {
+			snatIP = podCIDR.IP.Mask(podCIDR.Mask)
 		}
 		flows = append(flows,
 			// SNAT should be performed for the following connections:
