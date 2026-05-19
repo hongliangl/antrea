@@ -300,7 +300,13 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 		}
 		gwPort := c.nodeConfig.GatewayConfig.OFPort
 		tunPort := c.nodeConfig.TunnelOFPort
-		if c.networkConfig.TrafficEncapMode.SupportsEncap() && outputPort == tunPort {
+		// In noEncap mode, the tunnel port only exists when Egress is enabled; tunPort is 0
+		// otherwise and must not be compared against outputPort, which can also be 0 when the
+		// output register is unset.
+		if (c.networkConfig.TrafficEncapMode == config.TrafficEncapModeEncap ||
+			c.networkConfig.TrafficEncapMode == config.TrafficEncapModeHybrid ||
+			c.networkConfig.TrafficEncapMode == config.TrafficEncapModeNoEncap) &&
+			tunPort != 0 && outputPort == tunPort {
 			var isRemoteEgress uint32
 			if match := getMatchRegField(matchers, openflow.RemoteSNATRegMark.GetField()); match != nil {
 				isRemoteEgress, err = getRegValue(match, openflow.RemoteSNATRegMark.GetField().GetRange().ToNXRange())
@@ -320,7 +326,10 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 			ob.Action = crdv1beta1.ActionForwarded
 		} else if ipDst == gatewayIP.String() && outputPort == gwPort {
 			ob.Action = crdv1beta1.ActionDelivered
-		} else if c.networkConfig.TrafficEncapMode.SupportsEncap() && outputPort == gwPort { // encap or hybrid
+		} else if (c.networkConfig.TrafficEncapMode == config.TrafficEncapModeEncap ||
+			c.networkConfig.TrafficEncapMode == config.TrafficEncapModeHybrid ||
+			c.networkConfig.TrafficEncapMode == config.TrafficEncapModeNoEncap) &&
+			outputPort == gwPort { // encap, noEncap, or hybrid
 			var pktMark uint32
 			if match := getMatchPktMarkField(matchers); match != nil {
 				pktMark, err = getMarkValue(match)
@@ -349,10 +358,13 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 			}
 
 			ob.Action = crdv1beta1.ActionForwardedOutOfNetwork
-			// In hybrid mode or WireGuard mode, packets to Pod IPs in the same subnet are forwarded
-			// directly without encapsulation. Check if the destination is a Pod IP to determine
-			// the correct action (Forwarded vs ForwardedOutOfNetwork).
-			if (c.networkConfig.TrafficEncapMode == config.TrafficEncapModeHybrid || c.networkConfig.TrafficEncryptionMode == config.TrafficEncryptionModeWireGuard) && c.podSubnetChecker != nil {
+			// In noEncap, hybrid, and WireGuard modes, packets destined for remote Pod IPs can be forwarded via Antrea
+			// gateway port. Check if the destination is a Pod IP to determine the correct action
+			// (Forwarded vs ForwardedOutOfNetwork).
+			if (c.networkConfig.TrafficEncapMode == config.TrafficEncapModeHybrid ||
+				c.networkConfig.TrafficEncapMode == config.TrafficEncapModeNoEncap ||
+				c.networkConfig.TrafficEncryptionMode == config.TrafficEncryptionModeWireGuard) &&
+				c.podSubnetChecker != nil {
 				netAddrDst, _ := netip.AddrFromSlice(netIPDst)
 				isPodIP, _ := c.podSubnetChecker.LookupIPInPodSubnets(netAddrDst)
 				if isPodIP {
@@ -366,18 +378,6 @@ func (c *Controller) parsePacketIn(pktIn *ofctrl.PacketIn) (*crdv1beta1.Traceflo
 					isPodIP = true
 					break
 				}
-			}
-			if isPodIP {
-				ob.Action = crdv1beta1.ActionForwarded
-			} else {
-				ob.Action = crdv1beta1.ActionForwardedOutOfNetwork
-			}
-		} else if c.networkConfig.TrafficEncapMode == config.TrafficEncapModeNoEncap && outputPort == gwPort { // noEncap
-			// TODO: update this and above case if noEncap mode supports Egress feature
-			isPodIP := false
-			if c.podSubnetChecker != nil {
-				netAddrDst, _ := netip.AddrFromSlice(netIPDst)
-				isPodIP, _ = c.podSubnetChecker.LookupIPInPodSubnets(netAddrDst)
 			}
 			if isPodIP {
 				ob.Action = crdv1beta1.ActionForwarded
