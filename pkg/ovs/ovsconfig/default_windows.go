@@ -24,7 +24,7 @@ const (
 	DefaultOVSRunDir = `C:\openvswitch\var\run\openvswitch`
 
 	// We use "winpipe" here because it is hardcoded as the socket value that is parsed in
-	// our openvswitch db library, https://github.com/TomCodeLV/OVSDB-golang-lib/tree/master/pkg/ovsdb.
+	// our openvswitch db library, https://github.com/antrea-io/libovsdb/tree/master/pkg/ovsdb.
 	defaultConnNetwork = "winpipe"
 	namedPipePrefix    = `\\.\pipe\`
 	// Wait up to 5 seconds when getting port.
