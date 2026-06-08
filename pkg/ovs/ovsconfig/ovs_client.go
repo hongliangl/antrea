@@ -73,35 +73,47 @@ const (
 func NewOVSDBConnectionUDS(address string) (client.Client, Error) {
 	klog.Infof("Connecting to OVSDB at address %s", address)
 
-	dbModel, err := model.NewClientDBModel("Open_vSwitch", map[string]model.Model{
-		"Open_vSwitch": &Open_vSwitch{},
-		"Bridge":       &Bridge{},
-		"Port":         &Port{},
-		"Interface":    &Interface{},
-	})
-	if err != nil {
-		return nil, newInvalidArgumentsError(err.Error())
+	const maxBackoffTime = 8 * time.Second
+	backoff := 1 * time.Second
+	var db client.Client
+
+	for {
+		dbModel, err := model.NewClientDBModel("Open_vSwitch", map[string]model.Model{
+			"Open_vSwitch": &Open_vSwitch{},
+			"Bridge":       &Bridge{},
+			"Port":         &Port{},
+			"Interface":    &Interface{},
+		})
+		if err != nil {
+			return nil, newInvalidArgumentsError(err.Error())
+		}
+
+		endpoint := address
+		if endpoint != "" {
+			endpoint = "unix:" + endpoint
+		}
+
+		db, err = client.NewOVSDBClient(dbModel, client.WithEndpoint(endpoint))
+		if err != nil {
+			return nil, newInvalidArgumentsError(err.Error())
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err = db.Connect(ctx)
+		cancel()
+		if err == nil {
+			break
+		}
+
+		klog.Infof("Not connected yet (%v), will try again in %v", err, backoff)
+		time.Sleep(backoff)
+		backoff *= 2
+		if backoff > maxBackoffTime {
+			backoff = maxBackoffTime
+		}
 	}
 
-	endpoint := address
-	if endpoint != "" {
-		endpoint = "unix:" + endpoint
-	}
-
-	db, err := client.NewOVSDBClient(dbModel, client.WithEndpoint(endpoint))
-	if err != nil {
-		return nil, newInvalidArgumentsError(err.Error())
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-
-	err = db.Connect(ctx)
-	if err != nil {
-		return nil, NewTransactionError(err, true)
-	}
-
-	_, err = db.MonitorAll(context.Background())
+	_, err := db.MonitorAll(context.Background())
 	if err != nil {
 		return nil, NewTransactionError(err, true)
 	}
