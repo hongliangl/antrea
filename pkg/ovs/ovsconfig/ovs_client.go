@@ -24,6 +24,8 @@ import (
 
 	"github.com/gofrs/uuid/v5"
 
+	"github.com/cenkalti/backoff/v4"
+
 	"github.com/ovn-kubernetes/libovsdb/client"
 	"github.com/ovn-kubernetes/libovsdb/model"
 	"github.com/ovn-kubernetes/libovsdb/ovsdb"
@@ -74,7 +76,7 @@ func NewOVSDBConnectionUDS(address string) (client.Client, Error) {
 	klog.Infof("Connecting to OVSDB at address %s", address)
 
 	const maxBackoffTime = 8 * time.Second
-	backoff := 1 * time.Second
+	retryBackoff := 1 * time.Second
 	var db client.Client
 
 	for {
@@ -93,7 +95,7 @@ func NewOVSDBConnectionUDS(address string) (client.Client, Error) {
 			endpoint = "unix:" + endpoint
 		}
 
-		db, err = client.NewOVSDBClient(dbModel, client.WithEndpoint(endpoint))
+		db, err = client.NewOVSDBClient(dbModel, client.WithEndpoint(endpoint), client.WithReconnect(2*time.Second, backoff.NewConstantBackOff(1*time.Second)))
 		if err != nil {
 			return nil, newInvalidArgumentsError(err.Error())
 		}
@@ -105,11 +107,11 @@ func NewOVSDBConnectionUDS(address string) (client.Client, Error) {
 			break
 		}
 
-		klog.Infof("Not connected yet (%v), will try again in %v", err, backoff)
-		time.Sleep(backoff)
-		backoff *= 2
-		if backoff > maxBackoffTime {
-			backoff = maxBackoffTime
+		klog.Infof("Not connected yet (%v), will try again in %v", err, retryBackoff)
+		time.Sleep(retryBackoff)
+		retryBackoff *= 2
+		if retryBackoff > maxBackoffTime {
+			retryBackoff = maxBackoffTime
 		}
 	}
 
