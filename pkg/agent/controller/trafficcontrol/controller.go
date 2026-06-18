@@ -74,7 +74,7 @@ const (
 )
 
 var (
-	trafficControlPortExternalIDs = map[string]interface{}{
+	trafficControlPortExternalIDs = map[string]string{
 		interfacestore.AntreaInterfaceTypeKey: interfacestore.AntreaTrafficControl,
 	}
 )
@@ -748,7 +748,7 @@ func (c *Controller) getOrCreateTrafficControlPort(port *v1alpha2.TrafficControl
 		return 0, err
 	}
 
-	ofPort, err := c.ovsBridgeClient.GetOFPort(portName, false)
+	ofPort, err := c.ovsBridgeClient.GetOFPort(portName)
 	if err != nil {
 		return 0, err
 	}
