@@ -190,17 +190,20 @@ func NewOVSBridge(bridgeName string, ovsDatapathType OVSDatapathType, ovsdb clie
 // does not exist, it will be created. Openflow protocol version 1.0 and 1.5
 // will be enabled for the bridge.
 func (br *OVSBridge) Create() error {
+	// TODO: use ctx from parent context
+	ctx := context.TODO()
+
 	var err error
 	var exists bool
-	if exists, err = br.lookupByName(); err != nil {
+	if exists, err = br.lookupByName(ctx); err != nil {
 		return err
 	} else if exists {
 		klog.Info("Bridge exists: ", br.uuid)
 		// Update OpenFlow protocol versions and datapath type on existent bridge.
-		if err := br.updateBridgeConfiguration(); err != nil {
+		if err := br.updateBridgeConfiguration(ctx); err != nil {
 			return err
 		}
-	} else if err = br.create(); err != nil {
+	} else if err = br.create(ctx); err != nil {
 		return err
 	} else {
 		klog.Info("Created bridge: ", br.uuid)
@@ -212,9 +215,8 @@ func (br *OVSBridge) Create() error {
 	return nil
 }
 
-func (br *OVSBridge) lookupByName() (bool, error) {
-	// TODO: use ctx from parent context
-	bridge, err := br.getBridge(context.TODO())
+func (br *OVSBridge) lookupByName(ctx context.Context) (bool, error) {
+	bridge, err := br.getBridge(ctx)
 	if err != nil {
 		if errors.Is(err, client.ErrNotFound) {
 			return false, nil
@@ -226,10 +228,7 @@ func (br *OVSBridge) lookupByName() (bool, error) {
 	return true, nil
 }
 
-func (br *OVSBridge) updateBridgeConfiguration() error {
-	// TODO: use ctx from parent context
-	ctx := context.TODO()
-
+func (br *OVSBridge) updateBridgeConfiguration(ctx context.Context) error {
 	update := &Bridge{
 		// Use Openflow protocol version 1.0 and 1.5.
 		Protocols:           []string{openflowProtoVersion10, openflowProtoVersion15},
@@ -251,10 +250,7 @@ func (br *OVSBridge) updateBridgeConfiguration() error {
 	return err
 }
 
-func (br *OVSBridge) create() error {
-	// TODO: use ctx from parent context
-	ctx := context.TODO()
-
+func (br *OVSBridge) create(ctx context.Context) error {
 	// Generate a "named-uuid" to insert the new Bridge record. This temporary ID allows us
 	// to reference the uncommitted Bridge in other operations within the same atomic transaction.
 	bridge := &Bridge{
@@ -488,10 +484,13 @@ func (br *OVSBridge) DeletePort(portUUID string) error {
 // port's external_ids.
 // If ofPortRequest is not zero, it will be passed to the OVS port creation.
 func (br *OVSBridge) CreateInternalPort(name string, ofPortRequest int32, mac string, externalIDs map[string]string) (string, error) {
+	// TODO: use ctx from parent context
+	ctx := context.TODO()
+
 	if ofPortRequest < 0 || ofPortRequest > ofPortRequestMax {
 		return "", fmt.Errorf("%s", fmt.Sprint("invalid ofPortRequest value: ", ofPortRequest))
 	}
-	return br.createPort(name, name, "internal", ofPortRequest, 0, mac, externalIDs, nil)
+	return br.createPort(ctx, name, name, "internal", ofPortRequest, 0, mac, externalIDs, nil)
 }
 
 // CreateTunnelPortExt creates a tunnel port with the specified name and type
@@ -515,16 +514,29 @@ func (br *OVSBridge) CreateTunnelPortExt(
 	psk string,
 	extraOptions map[string]interface{},
 	externalIDs map[string]string) (string, error) {
+	// TODO: use ctx from parent context
+	ctx := context.TODO()
 	if psk != "" && remoteIP == "" {
 		return "", fmt.Errorf("IPsec tunnel can not be flow based. remoteIP must be set")
 	}
 	if psk != "" && remoteName != "" {
 		return "", fmt.Errorf("Cannot set psk and remoteName together")
 	}
-	return br.createTunnelPort(name, tunnelType, ofPortRequest, csum, localIP, remoteIP, remoteName, psk, extraOptions, externalIDs)
+	return br.createTunnelPort(ctx,
+		name,
+		tunnelType,
+		ofPortRequest,
+		csum,
+		localIP,
+		remoteIP,
+		remoteName,
+		psk,
+		extraOptions,
+		externalIDs)
 }
 
 func (br *OVSBridge) createTunnelPort(
+	ctx context.Context,
 	name string,
 	tunnelType TunnelType,
 	ofPortRequest int32,
@@ -572,7 +584,7 @@ func (br *OVSBridge) createTunnelPort(
 		options["csum"] = "true"
 	}
 
-	return br.createPort(name, name, string(tunnelType), ofPortRequest, 0, "", externalIDs, options)
+	return br.createPort(ctx, name, name, string(tunnelType), ofPortRequest, 0, "", externalIDs, options)
 }
 
 // GetInterfaceOptions returns the options of the provided interface.
@@ -634,7 +646,9 @@ func ParseTunnelInterfaceOptions(portData *OVSPortData) (net.IP, net.IP, int32, 
 
 // CreateUplinkPort creates uplink port.
 func (br *OVSBridge) CreateUplinkPort(name string, ofPortRequest int32, externalIDs map[string]string) (string, error) {
-	return br.createPort(name, name, "", ofPortRequest, 0, "", externalIDs, nil)
+	// TODO: use ctx from parent context
+	ctx := context.TODO()
+	return br.createPort(ctx, name, name, "", ofPortRequest, 0, "", externalIDs, nil)
 }
 
 // CreatePort creates a port with the specified name on the bridge, and connects
@@ -642,7 +656,9 @@ func (br *OVSBridge) CreateUplinkPort(name string, ofPortRequest int32, external
 // If externalIDs is not empty, the map key/value pairs will be set to the
 // port's external_ids.
 func (br *OVSBridge) CreatePort(name, ifDev string, externalIDs map[string]string) (string, error) {
-	return br.createPort(name, ifDev, "", 0, 0, "", externalIDs, nil)
+	// TODO: use ctx from parent context
+	ctx := context.TODO()
+	return br.createPort(ctx, name, ifDev, "", 0, 0, "", externalIDs, nil)
 }
 
 // CreateAccessPort creates a port with the specified name and VLAN ID on the bridge, and connects
@@ -651,13 +667,20 @@ func (br *OVSBridge) CreatePort(name, ifDev string, externalIDs map[string]strin
 // port's external_ids.
 // vlanID=0 will perform same behavior as CreatePort.
 func (br *OVSBridge) CreateAccessPort(name, ifDev string, externalIDs map[string]string, vlanID uint16) (string, error) {
-	return br.createPort(name, ifDev, "", 0, vlanID, "", externalIDs, nil)
-}
-
-func (br *OVSBridge) createPort(name, ifName, ifType string, ofPortRequest int32, vlanID uint16, mac string, externalIDs map[string]string, options map[string]interface{}) (string, error) {
 	// TODO: use ctx from parent context
 	ctx := context.TODO()
+	return br.createPort(ctx, name, ifDev, "", 0, vlanID, "", externalIDs, nil)
+}
 
+func (br *OVSBridge) createPort(ctx context.Context,
+	name string,
+	ifName string,
+	ifType string,
+	ofPortRequest int32,
+	vlanID uint16,
+	mac string,
+	externalIDs map[string]string,
+	options map[string]interface{}) (string, error) {
 	for _, id := range br.requiredPortExternalIDs {
 		if _, ok := externalIDs[id]; !ok {
 			return "", fmt.Errorf("missing required externalID '%s' for port '%s'", id, name)
@@ -1198,14 +1221,11 @@ func (br *OVSBridge) getOpenvSwitch(ctx context.Context) (*OpenvSwitch, error) {
 	if err != nil {
 		if !errors.Is(err, client.ErrNotFound) {
 			klog.ErrorS(err, "Failed to list Open_vSwitch table", "bridge", br.name)
-		} else {
-			klog.V(4).InfoS("Open_vSwitch table not found", "bridge", br.name)
 		}
 		return nil, err
 	}
 	if len(ovsList) == 0 {
-		err = fmt.Errorf("Open_vSwitch record not found")
-		klog.ErrorS(err, "Failed to find the root Open_vSwitch record", "bridge", br.name)
+		klog.InfoS("Failed to find the root Open_vSwitch record")
 		return nil, err
 	}
 	return &ovsList[0], nil
@@ -1219,8 +1239,6 @@ func (br *OVSBridge) getBridge(ctx context.Context) (*Bridge, error) {
 	if err != nil {
 		if !errors.Is(err, client.ErrNotFound) {
 			klog.ErrorS(err, "Failed to get bridge", "bridge", br.name)
-		} else {
-			klog.V(4).InfoS("Bridge not found", "bridge", br.name)
 		}
 		return nil, err
 	}
@@ -1235,8 +1253,6 @@ func (br *OVSBridge) getPort(ctx context.Context, name, uuid string) (*Port, err
 	if err != nil {
 		if !errors.Is(err, client.ErrNotFound) {
 			klog.ErrorS(err, "Failed to get port", "portName", name, "portUUID", uuid)
-		} else {
-			klog.V(4).InfoS("Port not found", "portName", name, "portUUID", uuid)
 		}
 		return nil, err
 	}
@@ -1251,8 +1267,6 @@ func (br *OVSBridge) getInterface(ctx context.Context, name string) (*Interface,
 	if err != nil {
 		if !errors.Is(err, client.ErrNotFound) {
 			klog.ErrorS(err, "Failed to get interface", "interface", name)
-		} else {
-			klog.V(4).InfoS("Interface not found", "interface", name)
 		}
 		return nil, err
 	}

@@ -26,7 +26,7 @@ const (
 	namedPipePrefix = `\\.\pipe\`
 	// Wait up to 5 seconds when getting port.
 	defaultGetPortTimeout    = 5 * time.Second
-	defaultOvsVersionMessage = "OVS version not found in ovsdb. Please configure your OVS (ovsdb) to provide version information."
+	defaultOvsVersionMessage = "OVS version not found in ovsdb.  You might try running 'ovs-vsctl --no-wait set Open_vSwitch . ovs_version=$OVS_VERSION'"
 )
 
 func GetConnAddress(ovsRunDir string) string {
