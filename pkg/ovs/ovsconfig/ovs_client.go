@@ -32,7 +32,6 @@ import (
 	"github.com/ovn-kubernetes/libovsdb/ovsdb"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/ptr"
 )
 
 const (
@@ -791,11 +790,9 @@ func (br *OVSBridge) GetOFPort(ifName string) (int32, error) {
 		return 0, fmt.Errorf("timeout waiting for ofport for %s", ifName)
 	}
 
-	mIntf := &Interface{
-		OFPort: ptr.To[int](0),
-	}
+	mIntf := &Interface{}
 	// We use WaitConditionNotEqual to wait for the ofport to be assigned by OVS (including invalid value -1).
-	// We wait for the ofport to become NotEqual to 0. This guarantees the wait completes immediately when OVS assigns
+	// We wait for the ofport to become NotEqual to empty set (nil). This guarantees the wait completes immediately when OVS assigns
 	// a valid port number (>0), or fails the port creation and assigns an error value (<0, e.g., -1).
 	ops, err := br.ovsdb.Where(interfaceWithName(ifName)).Wait(ovsdb.WaitConditionNotEqual, &timeoutMs, mIntf, &mIntf.OFPort)
 	if err != nil {
