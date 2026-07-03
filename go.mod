@@ -20,6 +20,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.304.2
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.102.2
 	github.com/cheggaaa/pb/v3 v3.1.7
+	github.com/cilium/ebpf v0.21.0
 	github.com/containernetworking/cni v1.3.0
 	github.com/containernetworking/plugins v1.9.1
 	github.com/coreos/go-iptables v0.8.0

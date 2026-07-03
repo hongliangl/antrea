@@ -64,8 +64,19 @@ edit the Agent configuration in the
 | `NodeLatencyMonitor`            | Agent              | `false` | Alpha      | v2.1          | N/A          | N/A        | No                 |                                                        |
 | `PacketCapture`                 | Agent              | `false` | Alpha      | v2.2          | N/A          | N/A        | No                 |                                                        |
 | `NFTablesHostNetworkMode`       | Agent              | `false` | Alpha      | v2.5          | N/A          | N/A        | Yes                |                                                        |
+| `EBPFObservability`             | Agent              | `false` | Alpha      | N/A           | N/A          | N/A        | Yes                | Prototype                                              |
 
 ## Description and Requirements of Features
+
+### EBPFObservability
+
+`EBPFObservability` enables a prototype host-side eBPF collector in `antrea-agent`. It observes IPv4 TCP connect,
+established, state transition, RTT, and retransmission events. Events are attributed to local Pods with cgroup ID or
+local IP and enriched with OVS interface information. The Agent exports structured logs and low-cardinality Prometheus
+metrics.
+
+The prototype requires Linux 5.15 or later with cgroup v2 and a privileged Agent. DNS and persistent event export are
+not implemented yet.
 
 ### AntreaProxy
 

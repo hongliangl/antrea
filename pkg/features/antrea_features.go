@@ -187,6 +187,9 @@ const (
 	// Enable the NodeLatencyMonitor feature.
 	NodeLatencyMonitor featuregate.Feature = "NodeLatencyMonitor"
 
+	// EBPFObservability enables experimental host-side eBPF observability.
+	EBPFObservability featuregate.Feature = "EBPFObservability"
+
 	// alpha: v2.1
 	// Allow users to initiate BGP process on selected Kubernetes Nodes and advertise Service IPs, Pod IPs and Egress
 	// IPs to remote BGP peers.
@@ -244,6 +247,7 @@ var (
 		EgressSeparateSubnet:          {Default: true, PreRelease: featuregate.Beta},
 		NodeNetworkPolicy:             {Default: false, PreRelease: featuregate.Alpha},
 		NodeLatencyMonitor:            {Default: false, PreRelease: featuregate.Alpha},
+		EBPFObservability:             {Default: false, PreRelease: featuregate.Alpha},
 	}
 
 	// AgentGates consists of all known feature gates for the Antrea Agent.
@@ -279,6 +283,7 @@ var (
 		EgressSeparateSubnet,
 		NodeNetworkPolicy,
 		NodeLatencyMonitor,
+		EBPFObservability,
 	)
 
 	// ControllerGates consists of all known feature gates for the Antrea Controller.
@@ -333,6 +338,7 @@ var (
 		NodeLatencyMonitor:          {},
 		PacketCapture:               {},
 		NFTablesHostNetworkMode:     {},
+		EBPFObservability:           {},
 	}
 	// supportedFeaturesOnExternalNode records the features supported on an external
 	// Node. Antrea Agent checks the enabled features if it is running on an
