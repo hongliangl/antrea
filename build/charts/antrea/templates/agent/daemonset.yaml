@@ -274,6 +274,9 @@ spec:
           - name: host-proc
             mountPath: /host/proc
             readOnly: true
+          - name: host-cgroup
+            mountPath: /host/sys/fs/cgroup
+            readOnly: true
           - name: host-var-run-netns
             mountPath: /host/var/run/netns
             readOnly: true
@@ -394,6 +397,9 @@ spec:
         - name: host-proc
           hostPath:
             path: /proc
+        - name: host-cgroup
+          hostPath:
+            path: /sys/fs/cgroup
         - name: host-var-run-netns
           hostPath:
             path: /var/run/netns

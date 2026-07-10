@@ -195,6 +195,40 @@ var (
 			Buckets: []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 		},
 	)
+
+	EBPFEventsTotal = metrics.NewCounterVec(
+		&metrics.CounterOpts{
+			Namespace:      metricNamespaceAntrea,
+			Subsystem:      metricSubsystemAgent,
+			Name:           "ebpf_events_total",
+			Help:           "Number of eBPF observability events processed by type and attribution result.",
+			StabilityLevel: metrics.ALPHA,
+		},
+		[]string{"type", "attributed", "pod", "namespace"},
+	)
+
+	EBPFTCPSRTT = metrics.NewHistogramVec(
+		&metrics.HistogramOpts{
+			Namespace:      metricNamespaceAntrea,
+			Subsystem:      metricSubsystemAgent,
+			Name:           "ebpf_tcp_srtt_seconds",
+			Help:           "Smoothed TCP round-trip time sampled by eBPF sockops.",
+			StabilityLevel: metrics.ALPHA,
+			Buckets:        []float64{0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1},
+		},
+		[]string{"pod", "namespace"},
+	)
+
+	EBPFProgramAttached = metrics.NewGaugeVec(
+		&metrics.GaugeOpts{
+			Namespace:      metricNamespaceAntrea,
+			Subsystem:      metricSubsystemAgent,
+			Name:           "ebpf_program_attached",
+			Help:           "Whether an eBPF observability program is attached.",
+			StabilityLevel: metrics.ALPHA,
+		},
+		[]string{"program"},
+	)
 )
 
 func InitializePrometheusMetrics() {
@@ -204,6 +238,19 @@ func InitializePrometheusMetrics() {
 	InitializeNetworkPolicyMetrics()
 	InitializeOVSMetrics()
 	InitializeConnectionMetrics()
+	InitializeEBPFMetrics()
+}
+
+func InitializeEBPFMetrics() {
+	for name, metric := range map[string]metrics.Registerable{
+		"antrea_agent_ebpf_events_total":     EBPFEventsTotal,
+		"antrea_agent_ebpf_tcp_srtt_seconds": EBPFTCPSRTT,
+		"antrea_agent_ebpf_program_attached": EBPFProgramAttached,
+	} {
+		if err := legacyregistry.Register(metric); err != nil {
+			klog.ErrorS(err, "Failed to register metrics with Prometheus", "metrics", name)
+		}
+	}
 }
 
 func InitializePodMetrics() {

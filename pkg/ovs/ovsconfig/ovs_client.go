@@ -792,8 +792,8 @@ func (br *OVSBridge) GetOFPort(ifName string) (int32, error) {
 
 	mIntf := &Interface{}
 	// We use WaitConditionNotEqual to wait for the ofport to be assigned by OVS (including invalid value -1).
-	// We wait for the ofport to become NotEqual to empty set (nil). This guarantees the wait completes immediately when OVS assigns
-	// a valid port number (>0), or fails the port creation and assigns an error value (<0, e.g., -1).
+	// We wait for the ofport to become NotEqual to empty set (nil). This guarantees the wait completes immediately when
+	// OVS assigns a valid port number (>0), or fails the port creation and assigns an error value (<0, e.g., -1).
 	ops, err := br.ovsdb.Where(interfaceWithName(ifName)).Wait(ovsdb.WaitConditionNotEqual, &timeoutMs, mIntf, &mIntf.OFPort)
 	if err != nil {
 		return 0, err

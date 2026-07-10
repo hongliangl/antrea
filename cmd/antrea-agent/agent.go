@@ -48,6 +48,7 @@ import (
 	"antrea.io/antrea/v2/pkg/agent/controller/serviceexternalip"
 	"antrea.io/antrea/v2/pkg/agent/controller/traceflow"
 	"antrea.io/antrea/v2/pkg/agent/controller/trafficcontrol"
+	"antrea.io/antrea/v2/pkg/agent/ebpfobservability"
 	"antrea.io/antrea/v2/pkg/agent/externalnode"
 	"antrea.io/antrea/v2/pkg/agent/flowexporter"
 	flowexporteroptions "antrea.io/antrea/v2/pkg/agent/flowexporter/options"
@@ -235,6 +236,7 @@ func run(o *Options) error {
 		MulticlusterEncryptionMode:    multiclusterEncryptionMode,
 		EnableHostNetworkAcceleration: *o.config.HostNetworkAcceleration.Enable,
 		HostNetworkMode:               hostNetworkMode,
+		EBPFObservability:             o.config.EBPFObservability,
 	}
 
 	wireguardConfig := &config.WireGuardConfig{
@@ -767,6 +769,14 @@ func run(o *Options) error {
 		go podUpdateChannel.Run(stopCh)
 		go cniServer.Run(stopCh)
 		go nodeRouteController.Run(stopCh)
+		if features.DefaultFeatureGate.Enabled(features.EBPFObservability) {
+			collector := ebpfobservability.NewCollector(ifaceStore, nodeConfig.Name)
+			go func() {
+				if err := collector.Run(ctx); err != nil {
+					klog.ErrorS(err, "eBPF observability collector stopped")
+				}
+			}()
+		}
 	} else {
 		go externalEntityUpdateChannel.Run(stopCh)
 		go localExternalNodeInformer.Run(stopCh)

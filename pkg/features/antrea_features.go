@@ -157,9 +157,18 @@ const (
 	LoadBalancerModeDSR featuregate.Feature = "LoadBalancerModeDSR"
 
 	// alpha: v1.13
-	// Enable the AdminNetworkPolicy APIs
+	// deprecated: v2.7
+	// The upstream v1alpha1 AdminNetworkPolicy and BaselineAdminNetworkPolicy APIs are deprecated.
+	// This feature gate will be removed in two releases from v2.7.
+	// Users should migrate to the v1alpha2 ClusterNetworkPolicy API.
 	// https://github.com/kubernetes-sigs/network-policy-api
 	AdminNetworkPolicy featuregate.Feature = "AdminNetworkPolicy"
+
+	// alpha: v2.7
+	// Enable the v1alpha2 ClusterNetworkPolicy API from the network-policy-api project.
+	// This is the successor to the deprecated v1alpha1 AdminNetworkPolicy and BaselineAdminNetworkPolicy APIs.
+	// https://github.com/kubernetes-sigs/network-policy-api
+	ClusterNetworkPolicy featuregate.Feature = "ClusterNetworkPolicy"
 
 	// alpha: v1.14
 	// Enable Egress traffic shaping.
@@ -177,6 +186,9 @@ const (
 	// alpha: v2.1
 	// Enable the NodeLatencyMonitor feature.
 	NodeLatencyMonitor featuregate.Feature = "NodeLatencyMonitor"
+
+	// EBPFObservability enables experimental host-side eBPF observability.
+	EBPFObservability featuregate.Feature = "EBPFObservability"
 
 	// alpha: v2.1
 	// Allow users to initiate BGP process on selected Kubernetes Nodes and advertise Service IPs, Pod IPs and Egress
@@ -229,11 +241,13 @@ var (
 		SupportBundleCollection:       {Default: false, PreRelease: featuregate.Alpha},
 		L7NetworkPolicy:               {Default: false, PreRelease: featuregate.Alpha},
 		LoadBalancerModeDSR:           {Default: false, PreRelease: featuregate.Alpha},
-		AdminNetworkPolicy:            {Default: false, PreRelease: featuregate.Alpha},
+		AdminNetworkPolicy:            {Default: false, PreRelease: featuregate.Deprecated},
+		ClusterNetworkPolicy:          {Default: false, PreRelease: featuregate.Alpha},
 		EgressTrafficShaping:          {Default: false, PreRelease: featuregate.Alpha},
 		EgressSeparateSubnet:          {Default: true, PreRelease: featuregate.Beta},
 		NodeNetworkPolicy:             {Default: false, PreRelease: featuregate.Alpha},
 		NodeLatencyMonitor:            {Default: false, PreRelease: featuregate.Alpha},
+		EBPFObservability:             {Default: false, PreRelease: featuregate.Alpha},
 	}
 
 	// AgentGates consists of all known feature gates for the Antrea Agent.
@@ -269,6 +283,7 @@ var (
 		EgressSeparateSubnet,
 		NodeNetworkPolicy,
 		NodeLatencyMonitor,
+		EBPFObservability,
 	)
 
 	// ControllerGates consists of all known feature gates for the Antrea Controller.
@@ -277,6 +292,7 @@ var (
 		AdminNetworkPolicy,
 		AntreaIPAM,
 		AntreaPolicy,
+		ClusterNetworkPolicy,
 		Egress,
 		IPsecCertAuth,
 		L7NetworkPolicy,
@@ -322,6 +338,7 @@ var (
 		NodeLatencyMonitor:          {},
 		PacketCapture:               {},
 		NFTablesHostNetworkMode:     {},
+		EBPFObservability:           {},
 	}
 	// supportedFeaturesOnExternalNode records the features supported on an external
 	// Node. Antrea Agent checks the enabled features if it is running on an

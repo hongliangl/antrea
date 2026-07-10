@@ -225,6 +225,9 @@ type AgentConfig struct {
 	// nftables support is limited to the following features:
 	//   - AntreaProxy (proxyAll)
 	HostNetworkMode string `yaml:"hostNetworkMode,omitempty"`
+	
+	// EBPFObservability determines whether to collect eBPF TCP observability data.
+	EBPFObservability bool `yaml:"EBPFObservability,omitempty"`
 }
 
 type AntreaProxyConfig struct {

@@ -50,6 +50,7 @@ import (
 	"antrea.io/antrea/v2/pkg/agent/types"
 	"antrea.io/antrea/v2/pkg/agent/util"
 	"antrea.io/antrea/v2/pkg/agent/wireguard"
+	"antrea.io/antrea/v2/pkg/agent/ebpfobservability"
 	"antrea.io/antrea/v2/pkg/apis/crd/v1alpha1"
 	"antrea.io/antrea/v2/pkg/client/clientset/versioned"
 	"antrea.io/antrea/v2/pkg/ovs/ovsconfig"
@@ -253,6 +254,15 @@ func (i *Initializer) setupOVSBridge() error {
 		if err != nil {
 			return err
 		}
+	if i.networkConfig.EBPFObservability {
+		klog.InfoS("EBPF observability requested for node config")
+		collector := ebpfobservability.NewCollector(i.ifaceStore, i.nodeConfig.Name)
+		go func() {
+			if err := collector.Run(context.TODO()); err != nil {
+				klog.ErrorS(err, "eBPF observability collector failed")
+			}
+		}()
+	}
 	}
 
 	return nil
