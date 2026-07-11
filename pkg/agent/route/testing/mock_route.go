@@ -1,4 +1,4 @@
-// Copyright 2025 Antrea Authors
+// Copyright YEAR Antrea Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -57,6 +57,34 @@ func NewMockInterface(ctrl *gomock.Controller) *MockInterface {
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockInterface) EXPECT() *MockInterfaceMockRecorder {
 	return m.recorder
+}
+
+// AddEgressDirectRoutingSNAT mocks base method.
+func (m *MockInterface) AddEgressDirectRoutingSNAT(mark uint32, isIPv6 bool) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AddEgressDirectRoutingSNAT", mark, isIPv6)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// AddEgressDirectRoutingSNAT indicates an expected call of AddEgressDirectRoutingSNAT.
+func (mr *MockInterfaceMockRecorder) AddEgressDirectRoutingSNAT(mark, isIPv6 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddEgressDirectRoutingSNAT", reflect.TypeOf((*MockInterface)(nil).AddEgressDirectRoutingSNAT), mark, isIPv6)
+}
+
+// AddEgressDirectRoutingSNATMember mocks base method.
+func (m *MockInterface) AddEgressDirectRoutingSNATMember(mark uint32, podIP net.IP) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AddEgressDirectRoutingSNATMember", mark, podIP)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// AddEgressDirectRoutingSNATMember indicates an expected call of AddEgressDirectRoutingSNATMember.
+func (mr *MockInterfaceMockRecorder) AddEgressDirectRoutingSNATMember(mark, podIP any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddEgressDirectRoutingSNATMember", reflect.TypeOf((*MockInterface)(nil).AddEgressDirectRoutingSNATMember), mark, podIP)
 }
 
 // AddEgressRoutes mocks base method.
@@ -211,6 +239,34 @@ func (m *MockInterface) ClearConntrackEntryForService(svcIP net.IP, svcPort uint
 func (mr *MockInterfaceMockRecorder) ClearConntrackEntryForService(svcIP, svcPort, endpointIP, protocol any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClearConntrackEntryForService", reflect.TypeOf((*MockInterface)(nil).ClearConntrackEntryForService), svcIP, svcPort, endpointIP, protocol)
+}
+
+// DeleteEgressDirectRoutingSNAT mocks base method.
+func (m *MockInterface) DeleteEgressDirectRoutingSNAT(mark uint32, isIPv6 bool) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteEgressDirectRoutingSNAT", mark, isIPv6)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteEgressDirectRoutingSNAT indicates an expected call of DeleteEgressDirectRoutingSNAT.
+func (mr *MockInterfaceMockRecorder) DeleteEgressDirectRoutingSNAT(mark, isIPv6 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteEgressDirectRoutingSNAT", reflect.TypeOf((*MockInterface)(nil).DeleteEgressDirectRoutingSNAT), mark, isIPv6)
+}
+
+// DeleteEgressDirectRoutingSNATMember mocks base method.
+func (m *MockInterface) DeleteEgressDirectRoutingSNATMember(mark uint32, podIP net.IP) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteEgressDirectRoutingSNATMember", mark, podIP)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteEgressDirectRoutingSNATMember indicates an expected call of DeleteEgressDirectRoutingSNATMember.
+func (mr *MockInterfaceMockRecorder) DeleteEgressDirectRoutingSNATMember(mark, podIP any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteEgressDirectRoutingSNATMember", reflect.TypeOf((*MockInterface)(nil).DeleteEgressDirectRoutingSNATMember), mark, podIP)
 }
 
 // DeleteEgressRoutes mocks base method.

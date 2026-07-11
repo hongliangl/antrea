@@ -2310,6 +2310,86 @@ func TestDeleteSNATRule(t *testing.T) {
 	}
 }
 
+func TestEgressDirectRoutingSNAT(t *testing.T) {
+	nodeConfig := &config.NodeConfig{
+		GatewayConfig: &config.GatewayConfig{
+			Name: "antrea-gw0",
+		},
+	}
+	markRule := func(setName string, mark uint32, podIPSet string) []string {
+		return []string{
+			"-m", "comment", "--comment", "Antrea: mark routed Egress traffic from member Pods for SNAT",
+			"!", "-i", "antrea-gw0",
+			"-m", "set", "--match-set", setName, "src",
+			"-m", "set", "!", "--match-set", podIPSet, "dst",
+			"-j", iptables.MarkTarget, "--set-xmark", fmt.Sprintf("%#08x/%#08x", mark, types.SNATIPMarkMask),
+		}
+	}
+	tests := []struct {
+		name          string
+		mark          uint32
+		isIPv6        bool
+		memberIP      net.IP
+		expectedCalls func(mockIPSet *ipsettest.MockInterfaceMockRecorder, mockIPTables *iptablestest.MockInterfaceMockRecorder)
+	}{
+		{
+			name:     "IPv4",
+			mark:     10,
+			isIPv6:   false,
+			memberIP: net.ParseIP("10.10.1.5"),
+			expectedCalls: func(mockIPSet *ipsettest.MockInterfaceMockRecorder, mockIPTables *iptablestest.MockInterfaceMockRecorder) {
+				gomock.InOrder(
+					mockIPSet.CreateIPSet("ANTREA-EG-DR-10", ipset.HashIP, false),
+					mockIPTables.InsertRule(iptables.ProtocolIPv4, iptables.MangleTable, antreaPreRoutingChain, markRule("ANTREA-EG-DR-10", 10, antreaPodIPSet)),
+					mockIPSet.AddEntry("ANTREA-EG-DR-10", "10.10.1.5"),
+					mockIPSet.DelEntry("ANTREA-EG-DR-10", "10.10.1.5"),
+					mockIPTables.DeleteRule(iptables.ProtocolIPv4, iptables.MangleTable, antreaPreRoutingChain, markRule("ANTREA-EG-DR-10", 10, antreaPodIPSet)),
+					mockIPSet.DestroyIPSet("ANTREA-EG-DR-10"),
+				)
+			},
+		},
+		{
+			name:     "IPv6",
+			mark:     11,
+			isIPv6:   true,
+			memberIP: net.ParseIP("2001:db8::5"),
+			expectedCalls: func(mockIPSet *ipsettest.MockInterfaceMockRecorder, mockIPTables *iptablestest.MockInterfaceMockRecorder) {
+				gomock.InOrder(
+					mockIPSet.CreateIPSet("ANTREA-EG-DR6-11", ipset.HashIP, true),
+					mockIPTables.InsertRule(iptables.ProtocolIPv6, iptables.MangleTable, antreaPreRoutingChain, markRule("ANTREA-EG-DR6-11", 11, antreaPodIP6Set)),
+					mockIPSet.AddEntry("ANTREA-EG-DR6-11", "2001:db8::5"),
+					mockIPSet.DelEntry("ANTREA-EG-DR6-11", "2001:db8::5"),
+					mockIPTables.DeleteRule(iptables.ProtocolIPv6, iptables.MangleTable, antreaPreRoutingChain, markRule("ANTREA-EG-DR6-11", 11, antreaPodIP6Set)),
+					mockIPSet.DestroyIPSet("ANTREA-EG-DR6-11"),
+				)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			mockIPSet := ipsettest.NewMockInterface(ctrl)
+			mockIPTables := iptablestest.NewMockInterface(ctrl)
+			c := &Client{
+				ipset:                      mockIPSet,
+				iptables:                   mockIPTables,
+				nodeConfig:                 nodeConfig,
+				egressDirectRoutingEnabled: true,
+			}
+			tt.expectedCalls(mockIPSet.EXPECT(), mockIPTables.EXPECT())
+			assert.NoError(t, c.AddEgressDirectRoutingSNAT(tt.mark, tt.isIPv6))
+			assert.NoError(t, c.AddEgressDirectRoutingSNATMember(tt.mark, tt.memberIP))
+			assert.NoError(t, c.DeleteEgressDirectRoutingSNATMember(tt.mark, tt.memberIP))
+			assert.NoError(t, c.DeleteEgressDirectRoutingSNAT(tt.mark, tt.isIPv6))
+			// Deleting a non-existent entry is a no-op.
+			assert.NoError(t, c.DeleteEgressDirectRoutingSNAT(tt.mark, tt.isIPv6))
+			assert.NoError(t, c.DeleteEgressDirectRoutingSNATMember(tt.mark, tt.memberIP))
+			// Adding a member without the ipset errors.
+			assert.Error(t, c.AddEgressDirectRoutingSNATMember(tt.mark, tt.memberIP))
+		})
+	}
+}
+
 func TestAddNodePortConfigs(t *testing.T) {
 	tests := []struct {
 		name              string

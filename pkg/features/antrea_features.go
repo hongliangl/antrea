@@ -170,6 +170,12 @@ const (
 	// Allow users to allocate Egress IPs from a different subnet from the default Node subnet.
 	EgressSeparateSubnet featuregate.Feature = "EgressSeparateSubnet"
 
+	// alpha: v2.5
+	// Support Egress in noEncap mode (and hybrid same-subnet) by steering Egress traffic to the
+	// Egress Node with policy routing instead of an overlay tunnel, avoiding encapsulation and the
+	// associated MTU reduction. Only applies when the Egress Node is reachable on-link.
+	EgressDirectRouting featuregate.Feature = "EgressDirectRouting"
+
 	// alpha: v1.15
 	// Allows users to apply ClusterNetworkPolicy to Kubernetes Nodes.
 	NodeNetworkPolicy featuregate.Feature = "NodeNetworkPolicy"
@@ -232,6 +238,7 @@ var (
 		AdminNetworkPolicy:            {Default: false, PreRelease: featuregate.Alpha},
 		EgressTrafficShaping:          {Default: false, PreRelease: featuregate.Alpha},
 		EgressSeparateSubnet:          {Default: true, PreRelease: featuregate.Beta},
+		EgressDirectRouting:           {Default: false, PreRelease: featuregate.Alpha},
 		NodeNetworkPolicy:             {Default: false, PreRelease: featuregate.Alpha},
 		NodeLatencyMonitor:            {Default: false, PreRelease: featuregate.Alpha},
 	}
@@ -267,6 +274,7 @@ var (
 		TrafficControl,
 		EgressTrafficShaping,
 		EgressSeparateSubnet,
+		EgressDirectRouting,
 		NodeNetworkPolicy,
 		NodeLatencyMonitor,
 	)
@@ -317,6 +325,7 @@ var (
 		CleanupStaleUDPSvcConntrack: {},
 		EgressTrafficShaping:        {},
 		EgressSeparateSubnet:        {},
+		EgressDirectRouting:         {},
 		NodeNetworkPolicy:           {},
 		FlowExporter:                {},
 		NodeLatencyMonitor:          {},

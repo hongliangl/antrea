@@ -205,6 +205,9 @@ func newFakeController(t *testing.T, initObjects []runtime.Object) *fakeControll
 		255,
 		true,
 		true,
+		false,
+		nil,
+		nil,
 		nil,
 		true,
 	)

@@ -90,6 +90,7 @@ func NewClient(networkConfig *config.NetworkConfig,
 	nodeLatencyMonitorEnabled bool,
 	multicastEnabled bool,
 	egressEnabled bool, // ignored
+	egressDirectRoutingEnabled bool, // ignored
 	nodeSNATRandomFully bool, // ignored
 	egressSNATRandomFully bool, // ignored
 	serviceCIDRProvider servicecidr.Interface,
@@ -635,6 +636,22 @@ func (c *Client) AddEgressRule(tableID uint32, mark uint32, isIPv6 bool) error {
 
 func (c *Client) DeleteEgressRule(tableID uint32, mark uint32, isIPv6 bool) error {
 	return errors.New("DeleteEgressRule is not implemented on Windows")
+}
+
+func (c *Client) AddEgressDirectRoutingSNAT(mark uint32, isIPv6 bool) error {
+	return errors.New("AddEgressDirectRoutingSNAT is not implemented on Windows")
+}
+
+func (c *Client) DeleteEgressDirectRoutingSNAT(mark uint32, isIPv6 bool) error {
+	return errors.New("DeleteEgressDirectRoutingSNAT is not implemented on Windows")
+}
+
+func (c *Client) AddEgressDirectRoutingSNATMember(mark uint32, podIP net.IP) error {
+	return errors.New("AddEgressDirectRoutingSNATMember is not implemented on Windows")
+}
+
+func (c *Client) DeleteEgressDirectRoutingSNATMember(mark uint32, podIP net.IP) error {
+	return errors.New("DeleteEgressDirectRoutingSNATMember is not implemented on Windows")
 }
 
 func (c *Client) AddOrUpdateNodeNetworkPolicyIPSet(ipsetName string, ipsetEntries sets.Set[string], isIPv6 bool) error {

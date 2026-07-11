@@ -36,6 +36,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 
 	"antrea.io/antrea/v2/pkg/apis/controlplane"
 	"antrea.io/antrea/v2/pkg/apis/crd/v1beta1"
@@ -45,6 +46,7 @@ import (
 	"antrea.io/antrea/v2/pkg/controller/egress/store"
 	"antrea.io/antrea/v2/pkg/controller/externalippool"
 	"antrea.io/antrea/v2/pkg/controller/grouping"
+	"antrea.io/antrea/v2/pkg/features"
 	"antrea.io/antrea/v2/pkg/util/k8s"
 )
 
@@ -403,6 +405,68 @@ func TestAddEgress(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAddEgressWithDirectRouting verifies that with EgressDirectRouting enabled, the EgressGroup span includes the
+// Egress Node (so it receives the member list to build its ipset) and the members carry the Pod IPs.
+func TestAddEgressWithDirectRouting(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, features.DefaultFeatureGate, features.EgressDirectRouting, true)
+	egressNode := "egress-node"
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	controller := newController([]runtime.Object{nsDefault, podFoo1}, []runtime.Object{eipFoo1})
+	controller.informerFactory.Start(stopCh)
+	controller.crdInformerFactory.Start(stopCh)
+	controller.informerFactory.WaitForCacheSync(stopCh)
+	controller.crdInformerFactory.WaitForCacheSync(stopCh)
+	go controller.externalIPAllocator.Run(stopCh)
+	require.True(t, cache.WaitForCacheSync(stopCh, controller.externalIPAllocator.HasSynced))
+	go controller.groupingInterface.Run(stopCh)
+	go controller.groupingController.Run(stopCh)
+	go controller.Run(stopCh)
+
+	egress := &v1beta1.Egress{
+		ObjectMeta: metav1.ObjectMeta{Name: "egressA", UID: "uidA"},
+		Spec: v1beta1.EgressSpec{
+			AppliedTo: v1beta1.AppliedTo{
+				PodSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "foo"},
+				},
+			},
+			EgressIP: "1.1.1.100",
+		},
+		Status: v1beta1.EgressStatus{
+			EgressNode: egressNode,
+		},
+	}
+	controller.crdClient.CrdV1beta1().Egresses().Create(context.TODO(), egress, metav1.CreateOptions{})
+
+	// The group must be visible to the Egress Node (span) even though no member Pod runs there.
+	watcher, err := controller.egressGroupStore.Watch(context.TODO(), "", nil, fields.ParseSelectorOrDie(fmt.Sprintf("nodeName=%s", egressNode)))
+	require.NoError(t, err)
+	var gotGroup *controlplane.EgressGroup
+	func() {
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-time.After(2 * time.Second):
+				return
+			case event := <-watcher.ResultChan():
+				if event.Type == watch.Added {
+					gotGroup = event.Object.(*controlplane.EgressGroup)
+					return
+				}
+			}
+		}
+	}()
+	require.NotNil(t, gotGroup, "EgressGroup not delivered to the Egress Node's span")
+	require.Len(t, gotGroup.GroupMembers, 1)
+	member := gotGroup.GroupMembers[0]
+	assert.Equal(t, "podFoo1", member.Pod.Name)
+	// Member Pod IPs must be populated so the Egress Node can build its ipset.
+	require.Len(t, member.IPs, 1)
+	assert.Equal(t, "1.1.1.1", net.IP(member.IPs[0]).String())
 }
 
 func TestUpdateEgress(t *testing.T) {

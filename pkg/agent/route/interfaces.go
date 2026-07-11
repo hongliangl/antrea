@@ -77,6 +77,21 @@ type Interface interface {
 	// DeleteEgressRule deletes the IP rule installed by AddEgressRule.
 	DeleteEgressRule(tableID uint32, mark uint32, isIPv6 bool) error
 
+	// AddEgressDirectRoutingSNAT sets up SNAT of routed Egress traffic on the Egress Node for the Egress IP with the
+	// given SNAT mark (EgressDirectRouting): it creates the member Pod IP ipset and the mangle rule that marks
+	// matching traffic so the existing mark-based SNAT rule applies. Members are added with
+	// AddEgressDirectRoutingSNATMember.
+	AddEgressDirectRoutingSNAT(mark uint32, isIPv6 bool) error
+
+	// DeleteEgressDirectRoutingSNAT reverts AddEgressDirectRoutingSNAT.
+	DeleteEgressDirectRoutingSNAT(mark uint32, isIPv6 bool) error
+
+	// AddEgressDirectRoutingSNATMember adds a member Pod IP to the ipset of the Egress IP with the given SNAT mark.
+	AddEgressDirectRoutingSNATMember(mark uint32, podIP net.IP) error
+
+	// DeleteEgressDirectRoutingSNATMember removes a member Pod IP from the ipset of the Egress IP with the given mark.
+	DeleteEgressDirectRoutingSNATMember(mark uint32, podIP net.IP) error
+
 	// AddNodePortConfigs adds routing configurations for redirecting traffic to OVS when a NodePort Service is created.
 	AddNodePortConfigs(nodePortAddresses []net.IP, port uint16, protocol binding.Protocol) error
 

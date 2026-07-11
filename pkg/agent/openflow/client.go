@@ -174,6 +174,12 @@ type Client interface {
 	// IP in a single address family (IPv4 or IPv6).
 	InstallPodSNATFlows(ofPort uint32, snatIP net.IP, snatMark uint32) error
 
+	// InstallPodSteerSNATFlows installs the EgressDirectRouting flows for a local Pod whose Egress IP is on a
+	// remote, directly-routable Node: the installed flow marks the Pod's egress packets with the given
+	// source-Node-local steer mark and sends them to the gateway, where host policy routing steers them to the
+	// Egress Node (no tunnel). Removed with UninstallPodSNATFlows.
+	InstallPodSteerSNATFlows(ofPort uint32, snatIP net.IP, steerMark uint32) error
+
 	// UninstallPodSNATFlows removes the SNAT flows for the local Pod.
 	UninstallPodSNATFlows(ofPort uint32) error
 
@@ -1088,6 +1094,14 @@ func (c *client) UninstallSNATMarkFlows(mark uint32) error {
 
 func (c *client) InstallPodSNATFlows(ofPort uint32, snatIP net.IP, snatMark uint32) error {
 	flows := []binding.Flow{c.featureEgress.snatRuleFlow(ofPort, snatIP, snatMark, c.nodeConfig.GatewayConfig.MAC)}
+	cacheKey := fmt.Sprintf("p%x", ofPort)
+	c.replayMutex.RLock()
+	defer c.replayMutex.RUnlock()
+	return c.addFlows(c.featureEgress.cachedFlows, cacheKey, flows)
+}
+
+func (c *client) InstallPodSteerSNATFlows(ofPort uint32, snatIP net.IP, steerMark uint32) error {
+	flows := []binding.Flow{c.featureEgress.snatSteerRuleFlow(ofPort, snatIP, steerMark)}
 	cacheKey := fmt.Sprintf("p%x", ofPort)
 	c.replayMutex.RLock()
 	defer c.replayMutex.RUnlock()

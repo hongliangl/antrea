@@ -59,6 +59,7 @@ edit the Agent configuration in the
 | `AdminNetworkPolicy`            | Controller         | `false` | Alpha      | v1.13         | N/A          | N/A        | Yes                |                                                        |
 | `EgressTrafficShaping`          | Agent              | `false` | Alpha      | v1.14         | N/A          | N/A        | Yes                | OVS meters should be supported                         |
 | `EgressSeparateSubnet`          | Agent              | `true`  | Beta       | v1.15         | v2.3         | N/A        | No                 |                                                        |
+| `EgressDirectRouting`           | Agent, Controller  | `false` | Alpha      | v2.5          | N/A          | N/A        | Yes                | Linux only; Egress Node must be in the Node subnet     |
 | `NodeNetworkPolicy`             | Agent              | `false` | Alpha      | v1.15         | N/A          | N/A        | Yes                |                                                        |
 | `BGPPolicy`                     | Agent              | `false` | Alpha      | v2.1          | N/A          | N/A        | No                 |                                                        |
 | `NodeLatencyMonitor`            | Agent              | `false` | Alpha      | v2.1          | N/A          | N/A        | No                 |                                                        |
@@ -455,6 +456,14 @@ to be supported in the datapath.
 
 `EgressSeparateSubnet` allows users to allocate Egress IPs from a different subnet from the default Node subnet.
 Refer to this [document](egress.md#subnetinfo) for more information.
+
+### EgressDirectRouting
+
+`EgressDirectRouting` supports Egress in "noEncap" mode, and avoids unnecessary encapsulation of Egress traffic in
+"hybrid" mode, when the Egress Node is in the same subnet as the source Node: the source Node steers a member Pod's
+Egress traffic to the Egress Node with policy routing instead of a tunnel, and the Egress Node performs SNAT by
+matching the member Pod IPs. No tunnel interface is created in "noEncap" mode, so Pod MTU is not reduced.
+Refer to this [document](egress.md#limitations) for more information.
 
 ### BGPPolicy
 

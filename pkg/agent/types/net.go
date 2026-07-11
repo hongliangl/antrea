@@ -45,4 +45,11 @@ const (
 
 	// ReplyEgressRouteTable is the route table ID which is used to add policy routing rules in hybrid mode.
 	ReplyEgressRouteTable = 141
+
+	// MinEgressSteerRouteTable to MaxEgressSteerRouteTable are the route table IDs used on a source Node to steer
+	// Egress traffic to a remote Egress Node via policy routing (EgressDirectRouting, noEncap/hybrid same-subnet).
+	// Each remote Egress IP uses one table whose default route points at the Egress Node. Must not overlap with the
+	// request (101-120) or reply (141) tables.
+	MinEgressSteerRouteTable = 121
+	MaxEgressSteerRouteTable = 140
 )
