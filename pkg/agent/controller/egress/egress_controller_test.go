@@ -39,6 +39,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/util/workqueue"
 
+	agentconfig "antrea.io/antrea/v2/pkg/agent/config"
 	"antrea.io/antrea/v2/pkg/agent/interfacestore"
 	"antrea.io/antrea/v2/pkg/agent/ipassigner"
 	"antrea.io/antrea/v2/pkg/agent/ipassigner/linkmonitor"
@@ -205,6 +206,9 @@ func newFakeController(t *testing.T, initObjects []runtime.Object) *fakeControll
 		255,
 		true,
 		true,
+		false,
+		nil,
+		nil,
 		nil,
 		true,
 	)
@@ -2029,4 +2033,100 @@ func TestEgressControllerReplaceEgressIPs(t *testing.T) {
 		"1.2.3.4":          nil,
 	})
 	c.replaceEgressIPs()
+}
+
+func TestEgressDirectRoutingSteerToNode(t *testing.T) {
+	newNode := func(name, transportAddrs string) *v1.Node {
+		node := &v1.Node{ObjectMeta: metav1.ObjectMeta{Name: name}}
+		if transportAddrs != "" {
+			node.Annotations = map[string]string{types.NodeTransportAddressAnnotationKey: transportAddrs}
+		}
+		return node
+	}
+	_, localSubnet, _ := net.ParseCIDR("10.10.20.11/24")
+	localSubnet.IP = net.ParseIP("10.10.20.11")
+	nodeConfig := &agentconfig.NodeConfig{NodeTransportIPv4Addr: localSubnet}
+
+	tests := []struct {
+		name           string
+		encapMode      agentconfig.TrafficEncapModeType
+		encryptionMode agentconfig.TrafficEncryptionModeType
+		egressNode     *v1.Node
+		expectedIP     string
+		expectedSteer  bool
+	}{
+		{
+			name:      "noEncap, same subnet, WireGuard encryption",
+			encapMode: agentconfig.TrafficEncapModeNoEncap,
+			// Steered traffic would bypass the encrypted path, so it must not steer.
+			encryptionMode: agentconfig.TrafficEncryptionModeWireGuard,
+			egressNode:     newNode("remote-node", "10.10.20.24"),
+			expectedSteer:  false,
+		},
+		{
+			name:          "noEncap, same subnet",
+			encapMode:     agentconfig.TrafficEncapModeNoEncap,
+			egressNode:    newNode("remote-node", "10.10.20.24"),
+			expectedIP:    "10.10.20.24",
+			expectedSteer: true,
+		},
+		{
+			name:      "noEncap, different subnet",
+			encapMode: agentconfig.TrafficEncapModeNoEncap,
+			// NeedsTunnelToPeer is false for any peer in noEncap mode, but the Node is not L2-reachable:
+			// an on-link steer route would have an unreachable next hop, so it must not steer.
+			egressNode:    newNode("remote-node", "10.10.30.24"),
+			expectedSteer: false,
+		},
+		{
+			name:          "hybrid, same subnet",
+			encapMode:     agentconfig.TrafficEncapModeHybrid,
+			egressNode:    newNode("remote-node", "10.10.20.24"),
+			expectedIP:    "10.10.20.24",
+			expectedSteer: true,
+		},
+		{
+			name:          "hybrid, different subnet",
+			encapMode:     agentconfig.TrafficEncapModeHybrid,
+			egressNode:    newNode("remote-node", "10.10.30.24"),
+			expectedSteer: false,
+		},
+		{
+			name:          "encap, same subnet",
+			encapMode:     agentconfig.TrafficEncapModeEncap,
+			egressNode:    newNode("remote-node", "10.10.20.24"),
+			expectedSteer: false,
+		},
+		{
+			name:          "no transport address annotation",
+			encapMode:     agentconfig.TrafficEncapModeNoEncap,
+			egressNode:    newNode("remote-node", ""),
+			expectedSteer: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			k8sClient := fake.NewSimpleClientset(tt.egressNode)
+			informerFactory := informers.NewSharedInformerFactory(k8sClient, 0)
+			nodeInformer := informerFactory.Core().V1().Nodes()
+			require.NoError(t, nodeInformer.Informer().GetIndexer().Add(tt.egressNode))
+			c := &EgressController{
+				nodeName:             fakeNode,
+				directRoutingEnabled: true,
+				networkConfig:        &agentconfig.NetworkConfig{TrafficEncapMode: tt.encapMode, TrafficEncryptionMode: tt.encryptionMode},
+				nodeConfig:           nodeConfig,
+				nodeLister:           nodeInformer.Lister(),
+			}
+
+			transportIP, steer := c.egressDirectRoutingSteerToNode(tt.egressNode.Name, false)
+			assert.Equal(t, tt.expectedSteer, steer)
+			if tt.expectedSteer {
+				assert.Equal(t, tt.expectedIP, transportIP.String())
+			}
+
+			// Never steer to this Node itself, regardless of mode.
+			_, steer = c.egressDirectRoutingSteerToNode(fakeNode, false)
+			assert.False(t, steer)
+		})
+	}
 }

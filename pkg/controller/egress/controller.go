@@ -44,6 +44,7 @@ import (
 	"antrea.io/antrea/v2/pkg/controller/externalippool"
 	"antrea.io/antrea/v2/pkg/controller/grouping"
 	antreatypes "antrea.io/antrea/v2/pkg/controller/types"
+	"antrea.io/antrea/v2/pkg/features"
 	"antrea.io/antrea/v2/pkg/util/k8s"
 )
 
@@ -382,6 +383,11 @@ func (c *EgressController) syncEgress(key string) error {
 		return nil
 	}
 
+	// With EgressDirectRouting, the Egress Node needs the member Pod IPs to build the ipset that selects
+	// which routed traffic to SNAT, and it must be in the EgressGroup span to receive them. Member Pod IPs
+	// are only populated, and the Egress Node only added to the span, when the feature is enabled, so the
+	// default behavior is unchanged.
+	directRoutingEnabled := features.DefaultFeatureGate.Enabled(features.EgressDirectRouting)
 	nodeNames := sets.Set[string]{}
 	podNum := 0
 	memberSetByNode := make(map[string]controlplane.GroupMemberSet)
@@ -405,9 +411,36 @@ func (c *EgressController) syncEgress(key string) error {
 				Namespace: pod.Namespace,
 			},
 		}
+		if directRoutingEnabled {
+			for _, podIP := range pod.Status.PodIPs {
+				if ip := net.ParseIP(podIP.IP); ip != nil {
+					groupMember.IPs = append(groupMember.IPs, controlplane.IPAddress(ip))
+				}
+			}
+		}
 		podSet.Insert(groupMember)
 		// Update the NodeNames in order to set the SpanMeta for EgressGroup.
 		nodeNames.Insert(pod.Spec.NodeName)
+	}
+	// Add the Node currently hosting the Egress IP to the span so it receives the member Pod IPs and can
+	// program the ipset before it starts forwarding routed Egress traffic. The store trims GroupMembers per
+	// Node (GroupMemberByNode), so ALL members are also placed under the Egress Node's key — it needs the
+	// full member list, not just its local Pods.
+	if directRoutingEnabled && egress.Status.EgressNode != "" {
+		egressNodeSet := memberSetByNode[egress.Status.EgressNode]
+		if egressNodeSet == nil {
+			egressNodeSet = controlplane.GroupMemberSet{}
+			memberSetByNode[egress.Status.EgressNode] = egressNodeSet
+		}
+		for node, podSet := range memberSetByNode {
+			if node == egress.Status.EgressNode {
+				continue
+			}
+			for _, member := range podSet {
+				egressNodeSet.Insert(member)
+			}
+		}
+		nodeNames.Insert(egress.Status.EgressNode)
 	}
 	updatedEgressGroup := &antreatypes.EgressGroup{
 		UID:               egressGroup.UID,

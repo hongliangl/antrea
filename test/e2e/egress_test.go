@@ -61,8 +61,11 @@ func TestEgress(t *testing.T) {
 		t.Fatalf("Error when setting up test: %v", err)
 	}
 	defer teardownTest(t, data)
-	// Egress works for encap and hybrid modes.
-	skipIfEncapModeIs(t, data, config.TrafficEncapModeNoEncap)
+	// Egress works for encap and hybrid modes. With EgressDirectRouting enabled, it also works in noEncap
+	// mode when the Egress Node is in the same subnet as the source Node, which is the case in test clusters.
+	if featureGate, err := GetAgentFeatures(); err != nil || !featureGate.Enabled(features.EgressDirectRouting) {
+		skipIfEncapModeIs(t, data, config.TrafficEncapModeNoEncap)
+	}
 	skipIfEncapModeIs(t, data, config.TrafficEncapModeNetworkPolicyOnly)
 
 	t.Run("testEgressClientIP", func(t *testing.T) { testEgressClientIP(t, data) })
@@ -805,6 +808,8 @@ func testEgressUpdateBandwidth(t *testing.T, data *TestData) {
 	skipIfEgressShapingDisabled(t)
 	skipIfNotIPv4Cluster(t)
 	skipIfHasWindowsNodes(t)
+	// Egress traffic shaping does not apply to traffic taking the direct-routing path (noEncap).
+	skipIfEncapModeIs(t, data, config.TrafficEncapModeNoEncap)
 	bandwidth := &v1beta1.Bandwidth{
 		Rate:  "100M",
 		Burst: "200M",

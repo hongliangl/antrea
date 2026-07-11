@@ -532,6 +532,25 @@ This feature is currently only supported for Nodes running Linux and "encap" / "
 mode. The support for Windows and other traffic modes will be added in the
 future.
 
+With the `EgressDirectRouting` feature gate enabled (Alpha, default off), Egress is
+additionally supported in "noEncap" mode when the Egress Node is in the same subnet as
+the source Node: the source Node steers a member Pod's Egress traffic to the Egress Node
+with policy routing instead of a tunnel, and the Egress Node performs SNAT by matching
+the member Pod IPs. No tunnel interface is created, so Pod MTU is not reduced. The same
+mechanism applies to "hybrid" mode when the Egress Node is in the same subnet, avoiding
+unnecessary encapsulation; a cross-subnet Egress Node keeps using the tunnel in "hybrid"
+mode and remains unsupported in "noEncap" mode. Egress bandwidth enforcement
+(`EgressTrafficShaping`) does not apply to traffic taking the direct-routing path.
+
+"Same subnet" is evaluated against the Nodes' transport addresses: the Egress Node's
+transport IP must be within the source Node's transport interface subnet, and the two
+Nodes must be L2-reachable on that subnet (the steer route uses the Egress Node as an
+on-link next hop). When a dedicated transport network is used (`transportInterface` in
+the agent configuration), it is the subnet of that interface that matters. Direct
+routing is disabled when Node-to-Node traffic encryption (WireGuard or IPsec) is
+enabled, as steered traffic would bypass the encrypted path; the tunnel path is used
+instead.
+
 The previous implementation of Antrea Egress before Antrea v1.7.0 does not work
 with the `strictARP` configuration of `kube-proxy` IPVS mode. The `strictARP`
 configuration is required by some Service load balancing solutions including:

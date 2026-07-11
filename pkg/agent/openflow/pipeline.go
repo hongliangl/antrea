@@ -2286,6 +2286,24 @@ func (f *featureEgress) snatRuleFlow(ofPort uint32, snatIP net.IP, snatMark uint
 		Done()
 }
 
+// snatSteerRuleFlow generates the flow for EgressDirectRouting: when the Egress IP is on a remote Node that is
+// directly routable (noEncap, or hybrid same-subnet), the Pod's Egress traffic is marked with a source-Node-local
+// steer mark and sent to the gateway (host stack), where policy routing steers it to the Egress Node. Unlike the
+// tunnel branch, it does not set the tunnel destination. Egress traffic shaping (an OVS meter) does not apply on
+// this path, so it goes straight to the switching stage.
+func (f *featureEgress) snatSteerRuleFlow(ofPort uint32, snatIP net.IP, steerMark uint32) binding.Flow {
+	ipProtocol := getIPProtocol(snatIP)
+	return EgressMarkTable.ofTable.BuildFlow(priorityNormal).
+		Cookie(f.cookieAllocator.Request(f.category).Raw()).
+		MatchProtocol(ipProtocol).
+		MatchCTStateTrk(true).
+		MatchInPort(ofPort).
+		Action().LoadPktMarkRange(steerMark, snatPktMarkRange).
+		Action().LoadRegMark(ToGatewayRegMark).
+		Action().GotoStage(stageSwitching).
+		Done()
+}
+
 func (f *featureEgress) egressQoSFlow(mark uint32) binding.Flow {
 	return EgressQoSTable.ofTable.BuildFlow(priorityNormal).
 		Cookie(f.cookieAllocator.Request(f.category).Raw()).

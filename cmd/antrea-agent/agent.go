@@ -264,6 +264,7 @@ func run(o *Options) error {
 		nodeLatencyMonitorEnabled,
 		multicastEnabled,
 		o.enableEgress,
+		o.enableEgress && features.DefaultFeatureGate.Enabled(features.EgressDirectRouting),
 		o.config.SNATFullyRandomPorts,
 		*o.config.Egress.SNATFullyRandomPorts,
 		serviceCIDRProvider,
@@ -589,6 +590,9 @@ func run(o *Options) error {
 			memberlistCluster, egressInformer, externalIPPoolInformer, nodeInformer, podUpdateChannel, serviceCIDRProvider, o.config.Egress.MaxEgressIPsPerNode,
 			features.DefaultFeatureGate.Enabled(features.EgressTrafficShaping),
 			features.DefaultFeatureGate.Enabled(features.EgressSeparateSubnet),
+			features.DefaultFeatureGate.Enabled(features.EgressDirectRouting),
+			networkConfig,
+			nodeConfig,
 			linkMonitor,
 			*o.config.Egress.UniqueMACForSubInterfaces,
 		)

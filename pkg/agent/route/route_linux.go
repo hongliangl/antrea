@@ -233,6 +233,12 @@ type Client struct {
 	egressRules sync.Map
 	// egressNeighbors caches neighbors installed for Egress.
 	egressNeighbors sync.Map
+	// egressDirectRoutingEnabled indicates the EgressDirectRouting feature is enabled. When set, the source-Node
+	// masquerade bypass and the Egress-Node member ipset marking rules are programmed.
+	egressDirectRoutingEnabled bool
+	// egressDirectRoutingIPSets caches the member Pod IP ipsets used on the Egress Node to select which routed
+	// Egress traffic to mark for SNAT. Keyed by the Egress IP's SNAT mark (uint32) -> *egressDirectRoutingIPSet.
+	egressDirectRoutingIPSets sync.Map
 	// The latest calculated Service CIDRs can be got from serviceCIDRProvider.
 	serviceCIDRProvider servicecidr.Interface
 	// nodeNetworkPolicyIPSetsIPv4 caches all existing IPv4 ipsets for NodeNetworkPolicy.
@@ -265,6 +271,7 @@ func NewClient(networkConfig *config.NetworkConfig,
 	nodeLatencyMonitorEnabled bool,
 	multicastEnabled bool,
 	egressEnabled bool,
+	egressDirectRoutingEnabled bool,
 	nodeSNATRandomFully bool,
 	egressSNATRandomFully bool,
 	serviceCIDRProvider servicecidr.Interface,
@@ -281,6 +288,7 @@ func NewClient(networkConfig *config.NetworkConfig,
 		nodeNetworkPolicyEnabled:    nodeNetworkPolicyEnabled,
 		nodeLatencyMonitorEnabled:   nodeLatencyMonitorEnabled,
 		egressEnabled:               egressEnabled,
+		egressDirectRoutingEnabled:  egressDirectRoutingEnabled,
 		ipset:                       ipset.NewClient(),
 		netlink:                     &netlink.Handle{},
 		isCloudEKS:                  env.IsCloudEKS(),
@@ -793,6 +801,29 @@ func (c *Client) syncIPSet() error {
 		})
 	}
 
+	// Recreate the EgressDirectRouting member Pod IP ipsets and their entries so they survive restart.
+	if c.egressDirectRoutingEnabled {
+		var setErr error
+		c.egressDirectRoutingIPSets.Range(func(_, v any) bool {
+			set := v.(*egressDirectRoutingIPSet)
+			if err := c.ipset.CreateIPSet(set.name, ipset.HashIP, set.isIPv6); err != nil {
+				setErr = err
+				return false
+			}
+			set.members.Range(func(m, _ any) bool {
+				if err := c.ipset.AddEntry(set.name, m.(string)); err != nil {
+					setErr = err
+					return false
+				}
+				return true
+			})
+			return setErr == nil
+		})
+		if setErr != nil {
+			return setErr
+		}
+	}
+
 	return nil
 }
 
@@ -1300,6 +1331,33 @@ func (c *Client) restoreIptablesData(podCIDR *net.IPNet,
 		}...)
 	}
 
+	// EgressDirectRouting: on the Egress Node, mark routed Egress traffic from member Pods (entering via the
+	// transport interface, matched by the per-Egress-IP ipset) with the Egress IP's SNAT mark, so the existing
+	// mark-based SNAT rule rewrites the source to the Egress IP. This is scoped to "! -i gateway", so it never
+	// overlaps the "-i gateway" reply-connmark rules above.
+	if c.egressDirectRoutingEnabled {
+		podIPSetForFamily := antreaPodIPSet
+		if isIPv6 {
+			podIPSetForFamily = antreaPodIP6Set
+		}
+		c.egressDirectRoutingIPSets.Range(func(k, v any) bool {
+			set := v.(*egressDirectRoutingIPSet)
+			if set.isIPv6 != isIPv6 {
+				return true
+			}
+			// Cannot reuse egressDirectRoutingMarkRuleSpec as iptables-restore requires the comment to be quoted.
+			writeLine(iptablesData, []string{
+				"-A", antreaPreRoutingChain,
+				"-m", "comment", "--comment", `"Antrea: mark routed Egress traffic from member Pods for SNAT"`,
+				"!", "-i", c.nodeConfig.GatewayConfig.Name,
+				"-m", "set", "--match-set", set.name, "src",
+				"-m", "set", "!", "--match-set", podIPSetForFamily, "dst",
+				"-j", iptables.MarkTarget, "--set-xmark", fmt.Sprintf("%#08x/%#08x", k.(uint32), types.SNATIPMarkMask),
+			}...)
+			return true
+		})
+	}
+
 	// To make liveness/readiness probe traffic bypass ingress rules of Network Policies, mark locally generated packets
 	// that will be sent to OVS so we can identify them later in the OVS pipeline.
 	// It must match source address because kube-proxy ipvs mode will redirect ingress packets to output chain, and they
@@ -1433,6 +1491,20 @@ func (c *Client) restoreIptablesData(podCIDR *net.IPNet,
 			rule = append(rule, "--random-fully")
 		}
 		writeLine(iptablesData, rule...)
+	}
+	// EgressDirectRouting: on the source Node, steered Egress traffic carries an Egress mark (0-7) but has no
+	// matching local SNAT rule (the Egress IP lives on another Node), so it reaches here. Bypass the Node
+	// masquerade for it; otherwise its source would be rewritten to the Node IP and the Egress Node's ipset
+	// could not match the Pod source. Placed after the local SNAT rules (which terminate for local Egress IPs)
+	// and before the default masquerade.
+	if c.egressDirectRoutingEnabled {
+		writeLine(iptablesData, []string{
+			"-A", antreaPostRoutingChain,
+			"-m", "comment", "--comment", `"Antrea: bypass masquerade for steered Egress traffic"`,
+			"!", "-o", c.nodeConfig.GatewayConfig.Name,
+			"-m", "mark", "!", "--mark", fmt.Sprintf("%#08x/%#08x", 0, types.SNATIPMarkMask),
+			"-j", iptables.ReturnTarget,
+		}...)
 	}
 	if !c.noSNAT {
 		rule := []string{
@@ -2353,6 +2425,101 @@ func (c *Client) DeleteEgressRule(tableID uint32, mark uint32, isIPv6 bool) erro
 		}
 	}
 	c.egressRules.Delete(generateRuleKey(rule))
+	return nil
+}
+
+// egressDirectRoutingIPSet tracks the member Pod IP ipset used on the Egress Node to select which routed
+// Egress traffic to mark for SNAT, for one Egress IP (identified by its SNAT mark).
+type egressDirectRoutingIPSet struct {
+	name    string
+	isIPv6  bool
+	members sync.Map // string(Pod IP) -> struct{}
+}
+
+func egressDirectRoutingIPSetName(mark uint32, isIPv6 bool) string {
+	if isIPv6 {
+		return fmt.Sprintf("ANTREA-EG-DR6-%d", mark)
+	}
+	return fmt.Sprintf("ANTREA-EG-DR-%d", mark)
+}
+
+// egressDirectRoutingMarkRuleSpec returns the mangle PREROUTING rule that marks routed Egress traffic from
+// member Pods (matched by the ipset) with the Egress IP's SNAT mark, so the existing mark-based SNAT rule
+// rewrites the source to the Egress IP. It excludes traffic entering via the Antrea gateway (local Pods, which
+// are marked by OVS) and traffic destined to a local Pod (co-located Pod-to-Pod).
+func (c *Client) egressDirectRoutingMarkRuleSpec(ipsetName string, mark uint32, isIPv6 bool) []string {
+	podIPSet := antreaPodIPSet
+	if isIPv6 {
+		podIPSet = antreaPodIP6Set
+	}
+	return []string{
+		"-m", "comment", "--comment", "Antrea: mark routed Egress traffic from member Pods for SNAT",
+		"!", "-i", c.nodeConfig.GatewayConfig.Name,
+		"-m", "set", "--match-set", ipsetName, "src",
+		"-m", "set", "!", "--match-set", podIPSet, "dst",
+		"-j", iptables.MarkTarget, "--set-xmark", fmt.Sprintf("%#08x/%#08x", mark, types.SNATIPMarkMask),
+	}
+}
+
+// AddEgressDirectRoutingSNAT sets up SNAT of routed Egress traffic on the Egress Node for the Egress IP with the
+// given SNAT mark: it creates the member Pod IP ipset and installs the mangle rule that marks matching traffic so
+// the existing mark-based SNAT rule applies. Members are added with AddEgressDirectRoutingSNATMember.
+func (c *Client) AddEgressDirectRoutingSNAT(mark uint32, isIPv6 bool) error {
+	protocol := iptables.ProtocolIPv4
+	if isIPv6 {
+		protocol = iptables.ProtocolIPv6
+	}
+	name := egressDirectRoutingIPSetName(mark, isIPv6)
+	if err := c.ipset.CreateIPSet(name, ipset.HashIP, isIPv6); err != nil {
+		return err
+	}
+	c.egressDirectRoutingIPSets.Store(mark, &egressDirectRoutingIPSet{name: name, isIPv6: isIPv6})
+	return c.iptables.InsertRule(protocol, iptables.MangleTable, antreaPreRoutingChain, c.egressDirectRoutingMarkRuleSpec(name, mark, isIPv6))
+}
+
+// DeleteEgressDirectRoutingSNAT reverts AddEgressDirectRoutingSNAT.
+func (c *Client) DeleteEgressDirectRoutingSNAT(mark uint32, isIPv6 bool) error {
+	value, ok := c.egressDirectRoutingIPSets.Load(mark)
+	if !ok {
+		return nil
+	}
+	set := value.(*egressDirectRoutingIPSet)
+	protocol := iptables.ProtocolIPv4
+	if set.isIPv6 {
+		protocol = iptables.ProtocolIPv6
+	}
+	if err := c.iptables.DeleteRule(protocol, iptables.MangleTable, antreaPreRoutingChain, c.egressDirectRoutingMarkRuleSpec(set.name, mark, set.isIPv6)); err != nil {
+		return err
+	}
+	c.egressDirectRoutingIPSets.Delete(mark)
+	return c.ipset.DestroyIPSet(set.name)
+}
+
+// AddEgressDirectRoutingSNATMember adds a member Pod IP to the ipset of the Egress IP with the given SNAT mark.
+func (c *Client) AddEgressDirectRoutingSNATMember(mark uint32, podIP net.IP) error {
+	value, ok := c.egressDirectRoutingIPSets.Load(mark)
+	if !ok {
+		return fmt.Errorf("no EgressDirectRouting ipset for mark %#x", mark)
+	}
+	set := value.(*egressDirectRoutingIPSet)
+	if err := c.ipset.AddEntry(set.name, podIP.String()); err != nil {
+		return err
+	}
+	set.members.Store(podIP.String(), struct{}{})
+	return nil
+}
+
+// DeleteEgressDirectRoutingSNATMember removes a member Pod IP from the ipset of the Egress IP with the given mark.
+func (c *Client) DeleteEgressDirectRoutingSNATMember(mark uint32, podIP net.IP) error {
+	value, ok := c.egressDirectRoutingIPSets.Load(mark)
+	if !ok {
+		return nil
+	}
+	set := value.(*egressDirectRoutingIPSet)
+	if err := c.ipset.DelEntry(set.name, podIP.String()); err != nil {
+		return err
+	}
+	set.members.Delete(podIP.String())
 	return nil
 }
 
