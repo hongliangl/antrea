@@ -26,6 +26,8 @@
 #define SEC(name) __attribute__((section(name), used))
 #define ETH_P_IP 0x0800
 #define BPF_F_PSEUDO_HDR (1ULL << 4)
+#define BPF_FIB_LOOKUP_DIRECT (1U << 0)
+#define BPF_FIB_LKUP_RET_SUCCESS 0
 
 // --- helpers (declared manually to avoid a libbpf/vmlinux dependency) ---
 static void *(*bpf_map_lookup_elem)(void *map, const void *key) = (void *)BPF_FUNC_map_lookup_elem;
@@ -33,6 +35,8 @@ static long (*bpf_map_update_elem)(void *map, const void *key, const void *value
 static long (*bpf_skb_store_bytes)(struct __sk_buff *skb, __u32 offset, const void *from, __u32 len, __u64 flags) = (void *)BPF_FUNC_skb_store_bytes;
 static long (*bpf_l3_csum_replace)(struct __sk_buff *skb, __u32 offset, __u64 from, __u64 to, __u64 size) = (void *)BPF_FUNC_l3_csum_replace;
 static long (*bpf_l4_csum_replace)(struct __sk_buff *skb, __u32 offset, __u64 from, __u64 to, __u64 flags) = (void *)BPF_FUNC_l4_csum_replace;
+static long (*bpf_redirect)(__u32 ifindex, __u64 flags) = (void *)BPF_FUNC_redirect;
+static long (*bpf_fib_lookup)(void *ctx, struct bpf_fib_lookup *params, int plen, __u32 flags) = (void *)BPF_FUNC_fib_lookup;
 
 // --- maps ---
 
@@ -83,7 +87,18 @@ struct {
 	struct nat_val *value;
 } nat_ct SEC(".maps");
 
-// stats: per-verdict counters. 0=snat, 1=unsnat, 2=passthrough.
+// pod_routes: LPM trie mapping a remote Pod CIDR to the next-hop (peer Node transport IP, network order).
+// This replaces the kernel route `podCIDR via peerNodeIP`; the kernel FIB is used only to resolve the L2
+// neighbor of the (on-link) next hop.
+struct {
+	int (*type)[BPF_MAP_TYPE_LPM_TRIE];
+	int (*max_entries)[1024];
+	int (*map_flags)[BPF_F_NO_PREALLOC];
+	struct pod_cidr_key *key;
+	__u32 *value;
+} pod_routes SEC(".maps");
+
+// stats: per-verdict counters.
 struct {
 	int (*type)[BPF_MAP_TYPE_ARRAY];
 	int (*max_entries)[8];
@@ -93,6 +108,8 @@ struct {
 #define STAT_SNAT 0
 #define STAT_UNSNAT 1
 #define STAT_PASS 2
+#define STAT_FWD 3
+#define STAT_FWD_MISS 4
 
 static __always_inline void count(__u32 slot)
 {
@@ -284,6 +301,52 @@ int hostdp_ingress(struct __sk_buff *skb)
 		bpf_l4_csum_replace(skb, l4off, node_ip, pod_ip, 4 | BPF_F_PSEUDO_HDR);
 	count(STAT_UNSNAT);
 	return TC_ACT_OK;
+}
+
+// hostdp_fwd forwards a local Pod's packet destined to a remote Pod directly to the peer Node, replacing the
+// kernel route `remotePodCIDR via peerNodeIP`. It runs on the gateway (Pod-facing) interface ingress, where
+// Pod traffic enters the host from OVS, so it redirects before the host routing decision.
+//
+// L3 next hop comes from pod_routes (our map, = the replaced route); the kernel FIB is consulted only via
+// bpf_fib_lookup to resolve the on-link next hop's L2 neighbor (the peer Node MAC) and output interface. Then
+// the Ethernet header is rewritten and the packet is redirected to that interface's egress. Pod-to-external
+// and Pod-to-local-Pod traffic is left to pass (external is masqueraded on the transport egress hook; local
+// delivery uses the retained local-Pod route via the gateway).
+SEC("tc")
+int hostdp_fwd(struct __sk_buff *skb)
+{
+	struct iphdr *ip;
+	void *l4;
+	if (parse_ipv4(skb, &ip, &l4) < 0)
+		return TC_ACT_OK;
+	__u32 saddr = ip->saddr, daddr = ip->daddr;
+
+	// Only forward local Pod -> remote Pod. dst must resolve in pod_routes (a remote Pod CIDR with a next hop).
+	if (!is_local_pod_ip(saddr))
+		return TC_ACT_OK;
+	struct pod_cidr_key rkey = {.prefixlen = 32};
+	__builtin_memcpy(rkey.addr, &daddr, 4);
+	__u32 *nh = bpf_map_lookup_elem(&pod_routes, &rkey);
+	if (!nh)
+		return TC_ACT_OK; // not a remote Pod: let the stack handle external / local delivery
+
+	struct bpf_fib_lookup fib = {};
+	fib.family = AF_INET;
+	fib.ipv4_src = saddr;
+	fib.ipv4_dst = *nh; // next-hop peer Node IP (on-link); resolve its neighbor + output interface
+	fib.ifindex = skb->ifindex;
+	long rc = bpf_fib_lookup(skb, &fib, sizeof(fib), BPF_FIB_LOOKUP_DIRECT);
+	if (rc != BPF_FIB_LKUP_RET_SUCCESS) {
+		// Neighbor unresolved or no route to the next hop: fall back to the stack so it can resolve/ARP.
+		count(STAT_FWD_MISS);
+		return TC_ACT_OK;
+	}
+
+	// Rewrite L2 (dst = peer Node MAC, src = our output-interface MAC) and redirect to the resolved egress.
+	bpf_skb_store_bytes(skb, 0, fib.dmac, 6, 0);
+	bpf_skb_store_bytes(skb, 6, fib.smac, 6, 0);
+	count(STAT_FWD);
+	return bpf_redirect(fib.ifindex, 0);
 }
 
 char LICENSE[] SEC("license") = "GPL";

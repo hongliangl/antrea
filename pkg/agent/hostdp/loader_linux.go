@@ -44,6 +44,8 @@ var statNames = map[uint32]string{
 	0: "snat",
 	1: "unsnat",
 	2: "passthrough",
+	3: "fwd",
+	4: "fwd_miss",
 }
 
 // podCIDRKey mirrors struct pod_cidr_key in hostdp.bpf.c. Addr holds the network-order IPv4 bytes; the LPM
@@ -57,6 +59,7 @@ type loader struct {
 	coll       *ebpf.Collection
 	links      []link.Link
 	podCIDRs   *ebpf.Map
+	podRoutes  *ebpf.Map
 	nodeConfig *ebpf.Map
 	stats      *ebpf.Map
 }
@@ -66,7 +69,7 @@ func NewLoader() Interface {
 	return &loader{}
 }
 
-func (l *loader) Load(transportIfIndex int) error {
+func (l *loader) Load(transportIfIndex, gatewayIfIndex int) error {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return fmt.Errorf("failed to remove memlock rlimit: %w", err)
 	}
@@ -80,21 +83,26 @@ func (l *loader) Load(transportIfIndex int) error {
 	}
 	l.coll = coll
 	l.podCIDRs = coll.Maps["pod_cidrs"]
+	l.podRoutes = coll.Maps["pod_routes"]
 	l.nodeConfig = coll.Maps["node_config"]
 	l.stats = coll.Maps["stats"]
-	if l.podCIDRs == nil || l.nodeConfig == nil || l.stats == nil {
+	if l.podCIDRs == nil || l.podRoutes == nil || l.nodeConfig == nil || l.stats == nil {
 		l.Close()
 		return fmt.Errorf("eBPF object is missing an expected map")
 	}
 
-	// Attach both directions with tcx (kernel >= 6.6). tcx links are ordered and don't clobber other tc
-	// programs on the interface, unlike the legacy clsact/netlink attach.
+	// Attach with tcx (kernel >= 6.6). tcx links are ordered and don't clobber other tc programs on the
+	// interface, unlike the legacy clsact/netlink attach. The masquerade programs live on the transport
+	// interface; the Pod-to-remote-Pod forwarding program lives on the gateway (Pod-facing) interface
+	// ingress, where Pod traffic enters the host from OVS before the routing decision.
 	for _, a := range []struct {
-		prog   string
-		attach ebpf.AttachType
+		prog    string
+		attach  ebpf.AttachType
+		ifIndex int
 	}{
-		{"hostdp_egress", ebpf.AttachTCXEgress},
-		{"hostdp_ingress", ebpf.AttachTCXIngress},
+		{"hostdp_egress", ebpf.AttachTCXEgress, transportIfIndex},
+		{"hostdp_ingress", ebpf.AttachTCXIngress, transportIfIndex},
+		{"hostdp_fwd", ebpf.AttachTCXIngress, gatewayIfIndex},
 	} {
 		prog := coll.Programs[a.prog]
 		if prog == nil {
@@ -102,7 +110,7 @@ func (l *loader) Load(transportIfIndex int) error {
 			return fmt.Errorf("eBPF object is missing program %s", a.prog)
 		}
 		lnk, err := link.AttachTCX(link.TCXOptions{
-			Interface: transportIfIndex,
+			Interface: a.ifIndex,
 			Program:   prog,
 			Attach:    a.attach,
 		})
@@ -112,7 +120,7 @@ func (l *loader) Load(transportIfIndex int) error {
 		}
 		l.links = append(l.links, lnk)
 	}
-	klog.InfoS("Loaded eBPF host datapath", "transportIfIndex", transportIfIndex)
+	klog.InfoS("Loaded eBPF host datapath", "transportIfIndex", transportIfIndex, "gatewayIfIndex", gatewayIfIndex)
 	return nil
 }
 
@@ -169,6 +177,30 @@ func (l *loader) DeletePodCIDR(podCIDR *net.IPNet) error {
 		return err
 	}
 	if err := l.podCIDRs.Delete(key); err != nil && !isKeyNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (l *loader) SetPodRoute(podCIDR *net.IPNet, nextHop net.IP) error {
+	key, err := podCIDRKeyOf(podCIDR)
+	if err != nil {
+		return err
+	}
+	v4 := nextHop.To4()
+	if v4 == nil {
+		return fmt.Errorf("next hop %s is not IPv4 (only IPv4 is supported for now)", nextHop)
+	}
+	addr := uint32(v4[0])<<24 | uint32(v4[1])<<16 | uint32(v4[2])<<8 | uint32(v4[3])
+	return l.podRoutes.Put(key, hostToNetU32(addr))
+}
+
+func (l *loader) DeletePodRoute(podCIDR *net.IPNet) error {
+	key, err := podCIDRKeyOf(podCIDR)
+	if err != nil {
+		return err
+	}
+	if err := l.podRoutes.Delete(key); err != nil && !isKeyNotExist(err) {
 		return err
 	}
 	return nil

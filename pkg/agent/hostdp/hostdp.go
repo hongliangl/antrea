@@ -23,9 +23,10 @@ import "net"
 // Interface is the control surface of the eBPF host datapath. Its methods are driven by the same events that
 // drive the traditional route client (Pod CIDR add/delete, Node config), so the eBPF maps stay in sync.
 type Interface interface {
-	// Load compiles-in the eBPF programs, attaches them to the transport interface (by index), and initializes
-	// the maps. It must be called once before the other methods.
-	Load(transportIfIndex int) error
+	// Load compiles-in the eBPF programs and initializes the maps. It attaches the masquerade programs to the
+	// transport interface and the Pod-to-remote-Pod forwarding program to the gateway (Pod-facing) interface
+	// ingress (both by index). It must be called once before the other methods.
+	Load(transportIfIndex, gatewayIfIndex int) error
 
 	// Close detaches the programs and releases all resources.
 	Close() error
@@ -42,6 +43,12 @@ type Interface interface {
 	// antreaPodIPSet), used to exclude Pod-to-Pod traffic from masquerade.
 	AddPodCIDR(podCIDR *net.IPNet) error
 	DeletePodCIDR(podCIDR *net.IPNet) error
+
+	// SetPodRoute / DeletePodRoute maintain the pod_routes LPM map of remote Pod CIDR -> peer Node next hop
+	// (the eBPF equivalent of the `remotePodCIDR via peerNodeIP` route), used to forward Pod-to-remote-Pod
+	// traffic in eBPF.
+	SetPodRoute(podCIDR *net.IPNet, nextHop net.IP) error
+	DeletePodRoute(podCIDR *net.IPNet) error
 
 	// Stats returns the per-verdict packet counters, keyed by a human-readable name.
 	Stats() (map[string]uint64, error)
