@@ -31,9 +31,15 @@ type Interface interface {
 	Close() error
 
 	// SetNodeConfig records this Node's transport IPv4 address and subnet prefix length in the node_config map.
+	// The transport IP is the address Pod-to-external traffic is masqueraded to.
 	SetNodeConfig(transportIP net.IP, subnetPrefixLen int) error
 
-	// AddPodCIDR / DeletePodCIDR maintain the pod_cidrs LPM map (the eBPF equivalent of antreaPodIPSet).
+	// SetLocalPodCIDR records this Node's local Pod CIDR, used to match the source of traffic to masquerade
+	// (the eBPF equivalent of the `-s <localPodCIDR>` match in the masquerade iptables rule).
+	SetLocalPodCIDR(podCIDR *net.IPNet) error
+
+	// AddPodCIDR / DeletePodCIDR maintain the pod_cidrs LPM map of all cluster Pod CIDRs (the eBPF equivalent of
+	// antreaPodIPSet), used to exclude Pod-to-Pod traffic from masquerade.
 	AddPodCIDR(podCIDR *net.IPNet) error
 	DeletePodCIDR(podCIDR *net.IPNet) error
 

@@ -31,17 +31,19 @@ import (
 //go:embed bpf/hostdp_bpfel.o
 var bpfObject []byte
 
-// node_config map indices.
+// node_config map indices, mirroring hostdp.bpf.c.
 const (
-	nodeConfigTransportIP  = 0
-	nodeConfigSubnetPrefix = 1
+	nodeConfigTransportIP    = 0
+	nodeConfigSubnetPrefix   = 1
+	nodeConfigLocalPodNet    = 2
+	nodeConfigLocalPodPrefix = 3
 )
 
 // stats map indices, mirroring the constants in hostdp.bpf.c.
 var statNames = map[uint32]string{
-	0: "podToPod",
-	1: "podToExternal",
-	2: "other",
+	0: "snat",
+	1: "unsnat",
+	2: "passthrough",
 }
 
 // podCIDRKey mirrors struct pod_cidr_key in hostdp.bpf.c. Addr holds the network-order IPv4 bytes; the LPM
@@ -138,6 +140,19 @@ func (l *loader) SetNodeConfig(transportIP net.IP, subnetPrefixLen int) error {
 		return err
 	}
 	return l.nodeConfig.Put(uint32(nodeConfigSubnetPrefix), uint32(subnetPrefixLen))
+}
+
+func (l *loader) SetLocalPodCIDR(podCIDR *net.IPNet) error {
+	v4 := podCIDR.IP.To4()
+	if v4 == nil {
+		return fmt.Errorf("local Pod CIDR %s is not IPv4 (only IPv4 is supported for now)", podCIDR)
+	}
+	ones, _ := podCIDR.Mask.Size()
+	addr := uint32(v4[0])<<24 | uint32(v4[1])<<16 | uint32(v4[2])<<8 | uint32(v4[3])
+	if err := l.nodeConfig.Put(uint32(nodeConfigLocalPodNet), hostToNetU32(addr)); err != nil {
+		return err
+	}
+	return l.nodeConfig.Put(uint32(nodeConfigLocalPodPrefix), uint32(ones))
 }
 
 func (l *loader) AddPodCIDR(podCIDR *net.IPNet) error {

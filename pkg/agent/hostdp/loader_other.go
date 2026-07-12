@@ -28,9 +28,10 @@ type loader struct{}
 // NewLoader returns a no-op eBPF host-datapath control surface on non-Linux platforms.
 func NewLoader() Interface { return &loader{} }
 
-func (l *loader) Load(transportIfIndex int) error               { return errUnsupported }
-func (l *loader) Close() error                                  { return nil }
-func (l *loader) SetNodeConfig(net.IP, int) error               { return errUnsupported }
-func (l *loader) AddPodCIDR(*net.IPNet) error                   { return errUnsupported }
-func (l *loader) DeletePodCIDR(*net.IPNet) error                { return errUnsupported }
-func (l *loader) Stats() (map[string]uint64, error)             { return nil, errUnsupported }
+func (l *loader) Load(transportIfIndex int) error   { return errUnsupported }
+func (l *loader) Close() error                      { return nil }
+func (l *loader) SetNodeConfig(net.IP, int) error   { return errUnsupported }
+func (l *loader) SetLocalPodCIDR(*net.IPNet) error  { return errUnsupported }
+func (l *loader) AddPodCIDR(*net.IPNet) error       { return errUnsupported }
+func (l *loader) DeletePodCIDR(*net.IPNet) error    { return errUnsupported }
+func (l *loader) Stats() (map[string]uint64, error) { return nil, errUnsupported }
