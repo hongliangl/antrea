@@ -50,6 +50,23 @@ type Interface interface {
 	SetPodRoute(podCIDR *net.IPNet, nextHop net.IP) error
 	DeletePodRoute(podCIDR *net.IPNet) error
 
+	// AddEgressSteer / DeleteEgressSteer maintain the egress_steer map on an Egress member Pod's Node: the
+	// Pod's external-bound traffic is forwarded to the Egress Node untouched (the eBPF equivalent of the
+	// Egress fwmark policy routing).
+	AddEgressSteer(podIP, egressNodeIP net.IP) error
+	DeleteEgressSteer(podIP net.IP) error
+
+	// AddEgressSNAT / DeleteEgressSNAT maintain the egress_snat map on the Egress Node: a member Pod's (local
+	// or remote) external-bound traffic is SNAT'd to the Egress IP (the eBPF equivalent of the member ipset +
+	// mark-based SNAT rules).
+	AddEgressSNAT(podIP, egressIP net.IP) error
+	DeleteEgressSNAT(podIP net.IP) error
+
+	// AddNodePort / DeleteNodePort maintain the nodeport DNAT map: node_ip:port/protocol is DNAT'd (address
+	// and port) to the backend. protocol is the IP protocol number (6=TCP, 17=UDP).
+	AddNodePort(protocol uint8, port uint16, backendIP net.IP, backendPort uint16) error
+	DeleteNodePort(protocol uint8, port uint16) error
+
 	// Stats returns the per-verdict packet counters, keyed by a human-readable name.
 	Stats() (map[string]uint64, error)
 }

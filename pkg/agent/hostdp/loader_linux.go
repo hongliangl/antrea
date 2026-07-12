@@ -19,6 +19,7 @@ package hostdp
 import (
 	"bytes"
 	_ "embed"
+	"encoding/binary"
 	"fmt"
 	"net"
 
@@ -46,6 +47,9 @@ var statNames = map[uint32]string{
 	2: "passthrough",
 	3: "fwd",
 	4: "fwd_miss",
+	5: "egress_snat",
+	6: "nodeport_dnat",
+	7: "nodeport_snat",
 }
 
 // podCIDRKey mirrors struct pod_cidr_key in hostdp.bpf.c. Addr holds the network-order IPv4 bytes; the LPM
@@ -55,13 +59,30 @@ type podCIDRKey struct {
 	Addr      [4]byte
 }
 
+// npKey mirrors struct np_key in hostdp.bpf.c: {NodePort, proto}, port in network order.
+type npKey struct {
+	Port  [2]byte
+	Proto uint8
+	_     uint8
+}
+
+// npBackend mirrors struct np_backend in hostdp.bpf.c: backend address + port, both network order.
+type npBackend struct {
+	Addr [4]byte
+	Port [2]byte
+	_    [2]byte
+}
+
 type loader struct {
-	coll       *ebpf.Collection
-	links      []link.Link
-	podCIDRs   *ebpf.Map
-	podRoutes  *ebpf.Map
-	nodeConfig *ebpf.Map
-	stats      *ebpf.Map
+	coll        *ebpf.Collection
+	links       []link.Link
+	podCIDRs    *ebpf.Map
+	podRoutes   *ebpf.Map
+	nodeConfig  *ebpf.Map
+	egressSteer *ebpf.Map
+	egressSNAT  *ebpf.Map
+	nodePort    *ebpf.Map
+	stats       *ebpf.Map
 }
 
 // NewLoader returns an eBPF host-datapath control surface.
@@ -85,8 +106,12 @@ func (l *loader) Load(transportIfIndex, gatewayIfIndex int) error {
 	l.podCIDRs = coll.Maps["pod_cidrs"]
 	l.podRoutes = coll.Maps["pod_routes"]
 	l.nodeConfig = coll.Maps["node_config"]
+	l.egressSteer = coll.Maps["egress_steer"]
+	l.egressSNAT = coll.Maps["egress_snat"]
+	l.nodePort = coll.Maps["nodeport"]
 	l.stats = coll.Maps["stats"]
-	if l.podCIDRs == nil || l.podRoutes == nil || l.nodeConfig == nil || l.stats == nil {
+	if l.podCIDRs == nil || l.podRoutes == nil || l.nodeConfig == nil ||
+		l.egressSteer == nil || l.egressSNAT == nil || l.nodePort == nil || l.stats == nil {
 		l.Close()
 		return fmt.Errorf("eBPF object is missing an expected map")
 	}
@@ -206,6 +231,73 @@ func (l *loader) DeletePodRoute(podCIDR *net.IPNet) error {
 	return nil
 }
 
+func (l *loader) AddEgressSteer(podIP, egressNodeIP net.IP) error {
+	pod, err := ipv4Bytes(podIP)
+	if err != nil {
+		return err
+	}
+	nh, err := ipv4Bytes(egressNodeIP)
+	if err != nil {
+		return err
+	}
+	return l.egressSteer.Put(pod, nh)
+}
+
+func (l *loader) DeleteEgressSteer(podIP net.IP) error {
+	pod, err := ipv4Bytes(podIP)
+	if err != nil {
+		return err
+	}
+	if err := l.egressSteer.Delete(pod); err != nil && !isKeyNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (l *loader) AddEgressSNAT(podIP, egressIP net.IP) error {
+	pod, err := ipv4Bytes(podIP)
+	if err != nil {
+		return err
+	}
+	eip, err := ipv4Bytes(egressIP)
+	if err != nil {
+		return err
+	}
+	return l.egressSNAT.Put(pod, eip)
+}
+
+func (l *loader) DeleteEgressSNAT(podIP net.IP) error {
+	pod, err := ipv4Bytes(podIP)
+	if err != nil {
+		return err
+	}
+	if err := l.egressSNAT.Delete(pod); err != nil && !isKeyNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (l *loader) AddNodePort(protocol uint8, port uint16, backendIP net.IP, backendPort uint16) error {
+	baddr, err := ipv4Bytes(backendIP)
+	if err != nil {
+		return err
+	}
+	key := npKey{Proto: protocol}
+	binary.BigEndian.PutUint16(key.Port[:], port)
+	val := npBackend{Addr: baddr}
+	binary.BigEndian.PutUint16(val.Port[:], backendPort)
+	return l.nodePort.Put(key, val)
+}
+
+func (l *loader) DeleteNodePort(protocol uint8, port uint16) error {
+	key := npKey{Proto: protocol}
+	binary.BigEndian.PutUint16(key.Port[:], port)
+	if err := l.nodePort.Delete(key); err != nil && !isKeyNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func (l *loader) Stats() (map[string]uint64, error) {
 	out := make(map[string]uint64, len(statNames))
 	for idx, name := range statNames {
@@ -215,6 +307,18 @@ func (l *loader) Stats() (map[string]uint64, error) {
 		}
 		out[name] = v
 	}
+	return out, nil
+}
+
+// ipv4Bytes returns the network-order bytes of an IPv4 address, matching the datapath's __u32 map keys/values
+// (which are raw addresses read from packet headers).
+func ipv4Bytes(ip net.IP) ([4]byte, error) {
+	var out [4]byte
+	v4 := ip.To4()
+	if v4 == nil {
+		return out, fmt.Errorf("address %s is not IPv4 (only IPv4 is supported for now)", ip)
+	}
+	copy(out[:], v4)
 	return out, nil
 }
 

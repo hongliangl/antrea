@@ -36,4 +36,10 @@ func (l *loader) AddPodCIDR(*net.IPNet) error                     { return errUn
 func (l *loader) DeletePodCIDR(*net.IPNet) error                  { return errUnsupported }
 func (l *loader) SetPodRoute(*net.IPNet, net.IP) error            { return errUnsupported }
 func (l *loader) DeletePodRoute(*net.IPNet) error                 { return errUnsupported }
+func (l *loader) AddEgressSteer(net.IP, net.IP) error             { return errUnsupported }
+func (l *loader) DeleteEgressSteer(net.IP) error                  { return errUnsupported }
+func (l *loader) AddEgressSNAT(net.IP, net.IP) error              { return errUnsupported }
+func (l *loader) DeleteEgressSNAT(net.IP) error                   { return errUnsupported }
+func (l *loader) AddNodePort(uint8, uint16, net.IP, uint16) error { return errUnsupported }
+func (l *loader) DeleteNodePort(uint8, uint16) error              { return errUnsupported }
 func (l *loader) Stats() (map[string]uint64, error)               { return nil, errUnsupported }

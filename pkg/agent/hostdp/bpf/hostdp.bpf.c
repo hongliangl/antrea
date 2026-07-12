@@ -2,15 +2,20 @@
 
 // Antrea eBPF host-network datapath (WIP).
 //
-// Step 2: Pod-to-external masquerade on the Node transport interface with tc.
-//   - egress hook  (hostdp_egress):  a local Pod's external-bound packet is SNAT'd, source address ->
-//                                    the Node transport IP (port-preserving), and a reverse conntrack
-//                                    entry is recorded.
-//   - ingress hook (hostdp_ingress): a reply to the Node transport IP is looked up in the reverse
-//                                    conntrack map and DNAT'd back to the original Pod IP.
-// This replaces the iptables `masquerade Pod to external packets` rule. Address-only (port-preserving)
-// translation: correct for non-colliding flows; port re-allocation on collision is a follow-up. IPv4 only,
-// no IP options (ihl==5). OVS is untouched.
+// Programs:
+//   - hostdp_egress (transport egress):  NodePort reply un-DNAT; Egress SNAT (member Pod -> Egress IP);
+//                                        Pod-to-external masquerade (SNAT to the Node transport IP).
+//   - hostdp_ingress (transport ingress): NodePort DNAT (node_ip:nodePort -> backend, address + port);
+//                                        reverse masquerade / Egress un-SNAT; forwards to the member's
+//                                        Node when the restored destination is a remote Pod.
+//   - hostdp_fwd (gateway ingress):      Pod-to-remote-Pod forwarding (pod_routes next hop + L2 via
+//                                        bpf_fib_lookup + bpf_redirect); Egress steering (member Pod's
+//                                        external traffic forwarded to the Egress Node untouched).
+//
+// These replace the host-stack rules programmed by pkg/agent/route: the masquerade and NodePort iptables
+// rules, the `podCIDR via peerNodeIP` routes, and the Egress fwmark policy routing. Masquerade/Egress SNAT
+// is address-only (port-preserving); port re-allocation on collision is a follow-up. IPv4 only, no IP
+// options (ihl==5). OVS is untouched.
 //
 // Compile: clang -O2 -g -target bpfel -c hostdp.bpf.c -o hostdp_bpfel.o
 
@@ -98,6 +103,64 @@ struct {
 	__u32 *value;
 } pod_routes SEC(".maps");
 
+// egress_steer: member Pod IP -> Egress Node transport IP (programmed on the member Pod's Node). The Pod's
+// external-bound traffic is forwarded to the Egress Node untouched; the Egress Node SNATs it to the Egress IP.
+// Replaces the Egress fwmark policy routing (ip rule fwmark -> table -> default via egressNodeIP).
+struct {
+	int (*type)[BPF_MAP_TYPE_HASH];
+	int (*max_entries)[4096];
+	__u32 *key;
+	__u32 *value;
+} egress_steer SEC(".maps");
+
+// egress_snat: member Pod IP -> Egress IP (programmed on the Egress Node, for local and remote members).
+// Replaces the member ipset + mark-based SNAT iptables rules on the Egress Node.
+struct {
+	int (*type)[BPF_MAP_TYPE_HASH];
+	int (*max_entries)[4096];
+	__u32 *key;
+	__u32 *value;
+} egress_snat SEC(".maps");
+
+// nodeport: {NodePort, proto} -> backend. Replaces the NodePort DNAT iptables rules. All fields network order.
+struct np_key {
+	__u16 port;
+	__u8 proto;
+	__u8 pad;
+};
+struct np_backend {
+	__u32 addr;
+	__u16 port;
+	__u16 pad;
+};
+struct {
+	int (*type)[BPF_MAP_TYPE_HASH];
+	int (*max_entries)[1024];
+	struct np_key *key;
+	struct np_backend *value;
+} nodeport SEC(".maps");
+
+// np_ct: reverse conntrack for NodePort DNAT — identifies a backend's reply and restores the Node IP +
+// NodePort as its source.
+struct np_ct_key {
+	__u32 backend_addr;
+	__u32 client_addr;
+	__u16 backend_port;
+	__u16 client_port;
+	__u8 proto;
+	__u8 pad[3];
+};
+struct np_ct_val {
+	__u16 node_port;
+	__u16 pad;
+};
+struct {
+	int (*type)[BPF_MAP_TYPE_LRU_HASH];
+	int (*max_entries)[65536];
+	struct np_ct_key *key;
+	struct np_ct_val *value;
+} np_ct SEC(".maps");
+
 // stats: per-verdict counters.
 struct {
 	int (*type)[BPF_MAP_TYPE_ARRAY];
@@ -110,6 +173,9 @@ struct {
 #define STAT_PASS 2
 #define STAT_FWD 3
 #define STAT_FWD_MISS 4
+#define STAT_ESNAT 5
+#define STAT_NP_DNAT 6
+#define STAT_NP_SNAT 7
 
 static __always_inline void count(__u32 slot)
 {
@@ -217,6 +283,46 @@ static __always_inline int parse_ipv4(struct __sk_buff *skb, struct iphdr **ip_o
 	return 0;
 }
 
+// Forward the packet to an on-link next hop: resolve its L2 neighbor + output interface via the kernel FIB
+// (L2 only — the L3 decision was already made from our maps), rewrite the Ethernet header, redirect.
+static __always_inline int fwd_to_next_hop(struct __sk_buff *skb, __u32 nh)
+{
+	struct bpf_fib_lookup fib = {};
+	fib.family = AF_INET;
+	fib.ipv4_dst = nh;
+	fib.ifindex = skb->ifindex;
+	long rc = bpf_fib_lookup(skb, &fib, sizeof(fib), BPF_FIB_LOOKUP_DIRECT);
+	if (rc != BPF_FIB_LKUP_RET_SUCCESS) {
+		// Neighbor unresolved or no route to the next hop: fall back to the stack so it can resolve/ARP.
+		count(STAT_FWD_MISS);
+		return TC_ACT_OK;
+	}
+	bpf_skb_store_bytes(skb, 0, fib.dmac, 6, 0);
+	bpf_skb_store_bytes(skb, 6, fib.smac, 6, 0);
+	count(STAT_FWD);
+	return bpf_redirect(fib.ifindex, 0);
+}
+
+// If addr is a remote Pod (per pod_routes), forward the packet to its Node; otherwise let the stack deliver.
+static __always_inline int fwd_if_remote_pod(struct __sk_buff *skb, __u32 addr)
+{
+	struct pod_cidr_key rkey = {.prefixlen = 32};
+	__builtin_memcpy(rkey.addr, &addr, 4);
+	__u32 *nh = bpf_map_lookup_elem(&pod_routes, &rkey);
+	if (!nh)
+		return TC_ACT_OK;
+	return fwd_to_next_hop(skb, *nh);
+}
+
+// Rewrite the source address (and for NodePort replies the source port), fixing IP and L4 checksums.
+static __always_inline void snat_source(struct __sk_buff *skb, __u32 from, __u32 to, int l4off)
+{
+	bpf_skb_store_bytes(skb, IP_SADDR_OFF, &to, 4, 0);
+	bpf_l3_csum_replace(skb, IP_CHECK_OFF, from, to, 4);
+	if (l4off >= 0)
+		bpf_l4_csum_replace(skb, l4off, from, to, 4 | BPF_F_PSEUDO_HDR);
+}
+
 SEC("tc")
 int hostdp_egress(struct __sk_buff *skb)
 {
@@ -230,13 +336,53 @@ int hostdp_egress(struct __sk_buff *skb)
 	__u32 saddr = ip->saddr, daddr = ip->daddr;
 	__u8 proto = ip->protocol;
 
-	// Masquerade only local Pod -> external (dst is not any cluster Pod). Everything else passes through.
-	if (!is_local_pod_ip(saddr) || is_pod_ip(daddr)) {
+	// Pod-to-Pod is never NAT'd.
+	if (is_pod_ip(daddr)) {
 		count(STAT_PASS);
 		return TC_ACT_OK;
 	}
 	__u16 self_port, peer_port;
 	if (flow_ports(proto, l4, data_end, 1, &self_port, &peer_port) < 0) {
+		count(STAT_PASS);
+		return TC_ACT_OK;
+	}
+	int l4off = l4_check_off(proto, l4, data_end);
+
+	// NodePort reply: a backend Pod answering a NodePort client — restore the Node IP + NodePort source.
+	if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
+		struct np_ct_key npk = {.backend_addr = saddr, .client_addr = daddr, .backend_port = self_port, .client_port = peer_port, .proto = proto};
+		struct np_ct_val *npv = bpf_map_lookup_elem(&np_ct, &npk);
+		if (npv) {
+			__u32 node_ip = cfg(CFG_NODE_IP);
+			__u16 node_port = npv->node_port;
+			snat_source(skb, saddr, node_ip, l4off);
+			if (l4off >= 0)
+				bpf_l4_csum_replace(skb, l4off, self_port, node_port, 2);
+			bpf_skb_store_bytes(skb, L4_OFF, &node_port, 2, 0);
+			count(STAT_NP_SNAT);
+			return TC_ACT_OK;
+		}
+	}
+
+	// Egress: a member Pod (local or remote) leaving through this (Egress) Node is SNAT'd to its Egress IP.
+	__u32 *egress_ip = bpf_map_lookup_elem(&egress_snat, &saddr);
+	if (egress_ip) {
+		__u32 eip = *egress_ip;
+		struct nat_key key = {.node_addr = eip, .ext_addr = daddr, .port = self_port, .peer_port = peer_port, .proto = proto};
+		struct nat_val val = {.pod_addr = saddr};
+		bpf_map_update_elem(&nat_ct, &key, &val, BPF_ANY);
+		snat_source(skb, saddr, eip, l4off);
+		count(STAT_ESNAT);
+		return TC_ACT_OK;
+	}
+	// A steered Egress member's traffic leaves this (source) Node untouched; the Egress Node SNATs it.
+	if (bpf_map_lookup_elem(&egress_steer, &saddr)) {
+		count(STAT_PASS);
+		return TC_ACT_OK;
+	}
+
+	// Default masquerade: local Pod -> external is SNAT'd to the Node transport IP.
+	if (!is_local_pod_ip(saddr)) {
 		count(STAT_PASS);
 		return TC_ACT_OK;
 	}
@@ -250,13 +396,7 @@ int hostdp_egress(struct __sk_buff *skb)
 	struct nat_key key = {.node_addr = node_ip, .ext_addr = daddr, .port = self_port, .peer_port = peer_port, .proto = proto};
 	struct nat_val val = {.pod_addr = saddr};
 	bpf_map_update_elem(&nat_ct, &key, &val, BPF_ANY);
-
-	int l4off = l4_check_off(proto, l4, data_end);
-	// Rewrite source address; fix IP and (for TCP/UDP) L4 pseudo-header checksums.
-	bpf_skb_store_bytes(skb, IP_SADDR_OFF, &node_ip, 4, 0);
-	bpf_l3_csum_replace(skb, IP_CHECK_OFF, saddr, node_ip, 4);
-	if (l4off >= 0)
-		bpf_l4_csum_replace(skb, l4off, saddr, node_ip, 4 | BPF_F_PSEUDO_HDR);
+	snat_source(skb, saddr, node_ip, l4off);
 	count(STAT_SNAT);
 	return TC_ACT_OK;
 }
@@ -274,18 +414,41 @@ int hostdp_ingress(struct __sk_buff *skb)
 	__u32 saddr = ip->saddr, daddr = ip->daddr;
 	__u8 proto = ip->protocol;
 
-	__u32 node_ip = cfg(CFG_NODE_IP);
-	if (node_ip == 0 || daddr != node_ip) {
-		count(STAT_PASS);
-		return TC_ACT_OK;
-	}
 	__u16 self_port, peer_port;
 	if (flow_ports(proto, l4, data_end, 0, &self_port, &peer_port) < 0) {
 		count(STAT_PASS);
 		return TC_ACT_OK;
 	}
-	// Reply arriving at node_ip:self_port from saddr:peer_port -> look up the original Pod address.
-	struct nat_key key = {.node_addr = node_ip, .ext_addr = saddr, .port = self_port, .peer_port = peer_port, .proto = proto};
+	int l4off = l4_check_off(proto, l4, data_end);
+
+	// NodePort: client -> node_ip:nodePort is DNAT'd (address + port) to the backend Pod.
+	__u32 node_ip = cfg(CFG_NODE_IP);
+	if (daddr == node_ip && (proto == IPPROTO_TCP || proto == IPPROTO_UDP)) {
+		struct np_key k = {.port = self_port, .proto = proto};
+		struct np_backend *b = bpf_map_lookup_elem(&nodeport, &k);
+		if (b) {
+			__u32 baddr = b->addr;
+			__u16 bport = b->port;
+			// Record the reverse mapping so the backend's replies restore node_ip:nodePort.
+			struct np_ct_key npk = {.backend_addr = baddr, .client_addr = saddr, .backend_port = bport, .client_port = peer_port, .proto = proto};
+			struct np_ct_val npv = {.node_port = self_port};
+			bpf_map_update_elem(&np_ct, &npk, &npv, BPF_ANY);
+			bpf_skb_store_bytes(skb, IP_DADDR_OFF, &baddr, 4, 0);
+			bpf_l3_csum_replace(skb, IP_CHECK_OFF, daddr, baddr, 4);
+			if (l4off >= 0) {
+				bpf_l4_csum_replace(skb, l4off, daddr, baddr, 4 | BPF_F_PSEUDO_HDR);
+				bpf_l4_csum_replace(skb, l4off, self_port, bport, 2);
+			}
+			bpf_skb_store_bytes(skb, L4_OFF + 2, &bport, 2, 0);
+			count(STAT_NP_DNAT);
+			// Local backend: the stack delivers it via the gateway; remote backend: forward to its Node.
+			return fwd_if_remote_pod(skb, baddr);
+		}
+	}
+
+	// Reverse masquerade / Egress SNAT: a reply to a translated source (Node transport IP or an Egress IP —
+	// whatever address the flow was SNAT'd to is the nat_ct key) restores the original Pod destination.
+	struct nat_key key = {.node_addr = daddr, .ext_addr = saddr, .port = self_port, .peer_port = peer_port, .proto = proto};
 	struct nat_val *val = bpf_map_lookup_elem(&nat_ct, &key);
 	if (!val) {
 		count(STAT_PASS);
@@ -293,14 +456,15 @@ int hostdp_ingress(struct __sk_buff *skb)
 	}
 	__u32 pod_ip = val->pod_addr;
 
-	int l4off = l4_check_off(proto, l4, data_end);
 	// Rewrite destination address back to the Pod IP; fix checksums.
 	bpf_skb_store_bytes(skb, IP_DADDR_OFF, &pod_ip, 4, 0);
-	bpf_l3_csum_replace(skb, IP_CHECK_OFF, node_ip, pod_ip, 4);
+	bpf_l3_csum_replace(skb, IP_CHECK_OFF, daddr, pod_ip, 4);
 	if (l4off >= 0)
-		bpf_l4_csum_replace(skb, l4off, node_ip, pod_ip, 4 | BPF_F_PSEUDO_HDR);
+		bpf_l4_csum_replace(skb, l4off, daddr, pod_ip, 4 | BPF_F_PSEUDO_HDR);
 	count(STAT_UNSNAT);
-	return TC_ACT_OK;
+	// Local Pod: the stack delivers it via the gateway; remote member Pod (Egress reply on the Egress Node):
+	// forward it to the member's Node.
+	return fwd_if_remote_pod(skb, pod_ip);
 }
 
 // hostdp_fwd forwards a local Pod's packet destined to a remote Pod directly to the peer Node, replacing the
@@ -321,32 +485,26 @@ int hostdp_fwd(struct __sk_buff *skb)
 		return TC_ACT_OK;
 	__u32 saddr = ip->saddr, daddr = ip->daddr;
 
-	// Only forward local Pod -> remote Pod. dst must resolve in pod_routes (a remote Pod CIDR with a next hop).
 	if (!is_local_pod_ip(saddr))
 		return TC_ACT_OK;
+
+	// Local Pod -> remote Pod: forward to the peer Node from pod_routes.
 	struct pod_cidr_key rkey = {.prefixlen = 32};
 	__builtin_memcpy(rkey.addr, &daddr, 4);
 	__u32 *nh = bpf_map_lookup_elem(&pod_routes, &rkey);
-	if (!nh)
-		return TC_ACT_OK; // not a remote Pod: let the stack handle external / local delivery
+	if (nh)
+		return fwd_to_next_hop(skb, *nh);
 
-	struct bpf_fib_lookup fib = {};
-	fib.family = AF_INET;
-	fib.ipv4_src = saddr;
-	fib.ipv4_dst = *nh; // next-hop peer Node IP (on-link); resolve its neighbor + output interface
-	fib.ifindex = skb->ifindex;
-	long rc = bpf_fib_lookup(skb, &fib, sizeof(fib), BPF_FIB_LOOKUP_DIRECT);
-	if (rc != BPF_FIB_LKUP_RET_SUCCESS) {
-		// Neighbor unresolved or no route to the next hop: fall back to the stack so it can resolve/ARP.
-		count(STAT_FWD_MISS);
-		return TC_ACT_OK;
+	// Local Egress member Pod -> external: steer to the Egress Node untouched (it SNATs to the Egress IP).
+	// Replaces the Egress fwmark policy routing on the source Node.
+	if (!is_pod_ip(daddr)) {
+		__u32 *steer = bpf_map_lookup_elem(&egress_steer, &saddr);
+		if (steer)
+			return fwd_to_next_hop(skb, *steer);
 	}
 
-	// Rewrite L2 (dst = peer Node MAC, src = our output-interface MAC) and redirect to the resolved egress.
-	bpf_skb_store_bytes(skb, 0, fib.dmac, 6, 0);
-	bpf_skb_store_bytes(skb, 6, fib.smac, 6, 0);
-	count(STAT_FWD);
-	return bpf_redirect(fib.ifindex, 0);
+	// Everything else (Pod -> external without Egress, local delivery): let the stack handle it.
+	return TC_ACT_OK;
 }
 
 char LICENSE[] SEC("license") = "GPL";

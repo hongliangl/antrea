@@ -32,7 +32,9 @@ Focusing on noEncap mode (the first target), `route_linux.go` programs:
 | Node IP / transport subnet | `node_config` array map |
 | `masquerade Pod to external` | tc-egress SNAT + a BPF NAT map (reverse translation on tc-ingress) |
 | `podCIDR via peerNodeIP` forwarding | `pod_routes` LPM map (next hop) + tc `bpf_fib_lookup` (L2 only) + `bpf_redirect` |
-| Egress fwmark policy routing | tc classification against a per-Egress map |
+| Egress fwmark policy routing (source Node) | `egress_steer` map: member Pod IP -> Egress Node; forward untouched |
+| Egress member ipset + mark SNAT (Egress Node) | `egress_snat` map: member Pod IP -> Egress IP; tc-egress SNAT |
+| NodePort DNAT | `nodeport` map + tc-ingress DNAT (address + port) + `np_ct` reverse map |
 
 ## Attach model
 
@@ -50,7 +52,9 @@ Focusing on noEncap mode (the first target), `route_linux.go` programs:
    (`TC_ACT_OK`). Proves the load/attach/generate/map pipeline inside Antrea without changing any forwarding.
 2. **Pod->external masquerade (done)**: SNAT + NAT map + reverse on ingress.
 3. **noEncap Pod-to-Pod forwarding (done)**: `bpf_fib_lookup` + redirect.
-4. Egress steering; NodePort DNAT; policy-routing equivalents.
+4. **Egress steering + Egress-IP SNAT + NodePort DNAT (done)**: see below.
+5. Agent wiring behind the feature gate (forwarding + masquerade first; Egress/NodePort controller wiring
+   follows), and masquerade hardening (port re-allocation on collision, IPv6, IP options).
 
 Each step is gated and independently verifiable; the traditional route client remains the default and the
 fallback.
@@ -78,3 +82,29 @@ for return traffic from remote Pods, so `rp_filter` must be off on the eBPF data
 manages `rp_filter` for its datapath). Validated in a two-Node netns testbed (`fwdtest.sh`): Pod<->remote-Pod
 TCP + ICMP work purely via the eBPF forward with the source preserved (not masqueraded), while the Node
 deliberately has no kernel route to the remote Pod CIDR.
+
+### Step 4: Egress and NodePort
+
+**Egress** replaces the tunnel-free Egress host machinery (fwmark policy routing on the source Node; member
+ipset + mark-based SNAT on the Egress Node) with two maps:
+
+- On a member Pod's Node, `egress_steer` (member Pod IP -> Egress Node transport IP) is consulted in
+  `hostdp_fwd` for external-bound traffic: the packet is forwarded to the Egress Node **untouched** (the
+  masquerade program also checks the map and skips these flows).
+- On the Egress Node, `egress_snat` (member Pod IP -> Egress IP, local and remote members) is consulted on
+  transport egress: the source is SNAT'd to the Egress IP, with the reverse entry recorded in the same
+  `nat_ct` map the masquerade uses (`nat_ct` is keyed by the SNAT'd address, so one un-SNAT lookup on
+  ingress serves both the Node IP and any number of Egress IPs). When the restored destination is a remote
+  member Pod, the reply is forwarded straight back to the member's Node from the ingress hook
+  (`fwd_if_remote_pod`).
+
+**NodePort** DNAT lives on transport ingress: `nodeport` maps {port, proto} to a backend, and the packet's
+destination address *and* port are rewritten (the only port-rewriting translation in the datapath). A
+`np_ct` reverse entry lets transport egress restore `nodeIP:nodePort` as the source of the backend's
+replies. The client address is not SNAT'd (externalTrafficPolicy=Local semantics); a remote backend is
+reached via `fwd_if_remote_pod`.
+
+Validated in netns testbeds: `egresstest.sh` (4 namespaces, member Pod on Node A, Egress Node B owning the
+Egress IP on its wan interface — the external server sees the Egress IP, replies round-trip, no Node
+masquerades the steered traffic) and the NodePort cases in `nstest.sh` (DNAT + reply un-DNAT with port
+translation, real client IP preserved).
