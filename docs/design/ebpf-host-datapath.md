@@ -53,8 +53,14 @@ Focusing on noEncap mode (the first target), `route_linux.go` programs:
 2. **Pod->external masquerade (done)**: SNAT + NAT map + reverse on ingress.
 3. **noEncap Pod-to-Pod forwarding (done)**: `bpf_fib_lookup` + redirect.
 4. **Egress steering + Egress-IP SNAT + NodePort DNAT (done)**: see below.
-5. Agent wiring behind the feature gate (forwarding + masquerade first; Egress/NodePort controller wiring
-   follows), and masquerade hardening (port re-allocation on collision, IPv6, IP options).
+5. **Agent wiring (done for forwarding + masquerade)**: with the gate on, the agent loads the programs on
+   the transport and gateway interfaces at startup, seeds `node_config` / the local Pod CIDR, and the
+   NodeRouteController mirrors peer Pod CIDRs into `pod_cidrs` (always) and `pod_routes` (when the peer is
+   directly routable) alongside the traditional route client. The route client keeps running: the kernel
+   rules remain as a fallback, and eBPF takes over where it runs first (forwarding intercepts on gateway
+   ingress before the kernel route; the iptables masquerade still wins on the SNAT path until it is removed).
+   Egress/NodePort controller wiring and masquerade hardening (port re-allocation on collision, IPv6, IP
+   options) are follow-ups.
 
 Each step is gated and independently verifiable; the traditional route client remains the default and the
 fallback.

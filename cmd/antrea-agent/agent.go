@@ -51,6 +51,7 @@ import (
 	"antrea.io/antrea/v2/pkg/agent/externalnode"
 	"antrea.io/antrea/v2/pkg/agent/flowexporter"
 	flowexporteroptions "antrea.io/antrea/v2/pkg/agent/flowexporter/options"
+	"antrea.io/antrea/v2/pkg/agent/hostdp"
 	"antrea.io/antrea/v2/pkg/agent/interfacestore"
 	"antrea.io/antrea/v2/pkg/agent/ipassigner/linkmonitor"
 	"antrea.io/antrea/v2/pkg/agent/memberlist"
@@ -342,6 +343,38 @@ func run(o *Options) error {
 	}
 	nodeConfig := agentInitializer.GetNodeConfig()
 
+	// When the EBPFHostDataPath feature gate is on, load the eBPF host datapath programs on the transport and
+	// gateway interfaces and seed the Node-level maps. The traditional route client keeps running alongside;
+	// map contents are mirrored from the same events (see NodeRouteController). IPv4 only for now.
+	var hostDPClient hostdp.Interface
+	if features.DefaultFeatureGate.Enabled(features.EBPFHostDataPath) && o.nodeType == config.K8sNode {
+		transportIface, err := net.InterfaceByName(nodeConfig.NodeTransportInterfaceName)
+		if err != nil {
+			return fmt.Errorf("error getting transport interface %s for the eBPF host datapath: %w", nodeConfig.NodeTransportInterfaceName, err)
+		}
+		hostDPClient = hostdp.NewLoader()
+		if err := hostDPClient.Load(transportIface.Index, nodeConfig.GatewayConfig.LinkIndex); err != nil {
+			return fmt.Errorf("error loading the eBPF host datapath: %w", err)
+		}
+		defer hostDPClient.Close()
+		if nodeConfig.NodeTransportIPv4Addr != nil {
+			prefixLen, _ := nodeConfig.NodeTransportIPv4Addr.Mask.Size()
+			if err := hostDPClient.SetNodeConfig(nodeConfig.NodeTransportIPv4Addr.IP, prefixLen); err != nil {
+				return fmt.Errorf("error setting the eBPF host datapath Node config: %w", err)
+			}
+		}
+		if nodeConfig.PodIPv4CIDR != nil {
+			if err := hostDPClient.SetLocalPodCIDR(nodeConfig.PodIPv4CIDR); err != nil {
+				return fmt.Errorf("error setting the eBPF host datapath local Pod CIDR: %w", err)
+			}
+			if err := hostDPClient.AddPodCIDR(nodeConfig.PodIPv4CIDR); err != nil {
+				return fmt.Errorf("error adding the local Pod CIDR to the eBPF host datapath: %w", err)
+			}
+		}
+		klog.InfoS("Loaded the eBPF host datapath", "transportInterface", nodeConfig.NodeTransportInterfaceName,
+			"gatewayInterface", o.config.HostGateway)
+	}
+
 	var ipsecCertController *ipseccertificate.Controller
 
 	if networkConfig.TrafficEncryptionMode == config.TrafficEncryptionModeIPSec &&
@@ -364,6 +397,9 @@ func run(o *Options) error {
 			ipsecCertController,
 			flowRestoreCompleteWait,
 		)
+		if hostDPClient != nil {
+			nodeRouteController.SetEBPFHostDataPath(hostDPClient)
+		}
 	}
 
 	// podUpdateChannel is a channel for receiving Pod updates from CNIServer and
