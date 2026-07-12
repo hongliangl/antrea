@@ -41,6 +41,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"antrea.io/antrea/v2/pkg/agent/client"
+	"antrea.io/antrea/v2/pkg/agent/hostdp"
 	"antrea.io/antrea/v2/pkg/agent/interfacestore"
 	"antrea.io/antrea/v2/pkg/agent/ipassigner"
 	"antrea.io/antrea/v2/pkg/agent/ipassigner/linkmonitor"
@@ -99,6 +100,12 @@ type egressState struct {
 	ofPorts sets.Set[int32]
 	// The actual Pods of the Egress. Used to identify stale Pods when updating or deleting an Egress.
 	pods sets.Set[string]
+	// The member Pod IPs programmed into the eBPF host datapath egress_steer map (this Node steers their
+	// external traffic to the Egress Node). Used to identify stale entries. Nil unless EBPFHostDataPath is on.
+	hostDPSteerIPs sets.Set[string]
+	// The member Pod IPs programmed into the eBPF host datapath egress_snat map (this Node is the Egress Node
+	// and SNATs them to the Egress IP). Used to identify stale entries. Nil unless EBPFHostDataPath is on.
+	hostDPSNATIPs sets.Set[string]
 	// Rate-limit of this Egress.
 	rateLimitMeter *rateLimitMeter
 }
@@ -171,7 +178,10 @@ type EgressController struct {
 	nodeName        string
 	markAllocator   *idAllocator
 
-	egressGroups      map[string]sets.Set[string]
+	egressGroups map[string]sets.Set[string]
+	// egressGroupIPs stores the member Pod IPs delivered with the EgressGroup (populated by the controller
+	// when EBPFHostDataPath is on, so the Egress Node learns remote members' IPs for the eBPF SNAT map).
+	egressGroupIPs    map[string]sets.Set[string]
 	egressGroupsMutex sync.RWMutex
 
 	egressBindings      map[string]*egressBinding
@@ -196,6 +206,11 @@ type EgressController struct {
 	serviceCIDRUpdateRetryDelay time.Duration
 
 	trafficShapingEnabled bool
+
+	// hostDP, when non-nil (EBPFHostDataPath feature gate), mirrors Egress steering and SNAT into the eBPF
+	// host datapath maps: member Pods' external traffic is steered to the Egress Node in eBPF, and the Egress
+	// Node SNATs it to the Egress IP in eBPF.
+	hostDP hostdp.Interface
 
 	eventBroadcaster events.EventBroadcaster
 	record           events.EventRecorder
@@ -257,6 +272,7 @@ func NewEgressController(
 		nodeName:             nodeName,
 		ifaceStore:           ifaceStore,
 		egressGroups:         map[string]sets.Set[string]{},
+		egressGroupIPs:       map[string]sets.Set[string]{},
 		egressStates:         map[string]*egressState{},
 		egressIPStates:       map[string]*egressIPState{},
 		egressBindings:       map[string]*egressBinding{},
@@ -846,12 +862,132 @@ func (c *EgressController) newEgressState(egressName string, egressIP string) *e
 	c.egressStatesMutex.Lock()
 	defer c.egressStatesMutex.Unlock()
 	state := &egressState{
-		egressIP: egressIP,
-		ofPorts:  sets.New[int32](),
-		pods:     sets.New[string](),
+		egressIP:       egressIP,
+		ofPorts:        sets.New[int32](),
+		pods:           sets.New[string](),
+		hostDPSteerIPs: sets.New[string](),
+		hostDPSNATIPs:  sets.New[string](),
 	}
 	c.egressStates[egressName] = state
 	return state
+}
+
+// SetEBPFHostDataPath enables mirroring Egress steering/SNAT into the eBPF host datapath maps
+// (EBPFHostDataPath feature gate). Must be called before Run.
+func (c *EgressController) SetEBPFHostDataPath(hostDP hostdp.Interface) {
+	c.hostDP = hostDP
+}
+
+// syncEgressHostDP mirrors this Egress into the eBPF host datapath maps and prunes stale entries:
+//   - Egress IP is local (this is the Egress Node): every member Pod IP (local Pods resolved from the
+//     interface store; remote Pods from the IPs delivered with the EgressGroup) -> egress_snat, so their
+//     external traffic is SNAT'd to the Egress IP on transport egress.
+//   - Egress IP is remote: every local member Pod IP -> egress_steer with the Egress Node's transport IP as
+//     the next hop, so their external traffic is forwarded there untouched.
+//
+// Entries are always re-put (map updates are idempotent), which also refreshes the steer next hop on
+// failover. IPv4 only, like the rest of the eBPF datapath.
+func (c *EgressController) syncEgressHostDP(egressName string, eState *egressState, egress *crdv1b1.Egress, desiredNode string, pods sets.Set[string], egressIP net.IP) error {
+	isLocal := desiredNode == c.nodeName || (desiredNode == "" && c.localIPDetector.IsLocalIP(eState.egressIP))
+
+	localMemberIPs := func() sets.Set[string] {
+		ips := sets.New[string]()
+		for pod := range pods {
+			parts := strings.Split(pod, "/")
+			ifaces := c.ifaceStore.GetContainerInterfacesByPod(parts[1], parts[0])
+			if len(ifaces) == 0 {
+				continue
+			}
+			for _, ip := range ifaces[0].IPs {
+				if ip.To4() != nil {
+					ips.Insert(ip.String())
+				}
+			}
+		}
+		return ips
+	}
+
+	desiredSteer := sets.New[string]()
+	desiredSNAT := sets.New[string]()
+	var steerNextHop net.IP
+	if isLocal {
+		if egressIP.To4() != nil {
+			// All member Pod IPs: local ones from the interface store, plus the IPs delivered with the
+			// EgressGroup (which include remote members when the controller populates them).
+			desiredSNAT = localMemberIPs()
+			func() {
+				c.egressGroupsMutex.RLock()
+				defer c.egressGroupsMutex.RUnlock()
+				for ip := range c.egressGroupIPs[egressName] {
+					if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() != nil {
+						desiredSNAT.Insert(parsed.String())
+					}
+				}
+			}()
+		}
+	} else {
+		steerNode := desiredNode
+		if steerNode == "" {
+			steerNode = egress.Status.EgressNode
+		}
+		if steerNode != "" && steerNode != c.nodeName {
+			node, err := c.k8sClient.CoreV1().Nodes().Get(context.TODO(), steerNode, metav1.GetOptions{})
+			if err != nil {
+				return fmt.Errorf("failed to get Egress Node %s for eBPF steering: %w", steerNode, err)
+			}
+			nodeIPs, err := k8s.GetNodeTransportAddrs(node)
+			if err != nil {
+				return err
+			}
+			if nodeIPs.IPv4 != nil {
+				steerNextHop = nodeIPs.IPv4
+				desiredSteer = localMemberIPs()
+			}
+		}
+	}
+
+	for ip := range desiredSteer {
+		if err := c.hostDP.AddEgressSteer(net.ParseIP(ip), steerNextHop); err != nil {
+			return err
+		}
+		eState.hostDPSteerIPs.Insert(ip)
+	}
+	for ip := range eState.hostDPSteerIPs.Difference(desiredSteer) {
+		if err := c.hostDP.DeleteEgressSteer(net.ParseIP(ip)); err != nil {
+			return err
+		}
+		eState.hostDPSteerIPs.Delete(ip)
+	}
+	for ip := range desiredSNAT {
+		if err := c.hostDP.AddEgressSNAT(net.ParseIP(ip), egressIP); err != nil {
+			return err
+		}
+		eState.hostDPSNATIPs.Insert(ip)
+	}
+	for ip := range eState.hostDPSNATIPs.Difference(desiredSNAT) {
+		if err := c.hostDP.DeleteEgressSNAT(net.ParseIP(ip)); err != nil {
+			return err
+		}
+		eState.hostDPSNATIPs.Delete(ip)
+	}
+	return nil
+}
+
+// uninstallEgressHostDP removes all of the Egress's entries from the eBPF host datapath maps.
+func (c *EgressController) uninstallEgressHostDP(eState *egressState) error {
+	for ip := range eState.hostDPSteerIPs {
+		if err := c.hostDP.DeleteEgressSteer(net.ParseIP(ip)); err != nil {
+			return err
+		}
+		eState.hostDPSteerIPs.Delete(ip)
+	}
+	for ip := range eState.hostDPSNATIPs {
+		if err := c.hostDP.DeleteEgressSNAT(net.ParseIP(ip)); err != nil {
+			return err
+		}
+		eState.hostDPSNATIPs.Delete(ip)
+	}
+	return nil
 }
 
 // bindPodEgress binds the Pod with the Egress and returns whether this Egress is the effective one for the Pod.
@@ -1152,10 +1288,23 @@ func (c *EgressController) syncEgress(egressName string) error {
 	if err := c.uninstallPodFlows(egressName, eState, staleOFPorts, stalePods); err != nil {
 		return err
 	}
+
+	// Mirror the Egress into the eBPF host datapath (EBPFHostDataPath feature gate).
+	if c.hostDP != nil {
+		if err := c.syncEgressHostDP(egressName, eState, egress, desiredNode, pods, egressIP); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 func (c *EgressController) uninstallEgress(egressName string, eState *egressState, egress *crdv1b1.Egress) error {
+	// Remove the Egress's entries from the eBPF host datapath maps (EBPFHostDataPath feature gate).
+	if c.hostDP != nil {
+		if err := c.uninstallEgressHostDP(eState); err != nil {
+			return err
+		}
+	}
 	// Uninstall all of its Pod flows.
 	if err := c.uninstallPodFlows(egressName, eState, eState.ofPorts, eState.pods); err != nil {
 		return err
@@ -1298,33 +1447,55 @@ func (c *EgressController) replaceEgressGroups(groups []*cpv1b2.EgressGroup) {
 	for _, group := range groups {
 		oldGroupKeys.Delete(group.Name)
 		pods := sets.New[string]()
+		ips := sets.New[string]()
 		for _, member := range group.GroupMembers {
 			pods.Insert(k8s.NamespacedName(member.Pod.Namespace, member.Pod.Name))
+			insertMemberIPs(ips, member)
 		}
 		prevPods := c.egressGroups[group.Name]
-		if pods.Equal(prevPods) {
+		prevIPs := c.egressGroupIPs[group.Name]
+		if pods.Equal(prevPods) && ips.Equal(prevIPs) {
 			continue
 		}
 		c.egressGroups[group.Name] = pods
+		c.egressGroupIPs[group.Name] = ips
 		c.queue.Add(group.Name)
 	}
 
 	for key := range oldGroupKeys {
 		delete(c.egressGroups, key)
+		delete(c.egressGroupIPs, key)
 		c.queue.Add(key)
+	}
+}
+
+// insertMemberIPs records the member's IPs delivered with the EgressGroup (only populated by the controller
+// when EBPFHostDataPath is on).
+func insertMemberIPs(ips sets.Set[string], member cpv1b2.GroupMember) {
+	for _, ip := range member.IPs {
+		ips.Insert(net.IP(ip).String())
+	}
+}
+
+func deleteMemberIPs(ips sets.Set[string], member cpv1b2.GroupMember) {
+	for _, ip := range member.IPs {
+		ips.Delete(net.IP(ip).String())
 	}
 }
 
 func (c *EgressController) addEgressGroup(group *cpv1b2.EgressGroup) {
 	pods := sets.New[string]()
+	ips := sets.New[string]()
 	for _, member := range group.GroupMembers {
 		pods.Insert(k8s.NamespacedName(member.Pod.Namespace, member.Pod.Name))
+		insertMemberIPs(ips, member)
 	}
 
 	c.egressGroupsMutex.Lock()
 	defer c.egressGroupsMutex.Unlock()
 
 	c.egressGroups[group.Name] = pods
+	c.egressGroupIPs[group.Name] = ips
 	c.queue.Add(group.Name)
 }
 
@@ -1334,10 +1505,16 @@ func (c *EgressController) patchEgressGroup(patch *cpv1b2.EgressGroupPatch) {
 
 	for _, member := range patch.AddedGroupMembers {
 		c.egressGroups[patch.Name].Insert(k8s.NamespacedName(member.Pod.Namespace, member.Pod.Name))
-
+		if c.egressGroupIPs[patch.Name] == nil {
+			c.egressGroupIPs[patch.Name] = sets.New[string]()
+		}
+		insertMemberIPs(c.egressGroupIPs[patch.Name], member)
 	}
 	for _, member := range patch.RemovedGroupMembers {
 		c.egressGroups[patch.Name].Delete(k8s.NamespacedName(member.Pod.Namespace, member.Pod.Name))
+		if c.egressGroupIPs[patch.Name] != nil {
+			deleteMemberIPs(c.egressGroupIPs[patch.Name], member)
+		}
 	}
 	c.queue.Add(patch.Name)
 }
@@ -1347,6 +1524,7 @@ func (c *EgressController) deleteEgressGroup(group *cpv1b2.EgressGroup) {
 	defer c.egressGroupsMutex.Unlock()
 
 	delete(c.egressGroups, group.Name)
+	delete(c.egressGroupIPs, group.Name)
 	c.queue.Add(group.Name)
 }
 

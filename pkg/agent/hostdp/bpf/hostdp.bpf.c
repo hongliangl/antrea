@@ -14,8 +14,8 @@
 //
 // These replace the host-stack rules programmed by pkg/agent/route: the masquerade and NodePort iptables
 // rules, the `podCIDR via peerNodeIP` routes, and the Egress fwmark policy routing. Masquerade/Egress SNAT
-// is address-only (port-preserving); port re-allocation on collision is a follow-up. IPv4 only, no IP
-// options (ihl==5). OVS is untouched.
+// keeps the Pod's source port when possible and remaps it on collision (two Pods using the same source port
+// to the same peer), tracked in the snat_ct/nat_ct pair. IPv4 only, no IP options (ihl==5). OVS is untouched.
 //
 // Compile: clang -O2 -g -target bpfel -c hostdp.bpf.c -o hostdp_bpfel.o
 
@@ -71,19 +71,21 @@ struct {
 #define CFG_LOCAL_POD_NET 2
 #define CFG_LOCAL_POD_PREFIX 3
 
-// nat_ct: reverse conntrack for masquerade. Key identifies a reply as seen arriving at the Node; value is the
-// original Pod address to restore.
+// nat_ct: reverse conntrack for masquerade / Egress SNAT. Key identifies a reply as seen arriving at the
+// Node; value is the original Pod address and source port to restore (the source port may have been remapped
+// to resolve a collision between two Pods using the same port to the same peer).
 struct nat_key {
-	__u32 node_addr; // SNAT'd (Node) address
+	__u32 node_addr; // SNAT'd address (Node transport IP or an Egress IP)
 	__u32 ext_addr;  // external peer address
-	__u16 port;      // Pod/Node port (preserved); ICMP id for ICMP
+	__u16 port;      // translated source port; ICMP id for ICMP
 	__u16 peer_port; // external peer port; ICMP id for ICMP
 	__u8 proto;
 	__u8 pad[3];
 };
 struct nat_val {
 	__u32 pod_addr;
-	__u32 pad;
+	__u16 pod_port; // the Pod's original source port (== nat_key.port unless remapped)
+	__u16 pad;
 };
 struct {
 	int (*type)[BPF_MAP_TYPE_LRU_HASH];
@@ -91,6 +93,27 @@ struct {
 	struct nat_key *key;
 	struct nat_val *value;
 } nat_ct SEC(".maps");
+
+// snat_ct: forward conntrack for masquerade / Egress SNAT, so an established flow keeps its translated source
+// port across packets (needed once ports can be remapped on collision).
+struct snat_key {
+	__u32 pod_addr;
+	__u32 ext_addr;
+	__u16 pod_port;
+	__u16 peer_port;
+	__u8 proto;
+	__u8 pad[3];
+};
+struct snat_val {
+	__u16 port; // translated source port
+	__u16 pad;
+};
+struct {
+	int (*type)[BPF_MAP_TYPE_LRU_HASH];
+	int (*max_entries)[65536];
+	struct snat_key *key;
+	struct snat_val *value;
+} snat_ct SEC(".maps");
 
 // pod_routes: LPM trie mapping a remote Pod CIDR to the next-hop (peer Node transport IP, network order).
 // This replaces the kernel route `podCIDR via peerNodeIP`; the kernel FIB is used only to resolve the L2
@@ -323,6 +346,54 @@ static __always_inline void snat_source(struct __sk_buff *skb, __u32 from, __u32
 		bpf_l4_csum_replace(skb, l4off, from, to, 4 | BPF_F_PSEUDO_HDR);
 }
 
+// SNAT the packet's source to snat_addr (masquerade to the Node IP, or Egress SNAT to an Egress IP),
+// remapping the source port when another Pod already owns {snat_addr, daddr, port, peer_port} in nat_ct
+// (two Pods using the same source port to the same peer). The chosen port is remembered in snat_ct so the
+// flow keeps it, and the reverse entry in nat_ct lets ingress restore both the address and the port.
+static __always_inline void do_snat(struct __sk_buff *skb, __u32 saddr, __u32 daddr, __u32 snat_addr,
+				    __u16 self_port, __u16 peer_port, __u8 proto, int l4off)
+{
+	int can_remap = proto == IPPROTO_TCP || proto == IPPROTO_UDP;
+	__u16 new_port = self_port;
+	struct snat_key fk = {.pod_addr = saddr, .ext_addr = daddr, .pod_port = self_port, .peer_port = peer_port, .proto = proto};
+	struct snat_val *fv = bpf_map_lookup_elem(&snat_ct, &fk);
+	if (fv) {
+		new_port = fv->port; // established flow: keep its translated port
+	} else if (can_remap) {
+		// Prefer the Pod's own port; on collision scan a few candidates (ports are network order, so
+		// convert for the arithmetic). A slot is usable if free or already owned by this exact flow.
+		struct nat_key probe = {.node_addr = snat_addr, .ext_addr = daddr, .peer_port = peer_port, .proto = proto};
+		__u16 host_port = __builtin_bswap16(self_port);
+#pragma unroll
+		for (int i = 0; i < 8; i++) {
+			__u16 cand_h = host_port + i;
+			if (cand_h == 0)
+				cand_h = 1024;
+			__u16 cand = __builtin_bswap16(cand_h);
+			probe.port = cand;
+			struct nat_val *rv = bpf_map_lookup_elem(&nat_ct, &probe);
+			if (!rv || (rv->pod_addr == saddr && rv->pod_port == self_port)) {
+				new_port = cand;
+				break;
+			}
+			// All candidates taken: keep self_port (best effort; last owner wins, as before).
+		}
+	}
+
+	struct nat_key rk = {.node_addr = snat_addr, .ext_addr = daddr, .port = new_port, .peer_port = peer_port, .proto = proto};
+	struct nat_val rv = {.pod_addr = saddr, .pod_port = self_port};
+	bpf_map_update_elem(&nat_ct, &rk, &rv, BPF_ANY);
+	struct snat_val sv = {.port = new_port};
+	bpf_map_update_elem(&snat_ct, &fk, &sv, BPF_ANY);
+
+	snat_source(skb, saddr, snat_addr, l4off);
+	if (can_remap && new_port != self_port) {
+		if (l4off >= 0)
+			bpf_l4_csum_replace(skb, l4off, self_port, new_port, 2);
+		bpf_skb_store_bytes(skb, L4_OFF, &new_port, 2, 0);
+	}
+}
+
 SEC("tc")
 int hostdp_egress(struct __sk_buff *skb)
 {
@@ -367,11 +438,7 @@ int hostdp_egress(struct __sk_buff *skb)
 	// Egress: a member Pod (local or remote) leaving through this (Egress) Node is SNAT'd to its Egress IP.
 	__u32 *egress_ip = bpf_map_lookup_elem(&egress_snat, &saddr);
 	if (egress_ip) {
-		__u32 eip = *egress_ip;
-		struct nat_key key = {.node_addr = eip, .ext_addr = daddr, .port = self_port, .peer_port = peer_port, .proto = proto};
-		struct nat_val val = {.pod_addr = saddr};
-		bpf_map_update_elem(&nat_ct, &key, &val, BPF_ANY);
-		snat_source(skb, saddr, eip, l4off);
+		do_snat(skb, saddr, daddr, *egress_ip, self_port, peer_port, proto, l4off);
 		count(STAT_ESNAT);
 		return TC_ACT_OK;
 	}
@@ -392,11 +459,7 @@ int hostdp_egress(struct __sk_buff *skb)
 		return TC_ACT_OK;
 	}
 
-	// Record the reverse mapping so replies to node_ip:self_port from ext_addr:peer_port restore saddr.
-	struct nat_key key = {.node_addr = node_ip, .ext_addr = daddr, .port = self_port, .peer_port = peer_port, .proto = proto};
-	struct nat_val val = {.pod_addr = saddr};
-	bpf_map_update_elem(&nat_ct, &key, &val, BPF_ANY);
-	snat_source(skb, saddr, node_ip, l4off);
+	do_snat(skb, saddr, daddr, node_ip, self_port, peer_port, proto, l4off);
 	count(STAT_SNAT);
 	return TC_ACT_OK;
 }
@@ -455,12 +518,18 @@ int hostdp_ingress(struct __sk_buff *skb)
 		return TC_ACT_OK;
 	}
 	__u32 pod_ip = val->pod_addr;
+	__u16 pod_port = val->pod_port;
 
-	// Rewrite destination address back to the Pod IP; fix checksums.
+	// Rewrite destination address (and port, if it was remapped) back to the Pod's; fix checksums.
 	bpf_skb_store_bytes(skb, IP_DADDR_OFF, &pod_ip, 4, 0);
 	bpf_l3_csum_replace(skb, IP_CHECK_OFF, daddr, pod_ip, 4);
 	if (l4off >= 0)
 		bpf_l4_csum_replace(skb, l4off, daddr, pod_ip, 4 | BPF_F_PSEUDO_HDR);
+	if (pod_port != self_port && (proto == IPPROTO_TCP || proto == IPPROTO_UDP)) {
+		if (l4off >= 0)
+			bpf_l4_csum_replace(skb, l4off, self_port, pod_port, 2);
+		bpf_skb_store_bytes(skb, L4_OFF + 2, &pod_port, 2, 0);
+	}
 	count(STAT_UNSNAT);
 	// Local Pod: the stack delivers it via the gateway; remote member Pod (Egress reply on the Egress Node):
 	// forward it to the member's Node.

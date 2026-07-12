@@ -53,17 +53,28 @@ Focusing on noEncap mode (the first target), `route_linux.go` programs:
 2. **Pod->external masquerade (done)**: SNAT + NAT map + reverse on ingress.
 3. **noEncap Pod-to-Pod forwarding (done)**: `bpf_fib_lookup` + redirect.
 4. **Egress steering + Egress-IP SNAT + NodePort DNAT (done)**: see below.
-5. **Agent wiring (done for forwarding + masquerade)**: with the gate on, the agent loads the programs on
-   the transport and gateway interfaces at startup, seeds `node_config` / the local Pod CIDR, and the
-   NodeRouteController mirrors peer Pod CIDRs into `pod_cidrs` (always) and `pod_routes` (when the peer is
-   directly routable) alongside the traditional route client. The route client keeps running: the kernel
-   rules remain as a fallback, and eBPF takes over where it runs first (forwarding intercepts on gateway
-   ingress before the kernel route; the iptables masquerade still wins on the SNAT path until it is removed).
-   Egress/NodePort controller wiring and masquerade hardening (port re-allocation on collision, IPv6, IP
-   options) are follow-ups.
+5. **Agent + controller wiring (done)**: with the gate on, the agent loads the programs on the transport and
+   gateway interfaces at startup and seeds `node_config` / the local Pod CIDR; the NodeRouteController
+   mirrors peer Pod CIDRs into `pod_cidrs` (always) and `pod_routes` (when the peer is directly routable);
+   the iptables `masquerade Pod to external` rule is **not installed** (POSTROUTING would otherwise shadow
+   the eBPF SNAT), so masquerade is served by eBPF; the EgressController mirrors member Pod IPs into
+   `egress_steer` (remote Egress IP: local members steered to the Egress Node, next hop refreshed on
+   failover) and `egress_snat` (local Egress IP: local + remote member IPs -> Egress IP); AntreaProxy's
+   NodePort configs are mirrored through a route-client shim into the `nodeport` map, DNAT'ing to the
+   NodePort virtual DNAT IP (port preserved) so OVS still does endpoint selection, with the reply's source
+   restored by `np_ct` instead of kernel conntrack. On the controller side (gated), EgressGroup members
+   carry their Pod IPs and the group additionally spans the Egress Node, so the Egress Node learns remote
+   members' IPs for `egress_snat`.
+6. **Masquerade port-collision handling (done)**: SNAT keeps the Pod's source port when free and remaps it
+   when another Pod already owns `{SNAT address, peer, port}` (scanning a few candidates), tracked by the
+   `snat_ct` (forward) / `nat_ct` (reverse, now storing the original port) pair; the reply path restores
+   both the address and the port.
 
-Each step is gated and independently verifiable; the traditional route client remains the default and the
-fallback.
+Remaining follow-ups: IPv6, IP options (`ihl > 5`), NodePort coverage for non-transport-IP NodePort
+addresses and SCTP, and conntrack-state cleanup on Pod deletion (entries age out of the LRU maps today).
+
+Each step is gated and independently verifiable; with the gate off the datapath is byte-identical to today,
+and the traditional route client remains the default and the fallback.
 
 ### Step 3: Pod-to-remote-Pod forwarding
 

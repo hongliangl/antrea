@@ -503,10 +503,15 @@ func run(o *Options) error {
 	var proxyServer *proxy.ProxyServer
 	var proxyQuerier proxy.ProxyQuerier
 	if o.enableAntreaProxy {
+		// With the eBPF host datapath enabled, mirror NodePort configs into the eBPF nodeport map.
+		proxyRouteClient := route.Interface(routeClient)
+		if hostDPClient != nil {
+			proxyRouteClient = hostdp.NewRouteShim(routeClient, hostDPClient)
+		}
 		proxyServer, err = proxy.NewProxyServer(nodeConfig.Name,
 			nodeManager,
 			ofClient,
-			routeClient,
+			proxyRouteClient,
 			nodeIPTracker,
 			v4Enabled,
 			v6Enabled,
@@ -629,6 +634,9 @@ func run(o *Options) error {
 		)
 		if err != nil {
 			return fmt.Errorf("error creating new Egress controller: %v", err)
+		}
+		if hostDPClient != nil {
+			egressController.SetEBPFHostDataPath(hostDPClient)
 		}
 	}
 	if features.DefaultFeatureGate.Enabled(features.ServiceExternalIP) {

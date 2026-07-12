@@ -295,6 +295,7 @@ var (
 		AntreaIPAM,
 		AntreaPolicy,
 		ClusterNetworkPolicy,
+		EBPFHostDataPath,
 		Egress,
 		IPsecCertAuth,
 		L7NetworkPolicy,

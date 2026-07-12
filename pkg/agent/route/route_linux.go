@@ -50,6 +50,7 @@ import (
 	utilnetlink "antrea.io/antrea/v2/pkg/agent/util/netlink"
 	"antrea.io/antrea/v2/pkg/agent/util/nftables"
 	"antrea.io/antrea/v2/pkg/agent/util/sysctl"
+	"antrea.io/antrea/v2/pkg/features"
 	binding "antrea.io/antrea/v2/pkg/ovs/openflow"
 	"antrea.io/antrea/v2/pkg/ovs/ovsconfig"
 	"antrea.io/antrea/v2/pkg/util/env"
@@ -1434,7 +1435,10 @@ func (c *Client) restoreIptablesData(podCIDR *net.IPNet,
 		}
 		writeLine(iptablesData, rule...)
 	}
-	if !c.noSNAT {
+	// When the EBPFHostDataPath feature gate is on, the Pod-to-external masquerade is performed by the eBPF
+	// host datapath on the transport interface egress (POSTROUTING runs first, so the iptables rule would
+	// otherwise shadow it); skip installing the iptables rule.
+	if !c.noSNAT && !features.DefaultFeatureGate.Enabled(features.EBPFHostDataPath) {
 		rule := []string{
 			"-A", antreaPostRoutingChain,
 			"-m", "comment", "--comment", `"Antrea: masquerade Pod to external packets"`,
