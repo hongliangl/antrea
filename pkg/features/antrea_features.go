@@ -183,6 +183,11 @@ const (
 	// Allows users to apply ClusterNetworkPolicy to Kubernetes Nodes.
 	NodeNetworkPolicy featuregate.Feature = "NodeNetworkPolicy"
 
+	// alpha: v2.5
+	// Replace the host-network datapath (forwarding, NAT, policy routing programmed in the Linux host stack)
+	// with an eBPF datapath attached with tc on the Node's transport interface. OVS is unchanged. WIP.
+	EBPFHostDataPath featuregate.Feature = "EBPFHostDataPath"
+
 	// alpha: v2.1
 	// Enable the NodeLatencyMonitor feature.
 	NodeLatencyMonitor featuregate.Feature = "NodeLatencyMonitor"
@@ -243,6 +248,7 @@ var (
 		EgressTrafficShaping:          {Default: false, PreRelease: featuregate.Alpha},
 		EgressSeparateSubnet:          {Default: true, PreRelease: featuregate.Beta},
 		NodeNetworkPolicy:             {Default: false, PreRelease: featuregate.Alpha},
+		EBPFHostDataPath:              {Default: false, PreRelease: featuregate.Alpha},
 		NodeLatencyMonitor:            {Default: false, PreRelease: featuregate.Alpha},
 	}
 
@@ -278,6 +284,7 @@ var (
 		EgressTrafficShaping,
 		EgressSeparateSubnet,
 		NodeNetworkPolicy,
+		EBPFHostDataPath,
 		NodeLatencyMonitor,
 	)
 
@@ -288,6 +295,7 @@ var (
 		AntreaIPAM,
 		AntreaPolicy,
 		ClusterNetworkPolicy,
+		EBPFHostDataPath,
 		Egress,
 		IPsecCertAuth,
 		L7NetworkPolicy,
@@ -329,6 +337,7 @@ var (
 		EgressTrafficShaping:        {},
 		EgressSeparateSubnet:        {},
 		NodeNetworkPolicy:           {},
+		EBPFHostDataPath:            {},
 		FlowExporter:                {},
 		NodeLatencyMonitor:          {},
 		PacketCapture:               {},

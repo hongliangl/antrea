@@ -36,6 +36,7 @@ import (
 
 	"antrea.io/antrea/v2/pkg/agent/config"
 	"antrea.io/antrea/v2/pkg/agent/controller/ipseccertificate"
+	"antrea.io/antrea/v2/pkg/agent/hostdp"
 	"antrea.io/antrea/v2/pkg/agent/interfacestore"
 	"antrea.io/antrea/v2/pkg/agent/openflow"
 	"antrea.io/antrea/v2/pkg/agent/route"
@@ -101,6 +102,9 @@ type Controller struct {
 	// eventHandlerRegistration.HasSynced will be used to track whether even handlers have been
 	// called for the initial list.
 	eventHandlerRegistration cache.ResourceEventHandlerRegistration
+	// hostDP, when non-nil (EBPFHostDataPath feature gate), mirrors the peer Pod CIDRs and their next hops
+	// into the eBPF host datapath maps, alongside the traditional route client programming.
+	hostDP hostdp.Interface
 }
 
 // NewNodeRouteController instantiates a new Controller object which will process Node events
@@ -168,6 +172,12 @@ func NewNodeRouteController(
 	)
 	controller.eventHandlerRegistration = registration
 	return controller
+}
+
+// SetEBPFHostDataPath enables mirroring peer Pod CIDRs and their next hops into the eBPF host datapath maps
+// (EBPFHostDataPath feature gate). Must be called before Run.
+func (c *Controller) SetEBPFHostDataPath(hostDP hostdp.Interface) {
+	c.hostDP = hostDP
 }
 
 func nodeRouteInfoKeyFunc(obj interface{}) (string, error) {
@@ -509,6 +519,14 @@ func (c *Controller) deleteNodeRoute(nodeName string) error {
 		if err := c.routeClient.DeleteRoutes(podCIDR); err != nil {
 			return fmt.Errorf("failed to delete the route to Node %s: %v", nodeName, err)
 		}
+		if c.hostDP != nil && podCIDR.IP.To4() != nil {
+			if err := c.hostDP.DeletePodRoute(podCIDR); err != nil {
+				return fmt.Errorf("failed to delete the eBPF Pod route to Node %s: %w", nodeName, err)
+			}
+			if err := c.hostDP.DeletePodCIDR(podCIDR); err != nil {
+				return fmt.Errorf("failed to delete the eBPF Pod CIDR of Node %s: %w", nodeName, err)
+			}
+		}
 	}
 	if err := c.ofClient.UninstallNodeFlows(nodeName); err != nil {
 		return fmt.Errorf("failed to uninstall flows to Node %s: %v", nodeName, err)
@@ -672,6 +690,19 @@ func (c *Controller) addNodeRoute(nodeName string, node *corev1.Node) error {
 				return err
 			}
 			peerGatewayIPs.IPv4 = peerGatewayIP
+			// Mirror the peer Pod CIDR into the eBPF host datapath: pod_cidrs for NAT classification, and,
+			// when the peer is directly routable (noEncap / hybrid same-subnet), pod_routes so Pod-to-remote-Pod
+			// traffic is forwarded in eBPF.
+			if c.hostDP != nil {
+				if err := c.hostDP.AddPodCIDR(peerPodCIDR); err != nil {
+					return err
+				}
+				if c.networkConfig.NeedsDirectRoutingToPeer(peerNodeIPs.IPv4, c.nodeConfig.NodeTransportIPv4Addr) {
+					if err := c.hostDP.SetPodRoute(peerPodCIDR, peerNodeIPs.IPv4); err != nil {
+						return err
+					}
+				}
+			}
 		}
 	}
 

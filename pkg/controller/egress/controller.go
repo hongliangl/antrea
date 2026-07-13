@@ -44,6 +44,7 @@ import (
 	"antrea.io/antrea/v2/pkg/controller/externalippool"
 	"antrea.io/antrea/v2/pkg/controller/grouping"
 	antreatypes "antrea.io/antrea/v2/pkg/controller/types"
+	"antrea.io/antrea/v2/pkg/features"
 	"antrea.io/antrea/v2/pkg/util/k8s"
 )
 
@@ -387,6 +388,10 @@ func (c *EgressController) syncEgress(key string) error {
 	memberSetByNode := make(map[string]controlplane.GroupMemberSet)
 	egressGroup := egressGroupObj.(*antreatypes.EgressGroup)
 	pods, _ := c.groupingInterface.GetEntities(egressGroupType, key)
+	// With EBPFHostDataPath on, the Egress Node programs an eBPF SNAT map keyed by member Pod IP, so members
+	// carry their IPs and the whole group additionally spans the Egress Node (which may host no member).
+	deliverMemberIPs := features.DefaultFeatureGate.Enabled(features.EBPFHostDataPath)
+	var allMembers []*controlplane.GroupMember
 	for _, pod := range pods {
 		// Ignore Pod if it's not scheduled or is already terminated. And Egress does not support HostNetwork Pods, so also ignore
 		// Pod if it's HostNetwork Pod.
@@ -405,9 +410,30 @@ func (c *EgressController) syncEgress(key string) error {
 				Namespace: pod.Namespace,
 			},
 		}
+		if deliverMemberIPs {
+			for _, podIP := range pod.Status.PodIPs {
+				if ip := net.ParseIP(podIP.IP); ip != nil {
+					groupMember.IPs = append(groupMember.IPs, controlplane.IPAddress(ip))
+				}
+			}
+			allMembers = append(allMembers, groupMember)
+		}
 		podSet.Insert(groupMember)
 		// Update the NodeNames in order to set the SpanMeta for EgressGroup.
 		nodeNames.Insert(pod.Spec.NodeName)
+	}
+	if deliverMemberIPs {
+		if egressNode := egress.Status.EgressNode; egressNode != "" {
+			nodeNames.Insert(egressNode)
+			podSet := memberSetByNode[egressNode]
+			if podSet == nil {
+				podSet = controlplane.GroupMemberSet{}
+				memberSetByNode[egressNode] = podSet
+			}
+			for _, member := range allMembers {
+				podSet.Insert(member)
+			}
+		}
 	}
 	updatedEgressGroup := &antreatypes.EgressGroup{
 		UID:               egressGroup.UID,
