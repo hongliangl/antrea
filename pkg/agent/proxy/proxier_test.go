@@ -893,6 +893,34 @@ func testNodePortAdd(t *testing.T,
 	assert.Contains(t, fp.endpointsInstalledMap, svcPortName)
 }
 
+// TestInstallServiceGroupFailureKeepsGroupID asserts that a Service whose group install fails keeps
+// its group ID instead of releasing it. Recycling the ID would hand it to the next Service (the
+// allocator reuses recycled IDs first), but the group may well exist on OVS, so the next Service's
+// install would be rejected with OFPGMFC_GROUP_EXISTS.
+func TestInstallServiceGroupFailureKeepsGroupID(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockOFClient, mockRouteClient := getMockClients(ctrl)
+	groupAllocator := openflow.NewGroupAllocator()
+	fp := newFakeProxier(mockRouteClient, mockOFClient, nil, groupAllocator, false)
+
+	svcA := makeSvcPortName("ns", "svc-a", "http", corev1.ProtocolTCP)
+	svcB := makeSvcPortName("ns", "svc-b", "http", corev1.ProtocolTCP)
+
+	// svc-a's group install fails, e.g. because the bundle reply timed out.
+	mockOFClient.EXPECT().InstallServiceGroup(gomock.Any(), false, gomock.Any()).Return(fmt.Errorf("bundle reply is timeout")).Times(1)
+	_, ok := fp.installServiceGroup(svcA, true, false, false, nil)
+	require.False(t, ok)
+
+	groupA, exists := fp.groupCounter.Get(svcA, false)
+	require.True(t, exists, "the group ID must stay assigned to the Service after a failed install")
+
+	// svc-b must not be given svc-a's group ID.
+	mockOFClient.EXPECT().InstallServiceGroup(gomock.Any(), false, gomock.Any()).Return(nil).Times(1)
+	groupB, ok := fp.installServiceGroup(svcB, true, false, false, nil)
+	require.True(t, ok)
+	assert.NotEqual(t, groupA, groupB, "a failed Service's group ID must not be reused by another Service")
+}
+
 func TestClusterIPAdd(t *testing.T) {
 	t.Run("IPv4", func(t *testing.T) {
 		t.Run("InternalTrafficPolicy Cluster", func(t *testing.T) {

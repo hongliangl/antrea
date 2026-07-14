@@ -1154,6 +1154,64 @@ func Test_client_InstallServiceGroup(t *testing.T) {
 	}
 }
 
+// Test_client_InstallServiceGroup_CacheOutOfSync covers the case where the group cache and OVS
+// disagree about whether a group exists. The cache alone decides between OFPGC_ADD and
+// OFPGC_MODIFY, and OVS rejects the wrong one (OFPGMFC_GROUP_EXISTS / OFPGMFC_UNKNOWN_GROUP), so
+// without a retry using the opposite command the install could never succeed again.
+func Test_client_InstallServiceGroup_CacheOutOfSync(t *testing.T) {
+	groupID := binding.GroupIDType(101)
+	endpoints := []proxy.Endpoint{
+		proxy.NewBaseEndpointInfo("10.10.0.100", 80, false, true, false, false, nil, nil),
+	}
+	groupExistsErr := fmt.Errorf("unsupported bundle error with type %d and code %d", 17, 13)
+
+	t.Run("group exists on OVS but not in the cache", func(t *testing.T) {
+		// This is what a bundle whose reply timed out leaves behind: OVS committed the group, the
+		// agent recorded nothing. The install must recover by falling back to MODIFY.
+		ctrl := gomock.NewController(t)
+		m := opstest.NewMockOFEntryOperations(ctrl)
+		fc := newFakeClient(m, true, true, config.K8sNode, config.TrafficEncapModeEncap)
+		defer resetPipelines()
+
+		m.EXPECT().AddOFEntries(gomock.Any()).Return(groupExistsErr).Times(1)
+		m.EXPECT().ModifyOFEntries(gomock.Any()).Return(nil).Times(1)
+
+		assert.NoError(t, fc.InstallServiceGroup(groupID, false, endpoints))
+		_, ok := fc.featureService.groupCache.Load(groupID)
+		assert.True(t, ok, "the group must be cached so later installs use MODIFY")
+	})
+
+	t.Run("group in the cache but missing from OVS", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		m := opstest.NewMockOFEntryOperations(ctrl)
+		fc := newFakeClient(m, true, true, config.K8sNode, config.TrafficEncapModeEncap)
+		defer resetPipelines()
+
+		// First install populates the cache.
+		m.EXPECT().AddOFEntries(gomock.Any()).Return(nil).Times(1)
+		require.NoError(t, fc.InstallServiceGroup(groupID, false, endpoints))
+
+		// The group is gone from OVS, so MODIFY is rejected and ADD must be retried.
+		m.EXPECT().ModifyOFEntries(gomock.Any()).Return(fmt.Errorf("OFPGMFC_UNKNOWN_GROUP")).Times(1)
+		m.EXPECT().AddOFEntries(gomock.Any()).Return(nil).Times(1)
+		assert.NoError(t, fc.InstallServiceGroup(groupID, false, endpoints))
+	})
+
+	t.Run("OVS rejects both commands", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		m := opstest.NewMockOFEntryOperations(ctrl)
+		fc := newFakeClient(m, true, true, config.K8sNode, config.TrafficEncapModeEncap)
+		defer resetPipelines()
+
+		m.EXPECT().AddOFEntries(gomock.Any()).Return(groupExistsErr).Times(1)
+		m.EXPECT().ModifyOFEntries(gomock.Any()).Return(fmt.Errorf("bundle reply is timeout")).Times(1)
+
+		assert.ErrorContains(t, fc.InstallServiceGroup(groupID, false, endpoints), "unsupported bundle error")
+		_, ok := fc.featureService.groupCache.Load(groupID)
+		assert.False(t, ok, "a group that could not be realized must not be cached as installed")
+	})
+}
+
 func Test_client_InstallEndpointFlows(t *testing.T) {
 	ep1IPv4 := "10.10.0.100"
 	ep2IPv4 := "10.10.0.101"

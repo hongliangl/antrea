@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net"
+	"sync"
 
 	"antrea.io/libOpenflow/openflow15"
 	"antrea.io/libOpenflow/protocol"
@@ -716,22 +717,48 @@ func (c *client) GetPodFlowKeys(interfaceName string) []string {
 	return c.getFlowKeysFromCache(c.featurePodConnectivity.podCachedFlows, interfaceName)
 }
 
+// installGroup realizes a group on OVS and records it in the given cache. Whether the group already
+// exists on OVS is tracked by the cache, which selects OFPGC_ADD or OFPGC_MODIFY: OpenFlow rejects
+// an ADD for an existing group (OFPGMFC_GROUP_EXISTS) and a MODIFY for a missing one
+// (OFPGMFC_UNKNOWN_GROUP).
+//
+// The cache can disagree with OVS, and when it does, retrying the same command can never succeed. A
+// bundle whose reply times out (the agent gives up after 10s, but a busy ovs-vswitchd may commit the
+// bundle anyway) leaves the group on OVS with no cache entry, so every later attempt would send an
+// ADD and be rejected forever. Conversely, a group can disappear from OVS while the cache still has
+// it. So on failure we retry once with the opposite command, which resynchronizes the cache with
+// OVS instead of failing indefinitely.
+func (c *client) installGroup(cache *sync.Map, groupID binding.GroupIDType, group binding.Group) error {
+	_, installed := cache.Load(groupID)
+	add := func() error { return c.ofEntryOperations.AddOFEntries([]binding.OFEntry{group}) }
+	modify := func() error { return c.ofEntryOperations.ModifyOFEntries([]binding.OFEntry{group}) }
+
+	first, second := add, modify
+	if installed {
+		first, second = modify, add
+	}
+	err := first()
+	if err != nil {
+		// The cache and OVS disagree about whether the group exists, or OVS is unhealthy. Retry
+		// with the opposite command; if that also fails, report the original error, which
+		// describes the operation we expected to succeed.
+		if retryErr := second(); retryErr != nil {
+			return err
+		}
+		klog.InfoS("Group cache was out of sync with OVS, resynchronized it", "groupID", groupID, "cachedAsInstalled", installed)
+	}
+	cache.Store(groupID, group)
+	return nil
+}
+
 func (c *client) InstallServiceGroup(groupID binding.GroupIDType, withSessionAffinity bool, endpoints []proxy.Endpoint) error {
 	c.replayMutex.RLock()
 	defer c.replayMutex.RUnlock()
 
 	group := c.featureService.serviceEndpointGroup(groupID, withSessionAffinity, endpoints...)
-	_, installed := c.featureService.groupCache.Load(groupID)
-	if !installed {
-		if err := c.ofEntryOperations.AddOFEntries([]binding.OFEntry{group}); err != nil {
-			return fmt.Errorf("error when installing Service Endpoints Group %d: %w", groupID, err)
-		}
-	} else {
-		if err := c.ofEntryOperations.ModifyOFEntries([]binding.OFEntry{group}); err != nil {
-			return fmt.Errorf("error when modifying Service Endpoints Group %d: %w", groupID, err)
-		}
+	if err := c.installGroup(&c.featureService.groupCache, groupID, group); err != nil {
+		return fmt.Errorf("error when installing Service Endpoints Group %d: %w", groupID, err)
 	}
-	c.featureService.groupCache.Store(groupID, group)
 	return nil
 }
 
@@ -1556,17 +1583,9 @@ func (c *client) InstallMulticastGroup(groupID binding.GroupIDType, localReceive
 	}
 
 	group := c.featureMulticast.multicastReceiversGroup(groupID, nextTable, localReceivers, remoteNodeReceivers)
-	_, installed := c.featureMulticast.groupCache.Load(groupID)
-	if !installed {
-		if err := c.ofEntryOperations.AddOFEntries([]binding.OFEntry{group}); err != nil {
-			return fmt.Errorf("error when installing Multicast receiver Group %d: %w", groupID, err)
-		}
-	} else {
-		if err := c.ofEntryOperations.ModifyOFEntries([]binding.OFEntry{group}); err != nil {
-			return fmt.Errorf("error when modifying Multicast receiver Group %d: %w", groupID, err)
-		}
+	if err := c.installGroup(&c.featureMulticast.groupCache, groupID, group); err != nil {
+		return fmt.Errorf("error when installing Multicast receiver Group %d: %w", groupID, err)
 	}
-	c.featureMulticast.groupCache.Store(groupID, group)
 	return nil
 }
 

@@ -260,21 +260,20 @@ func (p *proxier) installServiceGroup(svcPortName k8sproxy.ServicePortName, need
 	if exists && !needUpdate {
 		return groupID, true
 	}
-	success := false
 	if !exists {
 		groupID = p.groupCounter.AllocateIfNotExist(svcPortName, local)
-		// If the installation of the group fails, recycle it.
-		defer func() {
-			if !success {
-				p.groupCounter.Recycle(svcPortName, local)
-			}
-		}()
 	}
 	if err := p.ofClient.InstallServiceGroup(groupID, withSessionAffinity, endpoints); err != nil {
+		// Keep the group ID assigned to this Service instead of recycling it. A failed install
+		// does not mean the group is absent from OVS: a bundle whose reply timed out may still
+		// have been committed. Recycling would hand the ID straight to another Service (the
+		// allocator reuses recycled IDs first), whose install would then be rejected with
+		// OFPGMFC_GROUP_EXISTS because the group belongs to this Service on OVS. The ID stays
+		// bound to this Service, which retries with the same ID on the next sync, and it is
+		// released when the Service or its group is removed.
 		klog.ErrorS(err, "Error when installing group of Endpoints for Service", "ServicePortName", svcPortName, "local", local)
 		return 0, false
 	}
-	success = true
 	return groupID, true
 }
 
