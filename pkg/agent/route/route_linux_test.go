@@ -18,9 +18,9 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1678,6 +1678,8 @@ func TestAddRoutes(t *testing.T) {
 			assert.NoError(t, c.AddRoutes(tt.podCIDR, tt.nodeName, tt.nodeIP, tt.nodeGwIP))
 
 			if c.hostNetworkAccelerationEnabled {
+				// The nftables set elements are only applied when the nftables rules are synced.
+				require.NoError(t, c.syncNFTables(context.TODO()))
 				expectedElements := []*knftables.Element{{
 					Set: antreaNFTablesSetPeerPodCIDR,
 					Key: []string{tt.podCIDR.String()},
@@ -1807,6 +1809,8 @@ func TestDeleteRoutes(t *testing.T) {
 			tt.expectedIPSetCalls(mockIPSet.EXPECT())
 			tt.expectedNetlinkCalls(mockNetlink.EXPECT())
 			assert.NoError(t, c.DeleteRoutes(tt.podCIDR))
+			// The nftables set elements are only removed when the nftables rules are synced.
+			require.NoError(t, c.syncNFTables(context.TODO()))
 
 			var expectedElements []*knftables.Element
 			for _, cidr := range tt.expectedPodCIDRs {
@@ -1837,179 +1841,120 @@ func TestAddPeerPodCIDRToNFTablesSet(t *testing.T) {
 		podCIDRToAdd     *net.IPNet
 		ipv4Enabled      bool
 		ipv6Enabled      bool
-		existingElements []*knftables.Element
+		cachedPodCIDRs   []string
+		staleElements    []*knftables.Element
 		expectedElements []*knftables.Element
 	}{
 		{
-			name:         "IPv4",
+			name:           "IPv4",
+			ipv4Enabled:    true,
+			podCIDRToAdd:   ip.MustParseCIDR("192.168.10.0/24"),
+			cachedPodCIDRs: []string{"192.168.11.0/24"},
+			expectedElements: []*knftables.Element{
+				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "192.168.10.0/24"),
+				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "192.168.11.0/24"),
+			},
+		},
+		{
+			name:           "IPv6",
+			ipv6Enabled:    true,
+			podCIDRToAdd:   ip.MustParseCIDR("2001:ab03:cd04:55ee:1001::/80"),
+			cachedPodCIDRs: []string{"2001:ab03:cd04:55ee:1000::/80"},
+			expectedElements: []*knftables.Element{
+				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "2001:ab03:cd04:55ee:1000::/80"),
+				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "2001:ab03:cd04:55ee:1001::/80"),
+			},
+		},
+		{
+			name:           "IPv4, Pod CIDR already cached",
+			ipv4Enabled:    true,
+			podCIDRToAdd:   ip.MustParseCIDR("192.168.10.0/24"),
+			cachedPodCIDRs: []string{"192.168.10.0/24", "192.168.11.0/24"},
+			expectedElements: []*knftables.Element{
+				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "192.168.10.0/24"),
+				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "192.168.11.0/24"),
+			},
+		},
+		{
+			name:         "IPv4, stale element removed by the sync",
 			ipv4Enabled:  true,
 			podCIDRToAdd: ip.MustParseCIDR("192.168.10.0/24"),
-			existingElements: []*knftables.Element{
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "192.168.11.0/24"),
+			// This element is not cached, e.g. because it was added by a third party. The sync restores the set
+			// from the cache, so it is removed.
+			staleElements: []*knftables.Element{
+				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "192.168.12.0/24"),
 			},
 			expectedElements: []*knftables.Element{
 				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "192.168.10.0/24"),
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "192.168.11.0/24"),
-			},
-		},
-		{
-			name:         "IPv6",
-			ipv6Enabled:  true,
-			podCIDRToAdd: ip.MustParseCIDR("2001:ab03:cd04:55ee:1001::/80"),
-			existingElements: []*knftables.Element{
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "2001:ab03:cd04:55ee:1000::/80"),
-			},
-			expectedElements: []*knftables.Element{
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "2001:ab03:cd04:55ee:1000::/80"),
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "2001:ab03:cd04:55ee:1001::/80"),
-			},
-		},
-		{
-			name:         "IPv4, existing element",
-			ipv4Enabled:  true,
-			podCIDRToAdd: ip.MustParseCIDR("192.168.10.0/24"),
-			existingElements: []*knftables.Element{
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "192.168.10.0/24"),
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "192.168.11.0/24"),
-			},
-			expectedElements: []*knftables.Element{
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "192.168.10.0/24"),
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "192.168.11.0/24"),
-			},
-		},
-		{
-			name:         "IPv6, element enforced",
-			podCIDRToAdd: ip.MustParseCIDR("2001:ab03:cd04:55ee:1001::/80"),
-			ipv6Enabled:  true,
-			existingElements: []*knftables.Element{
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "2001:ab03:cd04:55ee:1000::/80"),
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "2001:ab03:cd04:55ee:1001::/80"),
-			},
-			expectedElements: []*knftables.Element{
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "2001:ab03:cd04:55ee:1000::/80"),
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "2001:ab03:cd04:55ee:1001::/80"),
 			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mockNFTables, err := newMockNFTables(tt.ipv4Enabled, tt.ipv6Enabled)
-			require.NoError(t, err)
-			c := &Client{
-				nftables:                       mockNFTables,
-				hostNetworkAccelerationEnabled: true,
-				nodeConfig: &config.NodeConfig{
-					GatewayConfig: &config.GatewayConfig{
-						Name: "antrea-gw0",
-					},
-					NodeTransportInterfaceName: "eth0",
-				},
+			c := newNFTablesAccelerationTestClient(t, tt.ipv4Enabled, tt.ipv6Enabled)
+			isIPv6 := utilnet.IsIPv6(tt.podCIDRToAdd.IP)
+			for _, podCIDR := range tt.cachedPodCIDRs {
+				storePodCIDRNFTablesCache(c, podCIDR, isIPv6)
 			}
 			require.NoError(t, c.syncNFTables(context.TODO()))
-
-			// Prepare enforced nftables set and elements.
-			isIPv6 := utilnet.IsIPv6(tt.podCIDRToAdd.IP)
-			var nft knftables.Interface
-			if isIPv6 {
-				nft = mockNFTables.IPv6
-			} else {
-				nft = mockNFTables.IPv4
-			}
-			tx := nft.NewTransaction()
-			for _, element := range tt.existingElements {
-				tx.Add(element)
-			}
-			require.NoError(t, nft.Run(context.TODO(), tx))
+			addNFTablesSetElements(t, c, tt.staleElements, isIPv6)
 
 			assert.NoError(t, c.addPeerPodCIDRToNFTablesSet(tt.podCIDRToAdd))
+			assertSyncTriggered(t, c.nftablesSyncTrigger)
+			// The element is only added to the set when the nftables rules are synced.
+			require.NoError(t, c.syncNFTables(context.TODO()))
 
-			for _, nft := range c.nftables.All() {
-				gotElements, err := nft.ListElements(context.TODO(), "set", antreaNFTablesSetPeerPodCIDR)
-				require.NoError(t, err)
-				assert.ElementsMatch(t, tt.expectedElements, gotElements)
-			}
+			assertPeerPodCIDRElements(t, c, tt.expectedElements)
 		})
 	}
 }
 
 func TestDeletePeerPodCIDRFromNFTablesSet(t *testing.T) {
 	tests := []struct {
-		name                  string
-		podCIDRToDelete       *net.IPNet
-		ipv4Enabled           bool
-		ipv6Enabled           bool
-		existingPodCIDRCached []string
-		existingElements      []*knftables.Element
-		expectedElements      []*knftables.Element
+		name             string
+		podCIDRToDelete  *net.IPNet
+		ipv4Enabled      bool
+		ipv6Enabled      bool
+		cachedPodCIDRs   []string
+		expectedTrigger  bool
+		expectedElements []*knftables.Element
 	}{
 		{
-			name:                  "IPv4, Pod CIDR cached, element enforced",
-			podCIDRToDelete:       ip.MustParseCIDR("192.168.10.0/24"),
-			ipv4Enabled:           true,
-			existingPodCIDRCached: []string{"192.168.10.0/24", "192.168.11.0/24"},
-			existingElements: []*knftables.Element{
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "192.168.10.0/24"),
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "192.168.11.0/24"),
-			},
-			expectedElements: []*knftables.Element{
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "192.168.11.0/24"),
-			},
-		},
-		{
-			name:                  "IPv6, Pod CIDR cached, element enforced",
-			ipv6Enabled:           true,
-			podCIDRToDelete:       ip.MustParseCIDR("2001:ab03:cd04:55ee:1001::/80"),
-			existingPodCIDRCached: []string{"2001:ab03:cd04:55ee:1000::/80", "2001:ab03:cd04:55ee:1001::/80"},
-			existingElements: []*knftables.Element{
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "2001:ab03:cd04:55ee:1000::/80"),
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "2001:ab03:cd04:55ee:1001::/80"),
-			},
-			expectedElements: []*knftables.Element{
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "2001:ab03:cd04:55ee:1000::/80"),
-			},
-		},
-		{
-			name:            "IPv4, Pod CIDR not cached, element not enforced",
+			name:            "IPv4, Pod CIDR cached",
 			ipv4Enabled:     true,
 			podCIDRToDelete: ip.MustParseCIDR("192.168.10.0/24"),
-			existingElements: []*knftables.Element{
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "192.168.11.0/24"),
-			},
+			cachedPodCIDRs:  []string{"192.168.10.0/24", "192.168.11.0/24"},
+			expectedTrigger: true,
 			expectedElements: []*knftables.Element{
 				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "192.168.11.0/24"),
 			},
 		},
 		{
-			name:            "IPv6, Pod CIDR not cached, element not enforced",
+			name:            "IPv6, Pod CIDR cached",
 			ipv6Enabled:     true,
 			podCIDRToDelete: ip.MustParseCIDR("2001:ab03:cd04:55ee:1001::/80"),
-			existingElements: []*knftables.Element{
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "2001:ab03:cd04:55ee:1000::/80"),
-			},
+			cachedPodCIDRs:  []string{"2001:ab03:cd04:55ee:1000::/80", "2001:ab03:cd04:55ee:1001::/80"},
+			expectedTrigger: true,
 			expectedElements: []*knftables.Element{
 				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "2001:ab03:cd04:55ee:1000::/80"),
 			},
 		},
 		{
-			name:                  "IPv4, Pod CIDR cached, element not enforced",
-			ipv4Enabled:           true,
-			podCIDRToDelete:       ip.MustParseCIDR("192.168.10.0/24"),
-			existingPodCIDRCached: []string{"192.168.10.0/24", "192.168.11.0/24"},
-			existingElements: []*knftables.Element{
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "192.168.11.0/24"),
-			},
+			name:            "IPv4, Pod CIDR not cached",
+			ipv4Enabled:     true,
+			podCIDRToDelete: ip.MustParseCIDR("192.168.10.0/24"),
+			cachedPodCIDRs:  []string{"192.168.11.0/24"},
+			expectedTrigger: false,
 			expectedElements: []*knftables.Element{
 				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "192.168.11.0/24"),
 			},
 		},
 		{
-			name:                  "IPv6, Pod CIDR cached, element not enforced",
-			ipv6Enabled:           true,
-			podCIDRToDelete:       ip.MustParseCIDR("2001:ab03:cd04:55ee:1001::/80"),
-			existingPodCIDRCached: []string{"2001:ab03:cd04:55ee:1000::/80", "2001:ab03:cd04:55ee:1001::/80"},
-			existingElements: []*knftables.Element{
-				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "2001:ab03:cd04:55ee:1000::/80"),
-			},
+			name:            "IPv6, Pod CIDR not cached",
+			ipv6Enabled:     true,
+			podCIDRToDelete: ip.MustParseCIDR("2001:ab03:cd04:55ee:1001::/80"),
+			cachedPodCIDRs:  []string{"2001:ab03:cd04:55ee:1000::/80"},
+			expectedTrigger: false,
 			expectedElements: []*knftables.Element{
 				generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, "2001:ab03:cd04:55ee:1000::/80"),
 			},
@@ -2017,50 +1962,99 @@ func TestDeletePeerPodCIDRFromNFTablesSet(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mockNFTables, err := newMockNFTables(tt.ipv4Enabled, tt.ipv6Enabled)
-			require.NoError(t, err)
-			c := &Client{
-				nftables:                       mockNFTables,
-				hostNetworkAccelerationEnabled: true,
-				nodeConfig: &config.NodeConfig{
-					GatewayConfig: &config.GatewayConfig{
-						Name: "antrea-gw0",
-					},
-					NodeTransportInterfaceName: "eth0",
-				},
+			c := newNFTablesAccelerationTestClient(t, tt.ipv4Enabled, tt.ipv6Enabled)
+			isIPv6 := utilnet.IsIPv6(tt.podCIDRToDelete.IP)
+			for _, podCIDR := range tt.cachedPodCIDRs {
+				storePodCIDRNFTablesCache(c, podCIDR, isIPv6)
 			}
 			require.NoError(t, c.syncNFTables(context.TODO()))
 
-			// Prepare enforced nftables set and elements.
-			isIPv6 := utilnet.IsIPv6(tt.podCIDRToDelete.IP)
-			var nft knftables.Interface
-			if isIPv6 {
-				nft = mockNFTables.IPv6
-			} else {
-				nft = mockNFTables.IPv4
-			}
-			tx := nft.NewTransaction()
-			for _, element := range tt.existingElements {
-				tx.Add(element)
-			}
-			require.NoError(t, nft.Run(context.TODO(), tx))
-			// Prepare cached Pod CIDRs.
-			for _, podCIDR := range tt.existingPodCIDRCached {
-				if isIPv6 {
-					c.podCIDRNFTablesSetIPv6.Store(podCIDR, podCIDR)
-				} else {
-					c.podCIDRNFTablesSetIPv4.Store(podCIDR, podCIDR)
-				}
-			}
-
 			assert.NoError(t, c.deletePeerPodCIDRFromNFTablesSet(tt.podCIDRToDelete))
-
-			for _, nft := range c.nftables.All() {
-				gotElements, err := nft.ListElements(context.TODO(), "set", antreaNFTablesSetPeerPodCIDR)
-				require.NoError(t, err)
-				assert.ElementsMatch(t, tt.expectedElements, gotElements)
+			if tt.expectedTrigger {
+				assertSyncTriggered(t, c.nftablesSyncTrigger)
+			} else {
+				assertSyncNotTriggered(t, c.nftablesSyncTrigger)
 			}
+			// The element is only removed from the set when the nftables rules are synced.
+			require.NoError(t, c.syncNFTables(context.TODO()))
+
+			assertPeerPodCIDRElements(t, c, tt.expectedElements)
 		})
+	}
+}
+
+func TestRunSyncLoopNFTables(t *testing.T) {
+	c := newNFTablesAccelerationTestClient(t, true, false)
+	require.NoError(t, c.syncNFTables(context.TODO()))
+	podCIDR := ip.MustParseCIDR("192.168.10.0/24")
+	expectedElements := []*knftables.Element{generateNFTablesSetElement(antreaNFTablesSetPeerPodCIDR, podCIDR.String())}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		c.runSyncLoop(ctx, "nftables", c.nftablesSyncTrigger, func() error { return c.syncNFTables(ctx) })
+	}()
+
+	require.NoError(t, c.addPeerPodCIDRToNFTablesSet(podCIDR))
+	assert.EventuallyWithT(t, func(t *assert.CollectT) {
+		gotElements, err := c.nftables.IPv4.ListElements(context.TODO(), "set", antreaNFTablesSetPeerPodCIDR)
+		assert.NoError(t, err)
+		assert.ElementsMatch(t, expectedElements, gotElements)
+	}, 2*time.Second, 10*time.Millisecond)
+
+	cancel()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the sync loop did not stop after the context was cancelled")
+	}
+}
+
+func newNFTablesAccelerationTestClient(t *testing.T, ipv4Enabled, ipv6Enabled bool) *Client {
+	mockNFTables, err := newMockNFTables(ipv4Enabled, ipv6Enabled)
+	require.NoError(t, err)
+	return &Client{
+		nftables:                       mockNFTables,
+		hostNetworkAccelerationEnabled: true,
+		nftablesSyncTrigger:            make(chan struct{}, 1),
+		nodeConfig: &config.NodeConfig{
+			GatewayConfig: &config.GatewayConfig{
+				Name: "antrea-gw0",
+			},
+			NodeTransportInterfaceName: "eth0",
+		},
+	}
+}
+
+func storePodCIDRNFTablesCache(c *Client, podCIDR string, isIPv6 bool) {
+	if isIPv6 {
+		c.podCIDRNFTablesSetIPv6.Store(podCIDR, struct{}{})
+	} else {
+		c.podCIDRNFTablesSetIPv4.Store(podCIDR, struct{}{})
+	}
+}
+
+func addNFTablesSetElements(t *testing.T, c *Client, elements []*knftables.Element, isIPv6 bool) {
+	if len(elements) == 0 {
+		return
+	}
+	nft := c.nftables.IPv4
+	if isIPv6 {
+		nft = c.nftables.IPv6
+	}
+	tx := nft.NewTransaction()
+	for _, element := range elements {
+		tx.Add(element)
+	}
+	require.NoError(t, nft.Run(context.TODO(), tx))
+}
+
+func assertPeerPodCIDRElements(t *testing.T, c *Client, expectedElements []*knftables.Element) {
+	for _, nft := range c.nftables.All() {
+		gotElements, err := nft.ListElements(context.TODO(), "set", antreaNFTablesSetPeerPodCIDR)
+		require.NoError(t, err)
+		assert.ElementsMatch(t, expectedElements, gotElements)
 	}
 }
 
@@ -2158,155 +2152,133 @@ func TestUnMigrateRoutesToGw(t *testing.T) {
 }
 
 func TestAddSNATRule(t *testing.T) {
-	tests := []struct {
-		name          string
-		networkConfig *config.NetworkConfig
-		nodeConfig    *config.NodeConfig
-		snatIP        net.IP
-		mark          uint32
-		expectedCalls func(mockIPTables *iptablestest.MockInterfaceMockRecorder)
-	}{
-		{
-			name: "IPv4",
-			nodeConfig: &config.NodeConfig{
-				GatewayConfig: &config.GatewayConfig{
-					Name: "antrea-gw0",
-				},
-			},
-			snatIP: net.ParseIP("1.1.1.1"),
-			mark:   10,
-			expectedCalls: func(mockIPTables *iptablestest.MockInterfaceMockRecorder) {
-				mockIPTables.InsertRule(iptables.ProtocolIPv4, iptables.NATTable, antreaPostRoutingChain, []string{
-					"-m", "comment", "--comment", "Antrea: SNAT Pod to external packets",
-					"!", "-o", "antrea-gw0",
-					"-m", "mark", "--mark", fmt.Sprintf("%#08x/%#08x", 10, types.SNATIPMarkMask),
-					"-j", iptables.SNATTarget, "--to", "1.1.1.1",
-				})
-			},
-		},
-		{
-			name: "IPv6",
-			nodeConfig: &config.NodeConfig{
-				GatewayConfig: &config.GatewayConfig{
-					Name: "antrea-gw0",
-				},
-			},
-			snatIP: net.ParseIP("fe80::e643:4bff:fe44:1"),
-			mark:   11,
-			expectedCalls: func(mockIPTables *iptablestest.MockInterfaceMockRecorder) {
-				mockIPTables.InsertRule(iptables.ProtocolIPv6, iptables.NATTable, antreaPostRoutingChain, []string{
-					"-m", "comment", "--comment", "Antrea: SNAT Pod to external packets",
-					"!", "-o", "antrea-gw0",
-					"-m", "mark", "--mark", fmt.Sprintf("%#08x/%#08x", 11, types.SNATIPMarkMask),
-					"-j", iptables.SNATTarget, "--to", "fe80::e643:4bff:fe44:1",
-				})
-			},
-		},
+	c := &Client{
+		markToSNATIP:        sync.Map{},
+		iptablesSyncTrigger: make(chan struct{}, 1),
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctrl := gomock.NewController(t)
-			mockIPTables := iptablestest.NewMockInterface(ctrl)
-			c := &Client{iptables: mockIPTables,
-				nodeConfig: tt.nodeConfig,
-			}
-			tt.expectedCalls(mockIPTables.EXPECT())
-			assert.NoError(t, c.AddSNATRule(tt.snatIP, tt.mark))
-		})
-	}
+	snatIPv4 := net.ParseIP("1.1.1.1")
+	snatIPv6 := net.ParseIP("fe80::e643:4bff:fe44:1")
+
+	// The SNAT rules are not installed synchronously: only the cache is updated, and a sync is triggered.
+	assert.NoError(t, c.AddSNATRule(snatIPv4, 10))
+	assert.NoError(t, c.AddSNATRule(snatIPv6, 11))
+
+	assert.Equal(t, map[uint32]net.IP{10: snatIPv4, 11: snatIPv6}, getMarkToSNATIP(c))
+	assertSyncTriggered(t, c.iptablesSyncTrigger)
 }
 
 func TestDeleteSNATRule(t *testing.T) {
-	tests := []struct {
-		name                  string
-		networkConfig         *config.NetworkConfig
-		egressSNATRandomFully bool
-		markToSNATIP          map[uint32]net.IP
-		nodeConfig            *config.NodeConfig
-		mark                  uint32
-		expectedCalls         func(mockIPTables *iptablestest.MockInterfaceMockRecorder)
-	}{
-		{
-			name: "IPv4",
-			nodeConfig: &config.NodeConfig{
-				GatewayConfig: &config.GatewayConfig{
-					Name: "antrea-gw0",
-				},
-			},
-			markToSNATIP: map[uint32]net.IP{
-				10: net.ParseIP("1.1.1.1"),
-				11: net.ParseIP("1.1.1.2"),
-			},
-			mark: 10,
-			expectedCalls: func(mockIPTables *iptablestest.MockInterfaceMockRecorder) {
-				mockIPTables.DeleteRule(iptables.ProtocolIPv4, iptables.NATTable, antreaPostRoutingChain, []string{
-					"-m", "comment", "--comment", "Antrea: SNAT Pod to external packets",
-					"!", "-o", "antrea-gw0",
-					"-m", "mark", "--mark", fmt.Sprintf("%#08x/%#08x", 10, types.SNATIPMarkMask),
-					"-j", iptables.SNATTarget, "--to", "1.1.1.1",
-				})
-			},
-		},
-		{
-			name: "IPv6",
-			nodeConfig: &config.NodeConfig{
-				GatewayConfig: &config.GatewayConfig{
-					Name: "antrea-gw0",
-				},
-			},
-			markToSNATIP: map[uint32]net.IP{
-				10: net.ParseIP("fe80::e643:4bff:fe44:1"),
-				11: net.ParseIP("fe80::e643:4bff:fe44:2"),
-			},
-			mark: 11,
-			expectedCalls: func(mockIPTables *iptablestest.MockInterfaceMockRecorder) {
-				mockIPTables.DeleteRule(iptables.ProtocolIPv6, iptables.NATTable, antreaPostRoutingChain, []string{
-					"-m", "comment", "--comment", "Antrea: SNAT Pod to external packets",
-					"!", "-o", "antrea-gw0",
-					"-m", "mark", "--mark", fmt.Sprintf("%#08x/%#08x", 11, types.SNATIPMarkMask),
-					"-j", iptables.SNATTarget, "--to", "fe80::e643:4bff:fe44:2",
-				})
-			},
-		},
-		{
-			name: "IPv4 with random ports for SNAT",
-			nodeConfig: &config.NodeConfig{
-				GatewayConfig: &config.GatewayConfig{
-					Name: "antrea-gw0",
-				},
-			},
-			egressSNATRandomFully: true,
-			markToSNATIP: map[uint32]net.IP{
-				10: net.ParseIP("1.1.1.1"),
-				11: net.ParseIP("1.1.1.2"),
-			},
-			mark: 10,
-			expectedCalls: func(mockIPTables *iptablestest.MockInterfaceMockRecorder) {
-				mockIPTables.DeleteRule(iptables.ProtocolIPv4, iptables.NATTable, antreaPostRoutingChain, []string{
-					"-m", "comment", "--comment", "Antrea: SNAT Pod to external packets",
-					"!", "-o", "antrea-gw0",
-					"-m", "mark", "--mark", fmt.Sprintf("%#08x/%#08x", 10, types.SNATIPMarkMask),
-					"-j", iptables.SNATTarget, "--to", "1.1.1.1", "--random-fully",
-				})
-			},
-		},
+	snatIPv4 := net.ParseIP("1.1.1.1")
+	snatIPv6 := net.ParseIP("fe80::e643:4bff:fe44:1")
+	newClient := func() *Client {
+		c := &Client{
+			markToSNATIP:        sync.Map{},
+			iptablesSyncTrigger: make(chan struct{}, 1),
+		}
+		c.markToSNATIP.Store(uint32(10), snatIPv4)
+		c.markToSNATIP.Store(uint32(11), snatIPv6)
+		return c
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctrl := gomock.NewController(t)
-			mockIPTables := iptablestest.NewMockInterface(ctrl)
-			c := &Client{
-				iptables:              mockIPTables,
-				nodeConfig:            tt.nodeConfig,
-				egressSNATRandomFully: tt.egressSNATRandomFully,
-				markToSNATIP:          sync.Map{},
+
+	t.Run("existing mark", func(t *testing.T) {
+		c := newClient()
+		assert.NoError(t, c.DeleteSNATRule(10))
+		assert.Equal(t, map[uint32]net.IP{11: snatIPv6}, getMarkToSNATIP(c))
+		assertSyncTriggered(t, c.iptablesSyncTrigger)
+	})
+	t.Run("unknown mark", func(t *testing.T) {
+		c := newClient()
+		assert.NoError(t, c.DeleteSNATRule(12))
+		assert.Equal(t, map[uint32]net.IP{10: snatIPv4, 11: snatIPv6}, getMarkToSNATIP(c))
+		assertSyncNotTriggered(t, c.iptablesSyncTrigger)
+	})
+}
+
+func TestTriggerSync(t *testing.T) {
+	c := &Client{iptablesSyncTrigger: make(chan struct{}, 1)}
+	// Triggering the sync multiple times must not block, and must not queue more than one notification.
+	for i := 0; i < 3; i++ {
+		c.triggerIPTablesSync()
+	}
+	assertSyncTriggered(t, c.iptablesSyncTrigger)
+	assertSyncNotTriggered(t, c.iptablesSyncTrigger)
+}
+
+func TestRunSyncLoopIPTables(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockIPTables := iptablestest.NewMockInterface(ctrl)
+	c := &Client{
+		iptables:            mockIPTables,
+		networkConfig:       &config.NetworkConfig{},
+		nodeConfig:          &config.NodeConfig{GatewayConfig: &config.GatewayConfig{Name: "antrea-gw0"}},
+		iptablesCache:       newIPTablesCache(),
+		iptablesSyncTrigger: make(chan struct{}, 1),
+	}
+	// Neither IPv4 nor IPv6 is enabled, so syncIPTables only ensures the jump rules and chains.
+	syncCh := make(chan struct{}, 10)
+	mockIPTables.EXPECT().EnsureChain(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
+	mockIPTables.EXPECT().InsertRule(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
+	mockIPTables.EXPECT().AppendRule(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Do(
+		func(_ iptables.Protocol, _, _ string, _ []string) {
+			select {
+			case syncCh <- struct{}{}:
+			default:
 			}
-			for mark, snatIP := range tt.markToSNATIP {
-				c.markToSNATIP.Store(mark, snatIP)
-			}
-			tt.expectedCalls(mockIPTables.EXPECT())
-			assert.NoError(t, c.DeleteSNATRule(tt.mark))
 		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		c.runSyncLoop(ctx, "iptables", c.iptablesSyncTrigger, func() error { return c.syncIPTables(false) })
+	}()
+
+	// No sync is expected until the loop is triggered.
+	select {
+	case <-syncCh:
+		t.Fatal("iptables were synced before the sync loop was triggered")
+	case <-time.After(2 * syncDebounceDuration):
+	}
+
+	c.triggerIPTablesSync()
+	select {
+	case <-syncCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("iptables were not synced after the sync loop was triggered")
+	}
+
+	cancel()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the sync loop did not stop after the context was cancelled")
+	}
+}
+
+func getMarkToSNATIP(c *Client) map[uint32]net.IP {
+	markToSNATIP := map[uint32]net.IP{}
+	c.markToSNATIP.Range(func(key, value interface{}) bool {
+		markToSNATIP[key.(uint32)] = value.(net.IP)
+		return true
+	})
+	return markToSNATIP
+}
+
+func assertSyncTriggered(t *testing.T, trigger chan struct{}) {
+	t.Helper()
+	select {
+	case <-trigger:
+	default:
+		t.Error("Expected a sync to be triggered")
+	}
+}
+
+func assertSyncNotTriggered(t *testing.T, trigger chan struct{}) {
+	t.Helper()
+	select {
+	case <-trigger:
+		t.Error("Expected no sync to be triggered")
+	default:
 	}
 }
 
@@ -2474,6 +2446,7 @@ func TestAddNodePortConfigsNFTablesMode(t *testing.T) {
 			}
 			require.NoError(t, c.syncNFTables(context.TODO()))
 			require.NoError(t, c.AddNodePortConfigs(tt.nodePortAddresses, tt.port, tt.protocol))
+			require.NoError(t, c.syncNFTables(context.TODO()))
 			for _, nft := range c.nftables.All() {
 				nftablesSet := getNodePortNFTablesSet(tt.enableIPv6)
 
@@ -2554,10 +2527,11 @@ func TestDeleteNodePortConfigsNFTablesMode(t *testing.T) {
 				hostNetworkNFTables: true,
 				proxyAll:            true,
 			}
-			c.serviceNFTablesSets[getNodePortNFTablesSet(tt.enableIPv6)].Store(strconv.Itoa(int(tt.port)), tt.existingElements)
+			c.serviceNFTablesSets[getNodePortNFTablesSet(tt.enableIPv6)].Store(fmt.Sprintf("%s-%d", tt.protocol, tt.port), tt.existingElements)
 
 			require.NoError(t, c.syncNFTables(context.TODO()))
 			require.NoError(t, c.DeleteNodePortConfigs(tt.nodePortAddresses, tt.port, tt.protocol))
+			require.NoError(t, c.syncNFTables(context.TODO()))
 			for _, nft := range c.nftables.All() {
 				nftablesSet := getNodePortNFTablesSet(tt.enableIPv6)
 
@@ -2982,6 +2956,7 @@ func TestAddExternalIPConfigsNFTablesMode(t *testing.T) {
 				}
 			}
 			assert.Equal(t, tt.expectedServiceExternalIPReferences, c.serviceExternalIPReferences)
+			require.NoError(t, c.syncNFTables(context.TODO()))
 			for _, nft := range c.nftables.All() {
 				gotElements, err := nft.ListElements(context.TODO(), "set", getExternalIPNFTablesSet(tt.enableIPv6))
 				require.NoError(t, err)
@@ -3090,6 +3065,7 @@ func TestDeleteExternalIPRouteNFTablesMode(t *testing.T) {
 				}
 			}
 			assert.Equal(t, make(map[string]sets.Set[string]), c.serviceExternalIPReferences)
+			require.NoError(t, c.syncNFTables(context.TODO()))
 			for _, nft := range c.nftables.All() {
 				gotElements, err := nft.ListElements(context.TODO(), "set", getExternalIPNFTablesSet(tt.enableIPv6))
 				require.NoError(t, err)

@@ -60,6 +60,9 @@ const (
 	vxlanPort  = 4789
 	genevePort = 6081
 
+	// syncDebounceDuration is how long a sync loop waits after being notified, to batch updates.
+	syncDebounceDuration = 100 * time.Millisecond
+
 	// Antrea managed ipset.
 	// antreaPodIPSet contains all Per-Node IPAM Pod CIDRs of this cluster.
 	antreaPodIPSet = "ANTREA-POD-IP"
@@ -241,9 +244,17 @@ type Client struct {
 	nodeNetworkPolicyIPSetsIPv6 sync.Map
 	// iptablesCache caches all existing iptables chains and rules for the features relying on it.
 	iptablesCache *iptablesCache
-	// podCIDRNFTablesSetIPv4 caches all existing IPv4 Pod CIDRs stored in antreaNFTablesSetPeerPodCIDR.
+	// iptablesSyncTrigger notifies the iptables sync loop that the iptables caches have been updated. It has a
+	// buffer of 1, as a pending notification makes another one redundant.
+	iptablesSyncTrigger chan struct{}
+	// nftablesSyncTrigger notifies the nftables sync loop that the nftables caches have been updated. Like
+	// iptablesSyncTrigger, it has a buffer of 1.
+	nftablesSyncTrigger chan struct{}
+	// podCIDRNFTablesSetIPv4 caches all existing IPv4 Pod CIDRs stored in antreaNFTablesSetPeerPodCIDR. The keys are
+	// the Pod CIDR strings, the values are unused.
 	podCIDRNFTablesSetIPv4 sync.Map
-	// podCIDRNFTablesSetIPv6 caches all existing IPv6 Pod CIDRs stored in antreaNFTablesSetPeerPodCIDR.
+	// podCIDRNFTablesSetIPv6 caches all existing IPv6 Pod CIDRs stored in antreaNFTablesSetPeerPodCIDR. The keys are
+	// the Pod CIDR strings, the values are unused.
 	podCIDRNFTablesSetIPv6 sync.Map
 	// deterministic represents whether to write iptables chains and rules for NodeNetworkPolicy deterministically when
 	// syncIPTables is called. Enabling it may carry a performance impact. It's disabled by default and should only be
@@ -288,6 +299,8 @@ func NewClient(networkConfig *config.NetworkConfig,
 		serviceExternalIPReferences: make(map[string]sets.Set[string]),
 		wireguardPort:               wireguardPort,
 		proxyHealthCheckPort:        proxyHealthCheckPort,
+		iptablesSyncTrigger:         make(chan struct{}, 1),
+		nftablesSyncTrigger:         make(chan struct{}, 1),
 	}, nil
 }
 
@@ -444,25 +457,76 @@ func (c *Client) Initialize(nodeConfig *config.NodeConfig, done func()) error {
 func (c *Client) Run(ctx context.Context) {
 	<-c.iptablesInitialized
 	klog.InfoS("Starting host network configuration sync", "interval", SyncInterval)
+	// One loop per subsystem, so that a slow sync doesn't delay the other. They only wait for notifications, the
+	// periodic reconciliation is driven by syncNetworkConfig.
+	go c.runSyncLoop(ctx, "iptables", c.iptablesSyncTrigger, func() error { return c.syncIPTables(false) })
+	if c.nftables != nil {
+		go c.runSyncLoop(ctx, "nftables", c.nftablesSyncTrigger, func() error { return c.syncNFTables(ctx) })
+	}
 	wait.UntilWithContext(ctx, c.syncNetworkConfig, SyncInterval)
+}
+
+// triggerSync notifies the sync loop watching the given channel. It never blocks: a pending notification already
+// causes a sync that takes the latest caches into account.
+func triggerSync(trigger chan struct{}) {
+	select {
+	case trigger <- struct{}{}:
+	default:
+		// A sync is already pending, nothing to do.
+	}
+}
+
+// triggerIPTablesSync notifies the iptables sync loop that the iptables caches have been updated.
+func (c *Client) triggerIPTablesSync() {
+	triggerSync(c.iptablesSyncTrigger)
+}
+
+// triggerNFTablesSync notifies the nftables sync loop that the nftables caches have been updated.
+func (c *Client) triggerNFTablesSync() {
+	triggerSync(c.nftablesSyncTrigger)
+}
+
+// runSyncLoop syncs the rules of the given subsystem to the datapath when it is notified. Concentrating the writes
+// here matters because a sync rewrites the whole state from the caches, undoing anything applied concurrently. The
+// NodeNetworkPolicy functions are the only other writers, see their documentation. It returns when ctx is cancelled.
+func (c *Client) runSyncLoop(ctx context.Context, subsystem string, trigger chan struct{}, sync func() error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-trigger:
+			// Batch the updates occurring in quick succession into a single sync.
+			timer := time.NewTimer(syncDebounceDuration)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			// The sync below reads the caches after this point, so it covers these notifications.
+			select {
+			case <-trigger:
+			default:
+			}
+			if err := sync(); err != nil {
+				klog.ErrorS(err, "Failed to sync rules", "subsystem", subsystem)
+			}
+		}
+	}
 }
 
 // syncNetworkConfig is idempotent and can be safely called on every sync operation.
 func (c *Client) syncNetworkConfig(ctx context.Context) {
-	// Sync ipset before syncing iptables rules
+	// Sync the ipsets first: iptables-restore fails as a whole if a referenced ipset is missing.
 	if err := c.syncIPSet(); err != nil {
 		klog.ErrorS(err, "Failed to sync ipset")
 		return
 	}
-	if err := c.syncIPTables(false); err != nil {
-		klog.ErrorS(err, "Failed to sync iptables")
-		return
-	}
+	c.triggerIPTablesSync()
 	if c.nftables != nil {
-		if err := c.syncNFTables(ctx); err != nil {
-			klog.ErrorS(err, "Failed to sync nftables")
-		}
+		c.triggerNFTablesSync()
 	}
+
 	if err := c.syncRoute(); err != nil {
 		klog.ErrorS(err, "Failed to sync route")
 	}
@@ -1421,10 +1485,11 @@ func (c *Client) restoreIptablesData(podCIDR *net.IPNet,
 	}
 	// Egress rules must be inserted before the default masquerade rule.
 	for snatMark, snatIP := range snatMarkToIP {
-		// Cannot reuse snatRuleSpec to generate the rule as it doesn't have "`" in the comment.
 		rule := []string{
 			"-A", antreaPostRoutingChain,
 			"-m", "comment", "--comment", `"Antrea: SNAT Pod to external packets"`,
+			// The condition is needed to prevent the rule from being applied to local out packets destined
+			// for Pods, which have "0x1/0x1" mark.
 			"!", "-o", c.nodeConfig.GatewayConfig.Name,
 			"-m", "mark", "--mark", fmt.Sprintf("%#08x/%#08x", snatMark, types.SNATIPMarkMask),
 			"-j", iptables.SNATTarget, "--to", snatIP.String(),
@@ -1637,6 +1702,7 @@ func (c *Client) initNodeNetworkPolicy() {
 		c.iptablesCache.ipv4[featureNodeNetworkPolicy].Store(config.NodeNetworkPolicyIngressRulesChain, []string{})
 		c.iptablesCache.ipv4[featureNodeNetworkPolicy].Store(config.NodeNetworkPolicyEgressRulesChain, []string{})
 	}
+	c.triggerIPTablesSync()
 }
 
 func buildAllowHostIngressPortRule(protocol string, port *intstr.IntOrString, comment string) string {
@@ -1685,6 +1751,7 @@ func (c *Client) initProxyHealthCheck() {
 		c.iptablesCache.ipv4[featureProxyHealthCheck].Store(antreaInputChain, antreaInputChainRules)
 		c.iptablesCache.ipv4[featureProxyHealthCheck].Store(antreaOutputChain, antreaOutputChainRules)
 	}
+	c.triggerIPTablesSync()
 }
 
 func (c *Client) initWireguard() {
@@ -1706,6 +1773,7 @@ func (c *Client) initWireguard() {
 		c.iptablesCache.ipv4[featureWireguard].Store(antreaInputChain, antreaInputChainRules)
 		c.iptablesCache.ipv4[featureWireguard].Store(antreaOutputChain, antreaOutputChainRules)
 	}
+	c.triggerIPTablesSync()
 }
 
 func (c *Client) initNodeLatencyRules() {
@@ -1756,6 +1824,7 @@ func (c *Client) initNodeLatencyRules() {
 			buildOutputRule(iptables.ProtocolIPv4, int32(ipv4.ICMPTypeEchoReply)),
 		})
 	}
+	c.triggerIPTablesSync()
 }
 
 func (c *Client) initEgressIPRules() error {
@@ -2229,43 +2298,23 @@ func (c *Client) UnMigrateRoutesFromGw(route *net.IPNet, linkName string) error 
 	return nil
 }
 
-func (c *Client) snatRuleSpec(snatIP net.IP, snatMark uint32) []string {
-	rule := []string{
-		"-m", "comment", "--comment", "Antrea: SNAT Pod to external packets",
-		// The condition is needed to prevent the rule from being applied to local out packets destined for Pods, which
-		// have "0x1/0x1" mark.
-		"!", "-o", c.nodeConfig.GatewayConfig.Name,
-		"-m", "mark", "--mark", fmt.Sprintf("%#08x/%#08x", snatMark, types.SNATIPMarkMask),
-		"-j", iptables.SNATTarget, "--to", snatIP.String(),
-	}
-	if c.egressSNATRandomFully {
-		rule = append(rule, "--random-fully")
-	}
-	return rule
-}
-
+// AddSNATRule caches the SNAT IP and notifies the sync loop, which installs the rule. Installing it here would race
+// with the sync, which could overwrite it.
 func (c *Client) AddSNATRule(snatIP net.IP, mark uint32) error {
-	protocol := iptables.ProtocolIPv4
-	if snatIP.To4() == nil {
-		protocol = iptables.ProtocolIPv6
-	}
 	c.markToSNATIP.Store(mark, snatIP)
-	return c.iptables.InsertRule(protocol, iptables.NATTable, antreaPostRoutingChain, c.snatRuleSpec(snatIP, mark))
+	c.triggerIPTablesSync()
+	return nil
 }
 
+// DeleteSNATRule uncaches the SNAT IP and notifies the sync loop, which uninstalls the rule.
 func (c *Client) DeleteSNATRule(mark uint32) error {
-	value, ok := c.markToSNATIP.Load(mark)
-	if !ok {
+	if _, ok := c.markToSNATIP.Load(mark); !ok {
 		klog.InfoS("Didn't find SNAT rule with mark", "mark", fmt.Sprintf("%#x", mark))
 		return nil
 	}
 	c.markToSNATIP.Delete(mark)
-	snatIP := value.(net.IP)
-	protocol := iptables.ProtocolIPv4
-	if snatIP.To4() == nil {
-		protocol = iptables.ProtocolIPv6
-	}
-	return c.iptables.DeleteRule(protocol, iptables.NATTable, antreaPostRoutingChain, c.snatRuleSpec(snatIP, mark))
+	c.triggerIPTablesSync()
+	return nil
 }
 
 func (c *Client) AddEgressRoutes(tableID uint32, dev int, gateway net.IP, prefixLength int) error {
@@ -2877,7 +2926,19 @@ func (c *Client) DeleteNodeNetworkPolicyIPSet(ipsetName string, isIPv6 bool) err
 	return nil
 }
 
+// AddOrUpdateNodeNetworkPolicyIPTables writes the rules itself, as callers rely on them being enforced when it
+// returns: a rule dropping its reference to an ipset must be applied before that ipset is destroyed. The caches are
+// updated first and the sync loop is notified after, as a sync holding an older snapshot would otherwise restore the
+// previous rules over these.
 func (c *Client) AddOrUpdateNodeNetworkPolicyIPTables(iptablesChains []string, iptablesRules [][]string, isIPv6 bool) error {
+	for index, iptablesChain := range iptablesChains {
+		if isIPv6 {
+			c.iptablesCache.ipv6[featureNodeNetworkPolicy].Store(iptablesChain, iptablesRules[index])
+		} else {
+			c.iptablesCache.ipv4[featureNodeNetworkPolicy].Store(iptablesChain, iptablesRules[index])
+		}
+	}
+
 	iptablesData := bytes.NewBuffer(nil)
 
 	writeLine(iptablesData, "*filter")
@@ -2891,20 +2952,15 @@ func (c *Client) AddOrUpdateNodeNetworkPolicyIPTables(iptablesChains []string, i
 	}
 	writeLine(iptablesData, "COMMIT")
 
-	if err := c.iptables.Restore(iptablesData.String(), false, isIPv6); err != nil {
-		return err
-	}
-
-	for index, iptablesChain := range iptablesChains {
-		if isIPv6 {
-			c.iptablesCache.ipv6[featureNodeNetworkPolicy].Store(iptablesChain, iptablesRules[index])
-		} else {
-			c.iptablesCache.ipv4[featureNodeNetworkPolicy].Store(iptablesChain, iptablesRules[index])
-		}
-	}
-	return nil
+	err := c.iptables.Restore(iptablesData.String(), false, isIPv6)
+	c.triggerIPTablesSync()
+	return err
 }
 
+// DeleteNodeNetworkPolicyIPTables deletes the chains itself, as a sync only rewrites the chains present in the caches
+// and cannot delete the others. The caches are updated first to narrow the window in which a sync holding an older
+// snapshot recreates a chain deleted here. Such a chain is left orphaned but unreachable, as the chain holding the
+// jump to it is restored from the caches.
 func (c *Client) DeleteNodeNetworkPolicyIPTables(iptablesChains []string, isIPv6 bool) error {
 	ipProtocol := iptables.ProtocolIPv4
 	if isIPv6 {
@@ -2912,16 +2968,16 @@ func (c *Client) DeleteNodeNetworkPolicyIPTables(iptablesChains []string, isIPv6
 	}
 
 	for _, iptablesChain := range iptablesChains {
-		if err := c.iptables.DeleteChain(ipProtocol, iptables.FilterTable, iptablesChain); err != nil {
-			return err
-		}
-	}
-
-	for _, iptablesChain := range iptablesChains {
 		if isIPv6 {
 			c.iptablesCache.ipv6[featureNodeNetworkPolicy].Delete(iptablesChain)
 		} else {
 			c.iptablesCache.ipv4[featureNodeNetworkPolicy].Delete(iptablesChain)
+		}
+	}
+
+	for _, iptablesChain := range iptablesChains {
+		if err := c.iptables.DeleteChain(ipProtocol, iptables.FilterTable, iptablesChain); err != nil {
+			return err
 		}
 	}
 
@@ -3122,11 +3178,12 @@ func (c *Client) nftablesTrafficAcceleration(tx *knftables.Transaction, ipProtoc
 			Name: antreaNFTablesSetPeerPodCIDR,
 		})
 		// Restore existing IPv4 peer Pod CIDRs into the set.
-		c.podCIDRNFTablesSetIPv4.Range(func(_, v interface{}) bool {
-			return func(element *knftables.Element) bool {
-				tx.Add(element)
-				return true
-			}(v.(*knftables.Element))
+		c.podCIDRNFTablesSetIPv4.Range(func(k, _ interface{}) bool {
+			tx.Add(&knftables.Element{
+				Set: antreaNFTablesSetPeerPodCIDR,
+				Key: []string{k.(string)},
+			})
+			return true
 		})
 		// Add rules to accelerate Pod-to-Pod IPv4 connections via flowtable.
 		tx.Add(&knftables.Rule{
@@ -3167,11 +3224,12 @@ func (c *Client) nftablesTrafficAcceleration(tx *knftables.Transaction, ipProtoc
 			Name: antreaNFTablesSetPeerPodCIDR,
 		})
 		// Restore existing IPv6 peer Pod CIDRs into the set.
-		c.podCIDRNFTablesSetIPv6.Range(func(_, v interface{}) bool {
-			return func(element *knftables.Element) bool {
-				tx.Add(element)
-				return true
-			}(v.(*knftables.Element))
+		c.podCIDRNFTablesSetIPv6.Range(func(k, _ interface{}) bool {
+			tx.Add(&knftables.Element{
+				Set: antreaNFTablesSetPeerPodCIDR,
+				Key: []string{k.(string)},
+			})
+			return true
 		})
 		// Add rules to accelerate Pod-to-Pod IPv6 connections via flowtable.
 		tx.Add(&knftables.Rule{
@@ -3224,111 +3282,53 @@ func (c *Client) syncNFTables(ctx context.Context) error {
 	return nil
 }
 
+// addPeerPodCIDRToNFTablesSet caches the Pod CIDR and notifies the sync loop, which adds the element. Adding it here
+// would race with the sync, which flushes the set before restoring it from the cache.
 func (c *Client) addPeerPodCIDRToNFTablesSet(podCIDR *net.IPNet) error {
 	podCIDRStr := podCIDR.String()
-	var nft knftables.Interface
-	var podCIDRNFTablesSet *sync.Map
-	isIPv6 := utilnet.IsIPv6(podCIDR.IP)
-	if isIPv6 {
-		nft = c.nftables.IPv6
+	podCIDRNFTablesSet := &c.podCIDRNFTablesSetIPv4
+	if utilnet.IsIPv6(podCIDR.IP) {
 		podCIDRNFTablesSet = &c.podCIDRNFTablesSetIPv6
-	} else {
-		nft = c.nftables.IPv4
-		podCIDRNFTablesSet = &c.podCIDRNFTablesSetIPv4
 	}
 
-	tx := nft.NewTransaction()
-	element := &knftables.Element{
-		Set: antreaNFTablesSetPeerPodCIDR,
-		Key: []string{podCIDRStr},
-	}
-	tx.Add(element)
-	if err := nft.Run(context.TODO(), tx); err != nil {
-		return err
-	}
-	podCIDRNFTablesSet.Store(podCIDRStr, element)
+	podCIDRNFTablesSet.Store(podCIDRStr, struct{}{})
+	c.triggerNFTablesSync()
 
 	return nil
 }
 
+// deletePeerPodCIDRFromNFTablesSet uncaches the Pod CIDR and notifies the sync loop, which removes the element.
 func (c *Client) deletePeerPodCIDRFromNFTablesSet(podCIDR *net.IPNet) error {
 	podCIDRStr := podCIDR.String()
-	var nft knftables.Interface
-	var podCIDRNFTablesSet *sync.Map
-	isIPv6 := utilnet.IsIPv6(podCIDR.IP)
-	if isIPv6 {
-		nft = c.nftables.IPv6
+	podCIDRNFTablesSet := &c.podCIDRNFTablesSetIPv4
+	if utilnet.IsIPv6(podCIDR.IP) {
 		podCIDRNFTablesSet = &c.podCIDRNFTablesSetIPv6
-	} else {
-		nft = c.nftables.IPv4
-		podCIDRNFTablesSet = &c.podCIDRNFTablesSetIPv4
 	}
 
 	if _, exists := podCIDRNFTablesSet.Load(podCIDRStr); !exists {
 		return nil
 	}
-
-	tx := nft.NewTransaction()
-	element := &knftables.Element{
-		Set: antreaNFTablesSetPeerPodCIDR,
-		Key: []string{podCIDRStr},
-	}
-	tx.Delete(element)
-
-	isElementNotFound := func(err error) bool {
-		if err == nil {
-			return false
-		}
-		s := err.Error()
-		// NOTE: nftables error messages are not stable across versions / distros.
-		// This is a best-effort check until lib sigs.k8s.io/knftables provides a structured NotFound error for set
-		// elements.
-		return strings.Contains(s, "element does not exist") ||
-			strings.Contains(s, "no such element") ||
-			strings.Contains(s, "No such file or directory")
-	}
-	if err := nft.Run(context.TODO(), tx); err != nil {
-		if isElementNotFound(err) {
-			klog.InfoS("Failed to delete nftables element for Pod CIDR from set since it doesn't exist",
-				"Set", antreaNFTablesSetPeerPodCIDR,
-				"PodCIDR", podCIDRStr)
-		} else {
-			return err
-		}
-	}
 	podCIDRNFTablesSet.Delete(podCIDRStr)
+	c.triggerNFTablesSync()
 
 	return nil
-}
-
-func (c *Client) getNFT(isIPv6 bool) knftables.Interface {
-	if isIPv6 {
-		return c.nftables.IPv6
-	}
-	return c.nftables.IPv4
 }
 
 func (c *Client) addNodePortConfigsNFTables(nodePortAddresses []net.IP, port uint16, protocol binding.Protocol) error {
 	isIPv6 := isIPv6Protocol(protocol)
 	transProtocol := getTransProtocolStr(protocol)
 	setName := getNodePortNFTablesSet(isIPv6)
-	nft := c.getNFT(isIPv6)
 
-	tx := nft.NewTransaction()
 	setElements := make([]*knftables.Element, 0, len(nodePortAddresses))
 	for i := range nodePortAddresses {
 		key := fmt.Sprintf("%s . %s . %d", nodePortAddresses[i], transProtocol, port)
-		elem := &knftables.Element{
+		setElements = append(setElements, &knftables.Element{
 			Set: setName,
 			Key: []string{key},
-		}
-		tx.Add(elem)
-		setElements = append(setElements, elem)
-	}
-	if err := nft.Run(context.TODO(), tx); err != nil {
-		return fmt.Errorf("failed to add NodePort entries to nftables set %s: %w", setName, err)
+		})
 	}
 	c.serviceNFTablesSets[setName].Store(fmt.Sprintf("%s-%d", protocol, port), setElements)
+	c.triggerNFTablesSync()
 
 	klog.V(4).InfoS("Added NodePort entries to nftables set", "set", setName, "addresses", nodePortAddresses, "port", port, "protocol", protocol)
 	return nil
@@ -3352,24 +3352,11 @@ func (c *Client) addNodePortConfigsIPsets(nodePortAddresses []net.IP, port uint1
 
 func (c *Client) deleteNodePortConfigsNFTables(nodePortAddresses []net.IP, port uint16, protocol binding.Protocol) error {
 	isIPv6 := isIPv6Protocol(protocol)
-	transProtocol := getTransProtocolStr(protocol)
 	setName := getNodePortNFTablesSet(isIPv6)
-	nft := c.getNFT(isIPv6)
-
-	tx := nft.NewTransaction()
-	for i := range nodePortAddresses {
-		key := fmt.Sprintf("%s . %s . %d", nodePortAddresses[i], transProtocol, port)
-		elem := &knftables.Element{
-			Set: setName,
-			Key: []string{key},
-		}
-		tx.Delete(elem)
-	}
-	if err := nft.Run(context.TODO(), tx); err != nil {
-		return fmt.Errorf("failed to delete NodePort entries from nftables set %s: %w", setName, err)
-	}
 
 	c.serviceNFTablesSets[setName].Delete(fmt.Sprintf("%s-%d", protocol, port))
+	c.triggerNFTablesSync()
+
 	klog.V(4).InfoS("Deleted NodePort entries from nftables set", "set", setName, "addresses", nodePortAddresses, "port", port, "protocol", protocol)
 	return nil
 }
@@ -3416,21 +3403,15 @@ func (c *Client) addExternalIPConfigsRoute(externalIP net.IP) error {
 func (c *Client) addExternalIPConfigsNFTables(externalIP net.IP) error {
 	isIPv6 := utilnet.IsIPv6(externalIP)
 	externalIPStr := externalIP.String()
-	nft := c.getNFT(isIPv6)
-	tx := nft.NewTransaction()
 	setName := getExternalIPNFTablesSet(isIPv6)
 
-	element := &knftables.Element{
+	c.serviceNFTablesSets[setName].Store(externalIPStr, []*knftables.Element{{
 		Set: setName,
 		Key: []string{externalIPStr},
-	}
-	tx.Add(element)
-	if err := nft.Run(context.TODO(), tx); err != nil {
-		return fmt.Errorf("failed to add externalIP %s to nftables set %s", externalIPStr, setName)
-	}
+	}})
+	c.triggerNFTablesSync()
 	klog.V(4).InfoS("Added externalIP to nftables set", "set", setName, "externalIP", externalIPStr)
 
-	c.serviceNFTablesSets[setName].Store(externalIPStr, []*knftables.Element{element})
 	return nil
 }
 
@@ -3473,21 +3454,12 @@ func (c *Client) deleteExternalIPConfigsRoute(externalIP net.IP) error {
 func (c *Client) deleteExternalIPConfigsNFTables(externalIP net.IP) error {
 	externalIPStr := externalIP.String()
 	isIPv6 := utilnet.IsIPv6(externalIP)
-	nft := c.getNFT(isIPv6)
-	tx := nft.NewTransaction()
 	setName := getExternalIPNFTablesSet(isIPv6)
 
-	element := &knftables.Element{
-		Set: setName,
-		Key: []string{externalIPStr},
-	}
-	tx.Delete(element)
-	if err := nft.Run(context.TODO(), tx); err != nil {
-		return fmt.Errorf("failed to delete externalIP %s from nftables set %s", externalIPStr, setName)
-	}
-
-	klog.V(4).InfoS("Deleted externalIP from nftables set", "set", setName, "externalIP", externalIPStr)
 	c.serviceNFTablesSets[setName].Delete(externalIPStr)
+	c.triggerNFTablesSync()
+	klog.V(4).InfoS("Deleted externalIP from nftables set", "set", setName, "externalIP", externalIPStr)
+
 	return nil
 }
 
