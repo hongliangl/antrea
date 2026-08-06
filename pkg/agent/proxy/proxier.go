@@ -320,7 +320,9 @@ func (p *proxier) removeServiceGroup(svcPortName k8sproxy.ServicePortName, local
 func (p *proxier) removeStaleEndpoints(svcPortName k8sproxy.ServicePortName, protocol binding.Protocol, staleEndpoints map[string]k8sproxy.Endpoint) bool {
 	var endpointsToRemove []k8sproxy.Endpoint
 
-	// Get all Endpoints whose reference counter is 1, and these Endpoints should be removed.
+	// Get all Endpoints whose reference counter is 1, and these Endpoints should be removed. If the
+	// flows were already uninstalled by a failed sync, repeating the call is a no-op as the OpenFlow
+	// client skips flows absent from its cache.
 	for _, endpoint := range staleEndpoints {
 		key := endpointKey(endpoint, protocol)
 		count := p.endpointReferenceCounter[key]
@@ -507,27 +509,24 @@ func (p *proxier) removeStaleConntrackEntries(svcPortName k8sproxy.ServicePortNa
 // addNewEndpoints installs the data path flows for the given new Endpoints. It only touches OVS and
 // returns false if a data path operation fails; the caller updates the installed-Endpoint state via
 // updateEndpointsStates after the Service's data path changes have all succeeded.
+//
+// The Endpoints are passed to the OpenFlow client as-is, which skips the ones whose flows are already
+// installed based on its flow cache. Don't filter by endpointReferenceCounter here: it is only
+// committed after a Service's whole sync succeeds, so a stale count could make a needed installation
+// be skipped.
 func (p *proxier) addNewEndpoints(svcPortName k8sproxy.ServicePortName, protocol binding.Protocol, newEndpoints map[string]k8sproxy.Endpoint) bool {
-	var endpointsToAdd []k8sproxy.Endpoint
-
-	// Get all Endpoints whose reference counter is 0, and these Endpoints should be added.
+	if len(newEndpoints) == 0 {
+		return true
+	}
+	endpointsToAdd := make([]k8sproxy.Endpoint, 0, len(newEndpoints))
 	for _, endpoint := range newEndpoints {
-		key := endpointKey(endpoint, protocol)
-		count := p.endpointReferenceCounter[key]
-		if count == 0 {
-			endpointsToAdd = append(endpointsToAdd, endpoint)
-			klog.V(2).InfoS("Endpoint will be added", "Endpoint", endpoint.String(), "Protocol", protocol)
-		}
+		endpointsToAdd = append(endpointsToAdd, endpoint)
+		klog.V(2).InfoS("Endpoint will be added", "Endpoint", endpoint.String(), "Protocol", protocol)
 	}
-
-	// Add flows for these Endpoints.
-	if len(endpointsToAdd) != 0 {
-		if err := p.ofClient.InstallEndpointFlows(protocol, endpointsToAdd); err != nil {
-			klog.ErrorS(err, "Error when installing Endpoints flows for Service", "ServicePortName", svcPortName)
-			return false
-		}
+	if err := p.ofClient.InstallEndpointFlows(protocol, endpointsToAdd); err != nil {
+		klog.ErrorS(err, "Error when installing Endpoints flows for Service", "ServicePortName", svcPortName)
+		return false
 	}
-
 	return true
 }
 

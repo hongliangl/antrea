@@ -3359,7 +3359,9 @@ func TestServicesWithSameEndpoints(t *testing.T) {
 	mockOFClient.EXPECT().InstallServiceGroup(groupID1, false, gomock.Any())
 	mockOFClient.EXPECT().InstallServiceGroup(groupID2, false, gomock.Any())
 	protocol := binding.ProtocolTCP
-	mockOFClient.EXPECT().InstallEndpointFlows(protocol, gomock.Any())
+	// Both Services pass the shared Endpoint to the OpenFlow client, which deduplicates the actual
+	// flow installation based on its own flow cache.
+	mockOFClient.EXPECT().InstallEndpointFlows(protocol, gomock.Any()).Times(2)
 	mockOFClient.EXPECT().InstallServiceFlows(&antreatypes.ServiceConfig{
 		ServiceIP:      svc1IPv4,
 		ServicePort:    uint16(svcPort),
@@ -4255,4 +4257,79 @@ func TestStaleServiceRemovalRetriesAfterTransientFailure(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotContains(t, fp.serviceInstalledMap, svcPortName, "the Service must be fully removed after recovery")
 	assert.NotContains(t, fp.endpointsInstalledMap, svcPortName)
+}
+
+// TestSharedEndpointReinstalledAfterPeerServiceFailure verifies that when two Services share an Endpoint,
+// a failed sync of one Service cannot make the other Service skip a needed Endpoint flow installation.
+// Scenario: Service A is the only user of the Endpoint and uninstalls its flows, then fails in a later
+// step, so its reference count is not committed and stays 1. Service B then adds the same Endpoint; it
+// must reinstall the flows even though the stale count suggests they exist.
+func TestSharedEndpointReinstalledAfterPeerServiceFailure(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockOFClient, mockRouteClient := getMockClients(ctrl)
+	groupAllocator := openflow.NewGroupAllocator()
+	fp := newFakeProxier(mockRouteClient, mockOFClient, nil, groupAllocator, false)
+
+	epIP := ep1IP(false)
+	internalTrafficPolicy := corev1.ServiceInternalTrafficPolicyCluster
+	svcAPortName := svcPortName
+	svcBPortName := makeSvcPortName("ns", "svc2", strconv.Itoa(svcPort), corev1.ProtocolTCP)
+	svcA := makeTestClusterIPService(&svcAPortName, svc1IP(false), nil, int32(svcPort), corev1.ProtocolTCP, nil, &internalTrafficPolicy, false, nil)
+	svcB := makeTestClusterIPService(&svcBPortName, net.ParseIP("10.20.30.42"), nil, int32(svcPort), corev1.ProtocolTCP, nil, &internalTrafficPolicy, false, nil)
+
+	epA, portA := makeTestEndpointSliceEndpointAndPort(&svcAPortName, epIP, int32(svcPort), corev1.ProtocolTCP, false)
+	sliceA := makeTestEndpointSlice(svcAPortName.Namespace, svcAPortName.Name, []discovery.Endpoint{*epA}, []discovery.EndpointPort{*portA}, false)
+	sliceAEmpty := sliceA.DeepCopy()
+	sliceAEmpty.Endpoints = nil
+	epB, portB := makeTestEndpointSliceEndpointAndPort(&svcBPortName, epIP, int32(svcPort), corev1.ProtocolTCP, false)
+	sliceB := makeTestEndpointSlice(svcBPortName.Namespace, svcBPortName.Name, []discovery.Endpoint{*epB}, []discovery.EndpointPort{*portB}, false)
+
+	mockOFClient.EXPECT().InstallServiceFlows(gomock.Any()).Return(nil).AnyTimes()
+	// The shared Endpoint flows must be passed to the OpenFlow client exactly twice: once for Service A,
+	// and once more for Service B after Service A's failed sync had uninstalled them without committing
+	// its state. If the decision were made on the stale reference count (1), Service B would skip the
+	// second installation and reference absent flows.
+	mockOFClient.EXPECT().InstallEndpointFlows(gomock.Any(), gomock.Any()).Return(nil).Times(2)
+	// The uninstallation happens in the failed sync, and may be repeated by Service A's retry before
+	// Service B is processed, which the real OpenFlow client skips based on its flow cache.
+	mockOFClient.EXPECT().UninstallEndpointFlows(gomock.Any(), gomock.Any()).Return(nil).MinTimes(1).MaxTimes(2)
+	// Service A's group (ID 1): initial install succeeds, then the update after dropping the Endpoint
+	// keeps failing for two syncs, and finally succeeds.
+	gomock.InOrder(
+		mockOFClient.EXPECT().InstallServiceGroup(binding.GroupIDType(1), false, gomock.Any()).Return(nil),
+		mockOFClient.EXPECT().InstallServiceGroup(binding.GroupIDType(1), false, gomock.Any()).Return(fmt.Errorf("bundle reply is timeout")),
+		mockOFClient.EXPECT().InstallServiceGroup(binding.GroupIDType(1), false, gomock.Any()).Return(fmt.Errorf("bundle reply is timeout")),
+		mockOFClient.EXPECT().InstallServiceGroup(binding.GroupIDType(1), false, gomock.Any()).Return(nil),
+	)
+	// Service B's group (ID 2).
+	mockOFClient.EXPECT().InstallServiceGroup(binding.GroupIDType(2), false, gomock.Any()).Return(nil).AnyTimes()
+
+	epKey := fmt.Sprintf("%s:%d", epIP.String(), svcPort)
+	ovsKey := endpointKey(makeTestEndpointInfo(epIP.String(), svcPort, false, true, true, false, nil, nil), binding.ProtocolTCP)
+
+	// Sync 1: Service A with the Endpoint is installed.
+	makeServiceMap(fp, svcA)
+	makeEndpointSliceMap(fp, sliceA)
+	require.NoError(t, fp.syncProxyRules())
+	require.Contains(t, fp.endpointsInstalledMap[svcAPortName], epKey)
+
+	// Sync 2: Service A drops the Endpoint. The flows are uninstalled (count is 1), but the group update
+	// fails, so Service A's state is not committed and the count stays 1.
+	fp.endpointsChanges.OnEndpointSliceUpdate(sliceAEmpty, false)
+	require.Error(t, fp.syncProxyRules())
+	assert.Equal(t, 1, fp.endpointReferenceCounter[ovsKey], "the count must not be committed on failure")
+
+	// Sync 3: Service B is added with the same Endpoint while Service A is still failing. Service B must
+	// reinstall the Endpoint flows (the second InstallEndpointFlows call expected above).
+	fp.serviceChanges.OnServiceUpdate(nil, svcB)
+	makeEndpointSliceMap(fp, sliceB)
+	require.Error(t, fp.syncProxyRules(), "Service A is still failing")
+	assert.Contains(t, fp.endpointsInstalledMap[svcBPortName], epKey)
+
+	// Sync 4: Service A recovers and commits its removal. The count must end at 1 (Service B), and the
+	// flows must remain installed.
+	require.NoError(t, fp.syncProxyRules())
+	assert.NotContains(t, fp.endpointsInstalledMap[svcAPortName], epKey)
+	assert.Contains(t, fp.endpointsInstalledMap[svcBPortName], epKey)
+	assert.Equal(t, 1, fp.endpointReferenceCounter[ovsKey])
 }
