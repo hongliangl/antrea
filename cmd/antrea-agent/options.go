@@ -29,6 +29,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	"antrea.io/antrea/v2/pkg/agent/config"
+	"antrea.io/antrea/v2/pkg/agent/hostdp"
 	"antrea.io/antrea/v2/pkg/apis"
 	"antrea.io/antrea/v2/pkg/cni"
 	agentconfig "antrea.io/antrea/v2/pkg/config/agent"
@@ -554,6 +555,9 @@ func (o *Options) setK8sNodeDefaultOptions() {
 	if o.config.HostNetworkAcceleration.Enable == nil {
 		o.config.HostNetworkAcceleration.Enable = ptr.To(true)
 	}
+	if o.config.EBPFHostDataPath.Mode == "" {
+		o.config.EBPFHostDataPath.Mode = hostdp.ModeObserve.String()
+	}
 	if o.config.HostNetworkMode == "" {
 		o.config.HostNetworkMode = config.HostNetworkModeIPTables.String()
 	}
@@ -712,6 +716,9 @@ func (o *Options) validateK8sNodeOptions() error {
 
 	if err := o.validateHostNetworkModeOptions(); err != nil {
 		return fmt.Errorf("failed to validate host network mode options: %w", err)
+	}
+	if err := o.validateEBPFHostDataPathConfig(); err != nil {
+		return fmt.Errorf("failed to validate ebpfHostDataPath config: %w", err)
 	}
 
 	return nil
@@ -879,4 +886,9 @@ func (o *Options) validateHostNetworkModeOptions() error {
 		}
 	}
 	return nil
+}
+
+func (o *Options) validateEBPFHostDataPathConfig() error {
+	_, err := hostdp.ParseMode(o.config.EBPFHostDataPath.Mode)
+	return err
 }

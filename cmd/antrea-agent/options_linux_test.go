@@ -227,6 +227,7 @@ func TestValidateK8sNodeOptions(t *testing.T) {
 				KubeAPIServerOverride: tt.kubeAPIServerOverride,
 				ClusterMembershipPort: tt.clusterPort,
 				HostNetworkMode:       "iptables",
+				EBPFHostDataPath:      agentconfig.EBPFHostDataPathConfig{Mode: "observe"},
 			}
 			config.TrafficEncapMode = "encap"
 			if tt.trafficEncapMode != "" {

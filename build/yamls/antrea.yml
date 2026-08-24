@@ -4879,6 +4879,13 @@ data:
       # noEncap or hybrid.
       enable: true
 
+    ebpfHostDataPath:
+      # Mode of the eBPF host datapath, which the EBPFHostDataPath feature gate enables. It is either "observe" or
+      # "forward". In "observe" mode the eBPF programs count what they would forward and forward nothing, every
+      # packet being left to the host network stack. In "forward" mode they forward the traffic between the Pods
+      # of two Nodes.
+      mode: "observe"
+
     # HostNetworkMode determines how antrea-agent implements Node host network netfilter rules required by Antrea
     # functionalities and features, using either "iptables" or "nftables". The default value is "iptables". If "nftables"
     # is specified, the NFTablesHostNetworkMode feature gate must be enabled; otherwise, antrea-agent will fail to start.
@@ -5940,7 +5947,7 @@ spec:
         kubectl.kubernetes.io/default-container: antrea-agent
         # Automatically restart Pods with a RollingUpdate if the ConfigMap changes
         # See https://helm.sh/docs/howto/charts_tips_and_tricks/#automatically-roll-deployments
-        checksum/config: f775fbc21f892587d5fe45d620b3a6c63385cb43f9648895ddce8b4732de2ca8
+        checksum/config: 1abb7153e05bf76aefd67a027fb1cb47127731fbce123514b88a075805740364
       labels:
         app: antrea
         component: antrea-agent
@@ -6186,7 +6193,7 @@ spec:
       annotations:
         # Automatically restart Pod if the ConfigMap changes
         # See https://helm.sh/docs/howto/charts_tips_and_tricks/#automatically-roll-deployments
-        checksum/config: f775fbc21f892587d5fe45d620b3a6c63385cb43f9648895ddce8b4732de2ca8
+        checksum/config: 1abb7153e05bf76aefd67a027fb1cb47127731fbce123514b88a075805740364
       labels:
         app: antrea
         component: antrea-controller

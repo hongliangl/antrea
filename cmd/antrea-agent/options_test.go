@@ -538,3 +538,46 @@ func TestOptionsValidateHostNetworkMode(t *testing.T) {
 		})
 	}
 }
+
+func TestOptionsValidateEBPFHostDataPathConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		mode        string
+		expectedErr string
+	}{
+		{
+			name: "default",
+			mode: "",
+		},
+		{
+			name: "observe",
+			mode: "observe",
+		},
+		{
+			name: "forward",
+			mode: "forward",
+		},
+		{
+			name:        "invalid",
+			mode:        "redirect",
+			expectedErr: "the eBPF host datapath mode \"redirect\" is unknown",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			o := &Options{config: &agentconfig.AgentConfig{
+				EBPFHostDataPath: agentconfig.EBPFHostDataPathConfig{Mode: tt.mode},
+			}}
+			o.setK8sNodeDefaultOptions()
+			err := o.validateEBPFHostDataPathConfig()
+			if tt.expectedErr != "" {
+				assert.ErrorContains(t, err, tt.expectedErr)
+				return
+			}
+			require.NoError(t, err)
+			if tt.mode == "" {
+				assert.Equal(t, "observe", o.config.EBPFHostDataPath.Mode)
+			}
+		})
+	}
+}

@@ -221,6 +221,8 @@ type AgentConfig struct {
 	// HostNetworkAcceleration configures acceleration of Pod-to-Pod traffic in the Node's host network using nftables
 	// flowtable when traffic mode is hybrid or noEncap.
 	HostNetworkAcceleration HostNetworkAccelerationConfig `yaml:"hostNetworkAcceleration,omitempty"`
+	// EBPFHostDataPath configures the eBPF host datapath, which is enabled by the EBPFHostDataPath feature gate.
+	EBPFHostDataPath EBPFHostDataPathConfig `yaml:"ebpfHostDataPath,omitempty"`
 	// HostNetworkMode determines how antrea-agent implements netfilter rules required by Antrea functionalities and
 	// features in the Node's host network. The default value is "iptables". If "nftables" is specified, the
 	// NFTablesHostNetworkMode feature gate must be enabled; otherwise, this option has no effect. If the above condition
@@ -473,4 +475,11 @@ type HostNetworkAccelerationConfig struct {
 	// Enable to accelerate Pod-to-Pod traffic in the Node's host network using nftables flowtable when traffic mode is
 	// noEncap or hybrid.
 	Enable *bool `yaml:"enable,omitempty"`
+}
+
+type EBPFHostDataPathConfig struct {
+	// Mode is either "observe" or "forward". In "observe" mode the eBPF programs make every forwarding decision
+	// and count it, but forward nothing: every packet is left to the host network stack untouched. In "forward"
+	// mode they forward the traffic between the Pods of two Nodes. Defaults to "observe".
+	Mode string `yaml:"mode,omitempty"`
 }
