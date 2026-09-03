@@ -2758,3 +2758,293 @@ func TestDeleteHandlerTombstone(t *testing.T) {
 		})
 	}
 }
+
+// generateEndpointSliceWithConditions is generateEndpointSlice with the conditions of its single endpoint set to the
+// given ones rather than to ready.
+func generateEndpointSliceWithConditions(svcName string,
+	suffix string,
+	isLocal bool,
+	endpointIP string,
+	conditions discovery.EndpointConditions) *discovery.EndpointSlice {
+	endpointSlice := generateEndpointSlice(svcName, suffix, isLocal, false, endpointIP)
+	endpointSlice.Endpoints[0].Conditions = conditions
+	return endpointSlice
+}
+
+// syncServiceRoutes creates a controller with the given Services and EndpointSlices, syncs a BGPPolicy advertising
+// the given Service IP types once, and returns the controller so that the routes it computed can be inspected.
+func syncServiceRoutes(t *testing.T,
+	advertiseClusterIP bool,
+	advertiseLoadBalancerIP bool,
+	objects []runtime.Object,
+	expectedPrefixes ...string) *fakeController {
+	policy := generateBGPPolicy(bgpPolicyName1,
+		creationTimestamp,
+		nodeLabels1,
+		179,
+		65000,
+		advertiseClusterIP,
+		false,
+		advertiseLoadBalancerIP,
+		false,
+		false,
+		[]v1alpha1.BGPPeer{ipv4Peer1},
+		nil)
+	c := newFakeController(t, append([]runtime.Object{node}, objects...), []runtime.Object{policy}, true, false)
+	mockBGPServer := c.mockBGPServer
+
+	stopCh := make(chan struct{})
+	t.Cleanup(func() { close(stopCh) })
+	c.startInformers(stopCh)
+	c.bgpPeerPasswords = bgpPeerPasswords
+
+	waitAndGetDummyEvent(t, c)
+	mockBGPServer.EXPECT().Start(gomock.Any())
+	mockBGPServer.EXPECT().AddPeer(gomock.Any(), ipv4Peer1Config)
+	for _, prefix := range expectedPrefixes {
+		mockBGPServer.EXPECT().AdvertiseRoutes(gomock.Any(), []bgp.Route{{Prefix: prefix}})
+	}
+	require.NoError(t, c.syncBGPPolicy(context.Background()))
+	doneDummyEvent(t, c)
+	return c
+}
+
+func TestServiceRoutesHonorReadinessAndSharedIPs(t *testing.T) {
+	const (
+		sharedLoadBalancerIP = "192.168.77.200"
+		sharedPrefix         = sharedLoadBalancerIP + "/32"
+		clusterIP            = "10.96.1.1"
+		clusterIPPrefix      = clusterIP + "/32"
+	)
+	notReady := discovery.EndpointConditions{Ready: ptr.To(false), Serving: ptr.To(false)}
+	draining := discovery.EndpointConditions{Ready: ptr.To(false), Serving: ptr.To(true), Terminating: ptr.To(true)}
+	nilReady := discovery.EndpointConditions{}
+
+	loadBalancer := func(name string, externalLocal bool) *corev1.Service {
+		return generateService(name, corev1.ServiceTypeLoadBalancer, "", "", sharedLoadBalancerIP, false, externalLocal)
+	}
+	tests := []struct {
+		name                    string
+		advertiseClusterIP      bool
+		advertiseLoadBalancerIP bool
+		objects                 []runtime.Object
+		// expectedRoutes maps the advertised prefix to the K8sObjRef of its metadata.
+		expectedRoutes map[string]string
+	}{
+		{
+			name:                    "local endpoint ready",
+			advertiseLoadBalancerIP: true,
+			objects: []runtime.Object{
+				loadBalancer("svc-a", true),
+				generateEndpointSlice("svc-a", "1", true, false, "10.10.0.2"),
+			},
+			expectedRoutes: map[string]string{sharedPrefix: getServiceName("svc-a")},
+		},
+		{
+			name:                    "local endpoint not ready and not serving",
+			advertiseLoadBalancerIP: true,
+			objects: []runtime.Object{
+				loadBalancer("svc-a", true),
+				generateEndpointSliceWithConditions("svc-a", "1", true, "10.10.0.2", notReady),
+			},
+			expectedRoutes: map[string]string{},
+		},
+		{
+			name:                    "local endpoint terminating and serving",
+			advertiseLoadBalancerIP: true,
+			objects: []runtime.Object{
+				loadBalancer("svc-a", true),
+				generateEndpointSliceWithConditions("svc-a", "1", true, "10.10.0.2", draining),
+			},
+			expectedRoutes: map[string]string{sharedPrefix: getServiceName("svc-a")},
+		},
+		{
+			name:                    "only a remote ready endpoint",
+			advertiseLoadBalancerIP: true,
+			objects: []runtime.Object{
+				loadBalancer("svc-a", true),
+				generateEndpointSlice("svc-a", "1", false, false, "10.10.0.3"),
+			},
+			expectedRoutes: map[string]string{},
+		},
+		{
+			name:                    "endpoint with nil ready condition",
+			advertiseLoadBalancerIP: true,
+			objects: []runtime.Object{
+				loadBalancer("svc-a", true),
+				generateEndpointSliceWithConditions("svc-a", "1", true, "10.10.0.2", nilReady),
+			},
+			expectedRoutes: map[string]string{sharedPrefix: getServiceName("svc-a")},
+		},
+		{
+			name:               "clusterIP with internalTrafficPolicy Local, local endpoint not ready",
+			advertiseClusterIP: true,
+			objects: []runtime.Object{
+				generateService("svc-a", corev1.ServiceTypeClusterIP, clusterIP, "", "", true, false),
+				generateEndpointSliceWithConditions("svc-a", "1", true, "10.10.0.2", notReady),
+			},
+			expectedRoutes: map[string]string{},
+		},
+		{
+			name:               "clusterIP with internalTrafficPolicy Local, local endpoint terminating and serving",
+			advertiseClusterIP: true,
+			objects: []runtime.Object{
+				generateService("svc-a", corev1.ServiceTypeClusterIP, clusterIP, "", "", true, false),
+				generateEndpointSliceWithConditions("svc-a", "1", true, "10.10.0.2", draining),
+			},
+			expectedRoutes: map[string]string{clusterIPPrefix: getServiceName("svc-a")},
+		},
+		{
+			name:                    "shared IP, both Cluster",
+			advertiseLoadBalancerIP: true,
+			objects: []runtime.Object{
+				loadBalancer("svc-a", false),
+				loadBalancer("svc-b", false),
+				generateEndpointSlice("svc-a", "1", false, false, "10.10.0.3"),
+				generateEndpointSlice("svc-b", "1", false, false, "10.10.0.4"),
+			},
+			expectedRoutes: map[string]string{sharedPrefix: getServiceName("svc-a") + "," + getServiceName("svc-b")},
+		},
+		{
+			name:                    "shared IP, both Local, both with a local serving endpoint",
+			advertiseLoadBalancerIP: true,
+			objects: []runtime.Object{
+				loadBalancer("svc-a", true),
+				loadBalancer("svc-b", true),
+				generateEndpointSlice("svc-a", "1", true, false, "10.10.0.2"),
+				generateEndpointSlice("svc-b", "1", true, false, "10.10.0.5"),
+			},
+			expectedRoutes: map[string]string{sharedPrefix: getServiceName("svc-a") + "," + getServiceName("svc-b")},
+		},
+		{
+			name:                    "shared IP, both Local, one local and one remote endpoint",
+			advertiseLoadBalancerIP: true,
+			objects: []runtime.Object{
+				loadBalancer("svc-a", true),
+				loadBalancer("svc-b", true),
+				generateEndpointSlice("svc-a", "1", true, false, "10.10.0.2"),
+				generateEndpointSlice("svc-b", "1", false, false, "10.10.0.4"),
+			},
+			expectedRoutes: map[string]string{},
+		},
+		{
+			name:                    "shared IP, both Local, neither with a local endpoint",
+			advertiseLoadBalancerIP: true,
+			objects: []runtime.Object{
+				loadBalancer("svc-a", true),
+				loadBalancer("svc-b", true),
+				generateEndpointSlice("svc-a", "1", false, false, "10.10.0.3"),
+				generateEndpointSlice("svc-b", "1", false, false, "10.10.0.4"),
+			},
+			expectedRoutes: map[string]string{},
+		},
+		{
+			name:                    "shared IP, Cluster and Local, the Local one has a local endpoint",
+			advertiseLoadBalancerIP: true,
+			objects: []runtime.Object{
+				loadBalancer("svc-a", false),
+				loadBalancer("svc-b", true),
+				generateEndpointSlice("svc-a", "1", false, false, "10.10.0.3"),
+				generateEndpointSlice("svc-b", "1", true, false, "10.10.0.5"),
+			},
+			expectedRoutes: map[string]string{sharedPrefix: getServiceName("svc-a") + "," + getServiceName("svc-b")},
+		},
+		{
+			name:                    "shared IP, Cluster and Local, the Local one has no local endpoint",
+			advertiseLoadBalancerIP: true,
+			objects: []runtime.Object{
+				loadBalancer("svc-a", false),
+				loadBalancer("svc-b", true),
+				generateEndpointSlice("svc-a", "1", true, false, "10.10.0.2"),
+				generateEndpointSlice("svc-b", "1", false, false, "10.10.0.4"),
+			},
+			expectedRoutes: map[string]string{},
+		},
+		{
+			name:                    "shared IP, three Local Services, one without a local endpoint",
+			advertiseLoadBalancerIP: true,
+			objects: []runtime.Object{
+				loadBalancer("svc-a", true),
+				loadBalancer("svc-b", true),
+				loadBalancer("svc-c", true),
+				generateEndpointSlice("svc-a", "1", true, false, "10.10.0.2"),
+				generateEndpointSlice("svc-b", "1", true, false, "10.10.0.5"),
+				generateEndpointSlice("svc-c", "1", false, false, "10.10.0.6"),
+			},
+			expectedRoutes: map[string]string{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var expectedPrefixes []string
+			for prefix := range tt.expectedRoutes {
+				expectedPrefixes = append(expectedPrefixes, prefix)
+			}
+			c := syncServiceRoutes(t, tt.advertiseClusterIP, tt.advertiseLoadBalancerIP, tt.objects, expectedPrefixes...)
+
+			actualRoutes := make(map[string]string)
+			for route, metadata := range c.bgpPolicyState.routes {
+				actualRoutes[route.Prefix] = metadata.K8sObjRef
+			}
+			assert.Equal(t, tt.expectedRoutes, actualRoutes)
+		})
+	}
+}
+
+// TestServiceRouteMetadataIsDeterministic checks that the metadata of a prefix shared by several Services does not
+// depend on the order in which the Services are listed.
+func TestServiceRouteMetadataIsDeterministic(t *testing.T) {
+	const sharedPrefix = "192.168.77.200/32"
+	svcA := generateService("svc-a", corev1.ServiceTypeLoadBalancer, "", "", "192.168.77.200", false, false)
+	svcB := generateService("svc-b", corev1.ServiceTypeLoadBalancer, "", "", "192.168.77.200", false, false)
+	expectedK8sObjRef := getServiceName("svc-a") + "," + getServiceName("svc-b")
+
+	for _, objects := range [][]runtime.Object{{svcA, svcB}, {svcB, svcA}} {
+		c := syncServiceRoutes(t, false, true, objects, sharedPrefix)
+		assert.Equal(t, expectedK8sObjRef, c.bgpPolicyState.routes[bgp.Route{Prefix: sharedPrefix}].K8sObjRef)
+		assert.Equal(t, ServiceLoadBalancerIP, c.bgpPolicyState.routes[bgp.Route{Prefix: sharedPrefix}].Type)
+	}
+}
+
+// TestServiceRouteReadinessTransitions checks that a route follows the readiness of the only local endpoint of a
+// Service with a Local traffic policy, and that a shared prefix is withdrawn when one of the sharing Services loses its
+// local endpoint.
+func TestServiceRouteReadinessTransitions(t *testing.T) {
+	const sharedPrefix = "192.168.77.200/32"
+	notReady := discovery.EndpointConditions{Ready: ptr.To(false), Serving: ptr.To(false)}
+	ready := discovery.EndpointConditions{Ready: ptr.To(true), Serving: ptr.To(true)}
+
+	svcA := generateService("svc-a", corev1.ServiceTypeLoadBalancer, "", "", "192.168.77.200", false, true)
+	svcB := generateService("svc-b", corev1.ServiceTypeLoadBalancer, "", "", "192.168.77.200", false, true)
+	sliceA := generateEndpointSlice("svc-a", "1", true, false, "10.10.0.2")
+	sliceB := generateEndpointSlice("svc-b", "1", true, false, "10.10.0.5")
+	c := syncServiceRoutes(t, false, true, []runtime.Object{svcA, svcB, sliceA, sliceB}, sharedPrefix)
+	mockBGPServer := c.mockBGPServer
+	ctx := context.Background()
+
+	// The only local endpoint of svc-a stops being ready, the shared prefix is withdrawn.
+	_, err := c.client.DiscoveryV1().EndpointSlices(namespaceDefault).Update(ctx,
+		generateEndpointSliceWithConditions("svc-a", "1", true, "10.10.0.2", notReady), metav1.UpdateOptions{})
+	require.NoError(t, err)
+	waitAndGetDummyEvent(t, c)
+	mockBGPServer.EXPECT().WithdrawRoutes(gomock.Any(), []bgp.Route{{Prefix: sharedPrefix}})
+	require.NoError(t, c.syncBGPPolicy(ctx))
+	doneDummyEvent(t, c)
+
+	// It becomes ready again, the shared prefix is advertised again.
+	_, err = c.client.DiscoveryV1().EndpointSlices(namespaceDefault).Update(ctx,
+		generateEndpointSliceWithConditions("svc-a", "1", true, "10.10.0.2", ready), metav1.UpdateOptions{})
+	require.NoError(t, err)
+	waitAndGetDummyEvent(t, c)
+	mockBGPServer.EXPECT().AdvertiseRoutes(gomock.Any(), []bgp.Route{{Prefix: sharedPrefix}})
+	require.NoError(t, c.syncBGPPolicy(ctx))
+	doneDummyEvent(t, c)
+
+	// svc-b loses its local endpoint, the shared prefix is withdrawn even though svc-a still has one.
+	err = c.client.DiscoveryV1().EndpointSlices(namespaceDefault).Delete(ctx, sliceB.Name, metav1.DeleteOptions{})
+	require.NoError(t, err)
+	waitAndGetDummyEvent(t, c)
+	mockBGPServer.EXPECT().WithdrawRoutes(gomock.Any(), []bgp.Route{{Prefix: sharedPrefix}})
+	require.NoError(t, c.syncBGPPolicy(ctx))
+	doneDummyEvent(t, c)
+}
