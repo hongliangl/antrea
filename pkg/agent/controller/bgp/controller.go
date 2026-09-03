@@ -15,6 +15,7 @@
 package bgp
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,7 @@ import (
 	"net"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +51,7 @@ import (
 	"antrea.io/antrea/v2/pkg/agent/bgp/gobgp"
 	"antrea.io/antrea/v2/pkg/agent/config"
 	"antrea.io/antrea/v2/pkg/agent/types"
+	"antrea.io/antrea/v2/pkg/agent/util/endpointslice"
 	"antrea.io/antrea/v2/pkg/apis/crd/v1alpha1"
 	"antrea.io/antrea/v2/pkg/apis/crd/v1beta1"
 	crdinformersv1a1 "antrea.io/antrea/v2/pkg/client/informers/externalversions/crd/v1alpha1"
@@ -617,51 +620,121 @@ func (c *Controller) getRoutes(advertisements v1alpha1.Advertisements) map[bgp.R
 	return allRoutes
 }
 
+type serviceRouteContribution struct {
+	svcRef          string
+	routeType       AdvertisedRouteType
+	requiresLocal   bool
+	hasLocalServing bool
+}
+
 func (c *Controller) addServiceRoutes(advertisement *v1alpha1.ServiceAdvertisement, allRoutes map[bgp.Route]RouteMetadata) {
 	ipTypes := sets.New(advertisement.IPTypes...)
 	services, _ := c.serviceLister.List(labels.Everything())
+
+	contributions := make(map[string][]serviceRouteContribution)
 
 	for _, svc := range services {
 		svcRef := svc.Namespace + "/" + svc.Name
 		internalLocal := svc.Spec.InternalTrafficPolicy != nil && *svc.Spec.InternalTrafficPolicy == corev1.ServiceInternalTrafficPolicyLocal
 		externalLocal := svc.Spec.ExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyLocal
-		var hasLocalEndpoints bool
+		var hasLocalServing bool
 		if internalLocal || externalLocal {
-			hasLocalEndpoints = c.hasLocalEndpoints(svc)
+			hasLocalServing = c.hasLocalServingEndpoints(svc)
 		}
 		if ipTypes.Has(v1alpha1.ServiceIPTypeClusterIP) {
-			if internalLocal && hasLocalEndpoints || !internalLocal {
-				for _, clusterIP := range svc.Spec.ClusterIPs {
-					if c.enabledIPv4 && utilnet.IsIPv4String(clusterIP) {
-						addRoutes(allRoutes, clusterIP+ipv4Suffix, svcRef, ServiceClusterIP)
-					} else if c.enabledIPv6 && utilnet.IsIPv6String(clusterIP) {
-						addRoutes(allRoutes, clusterIP+ipv6Suffix, svcRef, ServiceClusterIP)
-					}
+			for _, clusterIP := range svc.Spec.ClusterIPs {
+				if c.enabledIPv4 && utilnet.IsIPv4String(clusterIP) {
+					prefix := clusterIP + ipv4Suffix
+					contributions[prefix] = append(contributions[prefix], serviceRouteContribution{
+						svcRef:          svcRef,
+						routeType:       ServiceClusterIP,
+						requiresLocal:   internalLocal,
+						hasLocalServing: hasLocalServing,
+					})
+				} else if c.enabledIPv6 && utilnet.IsIPv6String(clusterIP) {
+					prefix := clusterIP + ipv6Suffix
+					contributions[prefix] = append(contributions[prefix], serviceRouteContribution{
+						svcRef:          svcRef,
+						routeType:       ServiceClusterIP,
+						requiresLocal:   internalLocal,
+						hasLocalServing: hasLocalServing,
+					})
 				}
 			}
 		}
 		if ipTypes.Has(v1alpha1.ServiceIPTypeExternalIP) {
-			if externalLocal && hasLocalEndpoints || !externalLocal {
-				for _, externalIP := range svc.Spec.ExternalIPs {
-					if c.enabledIPv4 && utilnet.IsIPv4String(externalIP) {
-						addRoutes(allRoutes, externalIP+ipv4Suffix, svcRef, ServiceExternalIP)
-					} else if c.enabledIPv6 && utilnet.IsIPv6String(externalIP) {
-						addRoutes(allRoutes, externalIP+ipv6Suffix, svcRef, ServiceExternalIP)
-					}
+			for _, externalIP := range svc.Spec.ExternalIPs {
+				if c.enabledIPv4 && utilnet.IsIPv4String(externalIP) {
+					prefix := externalIP + ipv4Suffix
+					contributions[prefix] = append(contributions[prefix], serviceRouteContribution{
+						svcRef:          svcRef,
+						routeType:       ServiceExternalIP,
+						requiresLocal:   externalLocal,
+						hasLocalServing: hasLocalServing,
+					})
+				} else if c.enabledIPv6 && utilnet.IsIPv6String(externalIP) {
+					prefix := externalIP + ipv6Suffix
+					contributions[prefix] = append(contributions[prefix], serviceRouteContribution{
+						svcRef:          svcRef,
+						routeType:       ServiceExternalIP,
+						requiresLocal:   externalLocal,
+						hasLocalServing: hasLocalServing,
+					})
 				}
 			}
 		}
 		if ipTypes.Has(v1alpha1.ServiceIPTypeLoadBalancerIP) && svc.Spec.Type == corev1.ServiceTypeLoadBalancer {
-			if externalLocal && hasLocalEndpoints || !externalLocal {
-				loadBalancerIPs := getIngressIPs(svc)
-				for _, loadBalancerIP := range loadBalancerIPs {
-					if c.enabledIPv4 && utilnet.IsIPv4String(loadBalancerIP) {
-						addRoutes(allRoutes, loadBalancerIP+ipv4Suffix, svcRef, ServiceLoadBalancerIP)
-					} else if c.enabledIPv6 && utilnet.IsIPv6String(loadBalancerIP) {
-						addRoutes(allRoutes, loadBalancerIP+ipv6Suffix, svcRef, ServiceLoadBalancerIP)
-					}
+			loadBalancerIPs := getIngressIPs(svc)
+			for _, loadBalancerIP := range loadBalancerIPs {
+				if c.enabledIPv4 && utilnet.IsIPv4String(loadBalancerIP) {
+					prefix := loadBalancerIP + ipv4Suffix
+					contributions[prefix] = append(contributions[prefix], serviceRouteContribution{
+						svcRef:          svcRef,
+						routeType:       ServiceLoadBalancerIP,
+						requiresLocal:   externalLocal,
+						hasLocalServing: hasLocalServing,
+					})
+				} else if c.enabledIPv6 && utilnet.IsIPv6String(loadBalancerIP) {
+					prefix := loadBalancerIP + ipv6Suffix
+					contributions[prefix] = append(contributions[prefix], serviceRouteContribution{
+						svcRef:          svcRef,
+						routeType:       ServiceLoadBalancerIP,
+						requiresLocal:   externalLocal,
+						hasLocalServing: hasLocalServing,
+					})
 				}
 			}
+		}
+	}
+
+	for prefix, contribs := range contributions {
+		blocked := false
+		for _, contrib := range contribs {
+			if contrib.requiresLocal && !contrib.hasLocalServing {
+				blocked = true
+				break
+			}
+		}
+		if blocked {
+			continue
+		}
+
+		slices.SortFunc(contribs, func(a, b serviceRouteContribution) int {
+			if res := cmp.Compare(a.svcRef, b.svcRef); res != 0 {
+				return res
+			}
+			return cmp.Compare(a.routeType, b.routeType)
+		})
+
+		svcRefs := make([]string, len(contribs))
+		for i, contrib := range contribs {
+			svcRefs[i] = contrib.svcRef
+		}
+		svcRefs = slices.Compact(svcRefs)
+
+		allRoutes[bgp.Route{Prefix: prefix}] = RouteMetadata{
+			Type:      contribs[0].routeType,
+			K8sObjRef: strings.Join(svcRefs, ","),
 		}
 	}
 }
@@ -697,12 +770,12 @@ func addRoutes(allRoutes map[bgp.Route]RouteMetadata, prefix, k8sObjRef string, 
 	}
 }
 
-func (c *Controller) hasLocalEndpoints(svc *corev1.Service) bool {
+func (c *Controller) hasLocalServingEndpoints(svc *corev1.Service) bool {
 	labelSelector := labels.Set{discovery.LabelServiceName: svc.GetName()}.AsSelector()
 	items, _ := c.endpointSliceLister.EndpointSlices(svc.GetNamespace()).List(labelSelector)
 	for _, eps := range items {
 		for _, ep := range eps.Endpoints {
-			if ep.NodeName != nil && *ep.NodeName == c.nodeName {
+			if ep.NodeName != nil && *ep.NodeName == c.nodeName && endpointslice.CanServe(ep) {
 				return true
 			}
 		}
