@@ -238,8 +238,13 @@ func generateRulesData(policyName string, vlanID uint32, protoKeywords map[strin
 		policyName, flowbit, flowbitAllowed, maxBytes, sid)
 	sid++
 
-	// Reject the traffic of an allowed protocol which none of the allow rules below matches.
+	// Reject the traffic of an allowed protocol which none of the allow rules below matches. A protocol
+	// whose criteria are empty allows all of its traffic, so there is nothing left for this rule to
+	// reject and emitting it would only rely on the allow rule outranking it.
 	for _, proto := range protocols {
+		if protoKeywords[proto].Has("") {
+			continue
+		}
 		fmt.Fprintf(rulesData, `reject %s any any -> any any (msg: "Reject by %s"; flowbits: isset,%s; sid: %d;)`+"\n",
 			deferredRejectHooks[proto], policyName, flowbit, sid)
 		sid++
