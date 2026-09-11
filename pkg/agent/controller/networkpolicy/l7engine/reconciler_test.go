@@ -178,7 +178,7 @@ func TestWriteRules(t *testing.T) {
 			expected: `alert ip any any -> any any (vlan.id: 1; flowbits: set,antrea_l7_1; flowbits: set,antrea_l7; flowbits: noalert; sid: 2;)
 reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flow: to_server, established; app-layer-protocol: !http; sid: 3;)
 reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flow: to_server, established; app-layer-protocol: failed; sid: 4;)
-reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: isnotset,antrea_l7_allowed; flow: to_server, established; flow.bytes_toserver: >65536; sid: 5;)
+reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: isnotset,antrea_l7_allowed; flow: to_server, established; flow.age: >5; sid: 5;)
 reject http1:request_headers any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; sid: 6;)
 pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: set,antrea_l7_allowed; http.uri; content:"/index.html"; startswith; endswith; sid: 7;)
 `,
@@ -197,7 +197,7 @@ pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; 
 			expected: `alert ip any any -> any any (vlan.id: 2; flowbits: set,antrea_l7_2; flowbits: set,antrea_l7; flowbits: noalert; sid: 8;)
 reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flow: to_server, established; app-layer-protocol: !http; app-layer-protocol: !tls; sid: 9;)
 reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flow: to_server, established; app-layer-protocol: failed; sid: 10;)
-reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flowbits: isnotset,antrea_l7_allowed; flow: to_server, established; flow.bytes_toserver: >65536; sid: 11;)
+reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flowbits: isnotset,antrea_l7_allowed; flow: to_server, established; flow.age: >5; sid: 11;)
 reject tls:client_hello_done any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; sid: 12;)
 pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flowbits: set,antrea_l7_allowed; sid: 13;)
 pass tls any any -> any any (msg: "Allow tls by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flowbits: set,antrea_l7_allowed; tls.sni; content:"foo.bar.com"; startswith; endswith; sid: 14;)

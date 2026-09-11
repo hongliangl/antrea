@@ -68,19 +68,21 @@ const (
 	// after it.
 	commonRulesSID = 1
 
-	// How many bytes a flow may send to the server before one of the L7 rule's allow rules has matched
-	// it. A protocol the engine never identifies is never rejected on its merits, because the rules
-	// doing that wait for an identification which only happens once either side has sent data. A flow
-	// whose peer stays silent would otherwise carry an unbounded amount of traffic past the L7 rule.
+	// How long a flow may go without any of the L7 rule's allow rules having matched it.
 	//
-	// The cap only applies while a flow has not been allowed, so it bounds the request line, and the
-	// headers when the L7 rule matches on the Host header, but never the request body. The HTTP value
-	// is above the request line and header limits of common servers, 8 KiB for the request line in
-	// Apache and nginx and 32 KiB or less in total headers, so a request this cap rejects would have
-	// been rejected by the server as well. The TLS value is the size of one TLS record, which every
-	// real client hello fits in several times over.
-	capBytesHTTP = 65536
-	capBytesTLS  = 16384
+	// A protocol the engine never identifies is never rejected on its merits, because the rules doing
+	// that wait for an identification which only concludes once either side has sent data. A client
+	// sending bytes of no known protocol to a peer which does not answer is the common case, and it
+	// needs no malice: a Go HTTP server reading a request line blocks until it sees one, so sending it
+	// anything without a newline leaves both sides waiting and the flow unidentified for as long as it
+	// is held open.
+	//
+	// A flow is exempt as soon as an allow rule has matched it, so this bounds how long a flow can go
+	// unexamined, not how long it can live. A request which is allowed keeps its connection for as
+	// long as it likes, however large its body, and a keep-alive connection stays allowed for its
+	// later requests. Only a flow which has never matched anything is cut, which the implementation
+	// this replaced did on its first packet.
+	maxUnmatchedFlowAgeSeconds = 5
 )
 
 type scCmdRet struct {
@@ -196,13 +198,6 @@ var deferredRejectHooks = map[string]string{
 	protocolTLS:  "tls:client_hello_done",
 }
 
-// capBytes is the value of the cap described above for each protocol. An L7 rule allowing more than
-// one protocol uses the largest of them.
-var capBytes = map[string]int{
-	protocolHTTP: capBytesHTTP,
-	protocolTLS:  capBytesTLS,
-}
-
 // writeRules writes the Suricata rules enforcing one L7 rule, numbered from sid, and returns the
 // next free SID.
 //
@@ -222,7 +217,7 @@ func writeRules(rulesData *bytes.Buffer, rule *l7Rule, sid int) int {
 	protocols := sets.List(sets.KeySet(rule.protoKeywords))
 
 	// Reject the traffic whose protocol is not one this L7 rule allows. A flow whose protocol Suricata
-	// cannot identify at all is not covered by this rule, the one after the next one bounds it.
+	// cannot identify at all is not covered by this rule, the one after the next one covers it.
 	var notProtocols []string
 	for _, proto := range protocols {
 		notProtocols = append(notProtocols, fmt.Sprintf("app-layer-protocol: !%s;", proto))
@@ -234,16 +229,10 @@ func writeRules(rulesData *bytes.Buffer, rule *l7Rule, sid int) int {
 		rule.policyName, flowbit, sid)
 	sid++
 
-	// Reject a flow which has sent more than the cap without any allow rule having matched it. This is
-	// what bounds a flow whose protocol is never identified, see the comment on capBytesHTTP.
-	maxBytes := 0
-	for _, proto := range protocols {
-		if capBytes[proto] > maxBytes {
-			maxBytes = capBytes[proto]
-		}
-	}
-	fmt.Fprintf(rulesData, `reject ip any any -> any any (msg: "Reject by %s"; flowbits: isset,%s; flowbits: isnotset,%s; flow: to_server, established; flow.bytes_toserver: >%d; sid: %d;)`+"\n",
-		rule.policyName, flowbit, flowbitAllowed, maxBytes, sid)
+	// Reject a flow which no allow rule has matched for long enough. This is what covers a flow whose
+	// protocol is never identified, see the comment on maxUnmatchedFlowAgeSeconds.
+	fmt.Fprintf(rulesData, `reject ip any any -> any any (msg: "Reject by %s"; flowbits: isset,%s; flowbits: isnotset,%s; flow: to_server, established; flow.age: >%d; sid: %d;)`+"\n",
+		rule.policyName, flowbit, flowbitAllowed, maxUnmatchedFlowAgeSeconds, sid)
 	sid++
 
 	// Reject the traffic of an allowed protocol which none of the allow rules below matches. A protocol

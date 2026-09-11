@@ -639,9 +639,9 @@ func testL7NetworkPolicyMultipleCriteria(t *testing.T, data *TestData) {
 	probeL7NetworkPolicyHTTPPath(t, data, clientPodName, dstPodIPs, "clientip", false)
 }
 
-// testL7NetworkPolicyHTTPLargeBody verifies that a request body larger than the amount of traffic a
-// connection may send before a rule has allowed it does not cause the connection to be cut. The
-// request is allowed on its request line, so the body that follows is not subject to that limit.
+// testL7NetworkPolicyHTTPLargeBody verifies that a large request body does not cause the connection
+// to be cut. The request is allowed on its request line, so neither the size of the body nor the time
+// it takes to send it is subject to the limit on how long a connection may go unmatched.
 func testL7NetworkPolicyHTTPLargeBody(t *testing.T, data *TestData) {
 	clientPodName := "test-l7-large-body-client"
 	clientPodLabels := map[string]string{"test-l7-large-body-e2e": "client"}
@@ -664,8 +664,9 @@ func testL7NetworkPolicyHTTPLargeBody(t *testing.T, data *TestData) {
 
 	for _, ip := range podIPs.AsSlice() {
 		url := fmt.Sprintf("http://%s/echo?msg=hello", net.JoinHostPort(ip.String(), "8080"))
-		// 256 KiB, comfortably above the limit, which is 64 KiB for HTTP.
-		cmd := []string{"bash", "-c", fmt.Sprintf("head -c 262144 /dev/zero | tr '\\0' 'a' | curl -s -o /dev/null --data-binary @- --connect-timeout 5 --max-time 20 %s", url)}
+		// Sent slowly enough that the connection outlives the limit, which the request line being
+		// allowed must exempt it from.
+		cmd := []string{"bash", "-c", fmt.Sprintf("(for i in $(seq 10); do head -c 26214 /dev/zero | tr '\\0' 'a'; sleep 1; done) | curl -s -o /dev/null --data-binary @- -H 'Transfer-Encoding: chunked' --connect-timeout 5 --max-time 60 %s", url)}
 		assert.Eventually(t, func() bool {
 			stdout, stderr, err := data.RunCommandFromPod(data.testNamespace, clientPodName, agnhostContainerName, cmd)
 			if err != nil {
@@ -677,15 +678,16 @@ func testL7NetworkPolicyHTTPLargeBody(t *testing.T, data *TestData) {
 	}
 }
 
-// testL7NetworkPolicyUnidentifiedTraffic verifies the limit on what a connection may send before a
-// rule has allowed it. A connection carrying bytes of no known protocol to a peer which never answers
-// is never identified, so no rule can reject it on its protocol, and the limit is what cuts it.
+// testL7NetworkPolicyUnidentifiedTraffic verifies that a connection no rule has matched is cut. A
+// connection carrying bytes of no known protocol to a peer which never answers is never identified,
+// so no rule can reject it on its protocol, and the limit on how long a connection may go unmatched
+// is what cuts it.
 //
 // The test reads the number of bytes the server received rather than the exit status of the client,
 // because a client whose connection is reset mid-write still exits successfully.
 func testL7NetworkPolicyUnidentifiedTraffic(t *testing.T, data *TestData) {
 	const port = 9999
-	const sent = 262144 // 256 KiB, four times the limit for HTTP
+	const sent = 262144
 
 	clientPodName := "test-l7-unidentified-client"
 	clientPodLabels := map[string]string{"test-l7-unidentified-e2e": "client"}
@@ -709,7 +711,8 @@ func testL7NetworkPolicyUnidentifiedTraffic(t *testing.T, data *TestData) {
 	time.Sleep(networkPolicyDelay)
 
 	ip := podIPs.AsSlice()[0]
-	pushCmd := []string{"bash", "-c", fmt.Sprintf("head -c %d /dev/zero | tr '\\0' 'a' | nc -w 5 %s %d", sent, ip.String(), port)}
+	// Trickle the bytes out so that the connection is still open when it is cut.
+	pushCmd := []string{"bash", "-c", fmt.Sprintf("(for i in $(seq 20); do head -c %d /dev/zero | tr '\\0' 'a'; sleep 1; done) | nc -w 30 %s %d", sent/20, ip.String(), port)}
 	_, _, err = data.RunCommandFromPod(data.testNamespace, clientPodName, agnhostContainerName, pushCmd)
 	require.NoError(t, err)
 
