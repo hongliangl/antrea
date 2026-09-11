@@ -879,6 +879,9 @@ func testL7NetworkPolicyLogging(t *testing.T, data *TestData) {
 				Action:    "blocked",
 				Signature: fmt.Sprintf("Reject by AntreaNetworkPolicy:%s/%s", data.testNamespace, policyAllowPathHostname),
 			},
+			// The rejection is decided once the request has been parsed, so the alert names the request
+			// it rejected.
+			Http: &L7LogHttpEntry{Hostname: ip.String(), Port: 8080, Url: "/clientip"},
 		}
 		hostMatcher := &L7LogEntry{
 			EventType: "http",
