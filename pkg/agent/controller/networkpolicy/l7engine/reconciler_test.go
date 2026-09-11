@@ -17,7 +17,10 @@
 package l7engine
 
 import (
+	"bytes"
 	"fmt"
+	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -146,6 +149,115 @@ func TestStartSuricata(t *testing.T) {
 	ok, err = afero.FileContainsBytes(defaultFS, defaultSuricataConfigPath, []byte("include: /etc/suricata/antrea.yaml"))
 	assert.NoError(t, err)
 	assert.True(t, ok)
+
+	// Suricata fails to start without the rules file, and writing it fails without the directory.
+	exists, err := afero.DirExists(defaultFS, rulesDir)
+	assert.NoError(t, err)
+	assert.True(t, exists)
+	ok, err = afero.FileContainsBytes(defaultFS, rulesPath, []byte(commonRulesData))
+	assert.NoError(t, err)
+	assert.True(t, ok)
+}
+
+func TestWriteRules(t *testing.T) {
+	testCases := []struct {
+		name          string
+		vlanID        uint32
+		protoKeywords map[string]sets.Set[string]
+		sid           int
+		expected      string
+		expectedSID   int
+	}{
+		{
+			name:   "protocol HTTP",
+			vlanID: 1,
+			protoKeywords: map[string]sets.Set[string]{
+				protocolHTTP: sets.New[string](`http.uri; content:"/index.html"; startswith; endswith;`),
+			},
+			sid: 2,
+			expected: `alert ip any any -> any any (vlan.id: 1; flowbits: set,antrea_l7_1; flowbits: set,antrea_l7; flowbits: noalert; sid: 2;)
+reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flow: to_server, established; app-layer-protocol: !http; sid: 3;)
+reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flow: to_server, established; app-layer-protocol: failed; sid: 4;)
+reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: isnotset,antrea_l7_allowed; flow: to_server, established; flow.bytes_toserver: >65536; sid: 5;)
+reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: isnotset,antrea_l7_allowed; flow: to_server, established; flow.age: >5; sid: 6;)
+reject http1:request_headers any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; sid: 7;)
+pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: set,antrea_l7_allowed; http.uri; content:"/index.html"; startswith; endswith; sid: 8;)
+`,
+			expectedSID: 9,
+		},
+		{
+			// The HTTP criteria are empty, so the rule allows all HTTP and no rule rejecting HTTP on its
+			// content is generated. The SIDs continue from where the preceding L7 rule left off.
+			name:   "protocol HTTP allowing anything, and TLS",
+			vlanID: 2,
+			protoKeywords: map[string]sets.Set[string]{
+				protocolHTTP: sets.New[string](""),
+				protocolTLS:  sets.New[string](`tls.sni; content:"foo.bar.com"; startswith; endswith;`),
+			},
+			sid: 9,
+			expected: `alert ip any any -> any any (vlan.id: 2; flowbits: set,antrea_l7_2; flowbits: set,antrea_l7; flowbits: noalert; sid: 9;)
+reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flow: to_server, established; app-layer-protocol: !http; app-layer-protocol: !tls; sid: 10;)
+reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flow: to_server, established; app-layer-protocol: failed; sid: 11;)
+reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flowbits: isnotset,antrea_l7_allowed; flow: to_server, established; flow.bytes_toserver: >65536; sid: 12;)
+reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flowbits: isnotset,antrea_l7_allowed; flow: to_server, established; flow.age: >5; sid: 13;)
+reject tls:client_hello_done any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; sid: 14;)
+pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flowbits: set,antrea_l7_allowed; sid: 15;)
+pass tls any any -> any any (msg: "Allow tls by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flowbits: set,antrea_l7_allowed; tls.sni; content:"foo.bar.com"; startswith; endswith; sid: 16;)
+`,
+			expectedSID: 17,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := bytes.NewBuffer(nil)
+			rule := &l7Rule{policyName: "AntreaNetworkPolicy:test-l7", vlanID: tc.vlanID, protoKeywords: tc.protoKeywords}
+			assert.Equal(t, tc.expectedSID, writeRules(buf, rule, tc.sid))
+			assert.Equal(t, tc.expected, buf.String())
+		})
+	}
+}
+
+// TestRulesFileSIDsAreUnique verifies that no two rules in the file share a SID, whatever the L7
+// rules are. Suricata refuses a rules file holding a duplicate SID, so a collision would stop every
+// L7 rule on the Node from being enforced.
+func TestRulesFileSIDsAreUnique(t *testing.T) {
+	defaultFS = afero.NewMemMapFs()
+	defer func() {
+		defaultFS = afero.NewOsFs()
+	}()
+	_, err := defaultFS.Create(defaultSuricataConfigPath)
+	assert.NoError(t, err)
+
+	ctrl := gomock.NewController(t)
+	mockOfClient := oftesting.NewMockClient(ctrl)
+	fe := NewReconciler(mockOfClient)
+	fs := newFakeSuricata()
+	fe.suricataScFn = fs.suricataScFunc
+	fe.startSuricataFn = fs.startSuricataFn
+	mockOfClient.EXPECT().InstallL7NetworkPolicyFlows().Times(1)
+
+	// One L7 rule with many more criteria than the others, which is what used to take the SIDs of the
+	// L7 rule after it.
+	var manyProtocols []v1beta.L7Protocol
+	for i := 0; i < 2000; i++ {
+		manyProtocols = append(manyProtocols, v1beta.L7Protocol{HTTP: &v1beta.HTTPProtocol{Path: fmt.Sprintf("/p%d", i)}})
+	}
+	assert.NoError(t, fe.AddRule("ruleA", "AntreaNetworkPolicy:test-a", 1, manyProtocols))
+	assert.NoError(t, fe.AddRule("ruleB", "AntreaNetworkPolicy:test-b", 2, []v1beta.L7Protocol{{HTTP: &v1beta.HTTPProtocol{Path: "/b"}}}))
+
+	data, err := afero.ReadFile(defaultFS, rulesPath)
+	assert.NoError(t, err)
+	sidRegexp := regexp.MustCompile(`sid: (\d+);`)
+	seen := sets.New[string]()
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	for _, line := range lines {
+		m := sidRegexp.FindStringSubmatch(line)
+		require.Len(t, m, 2, "Every rule carries a SID: %s", line)
+		require.False(t, seen.Has(m[1]), "SID %s is used more than once", m[1])
+		seen.Insert(m[1])
+	}
+	assert.Len(t, lines, seen.Len())
 }
 
 func TestRuleLifecycle(t *testing.T) {
@@ -176,8 +288,8 @@ func TestRuleLifecycle(t *testing.T) {
 					HTTP: &v1beta.HTTPProtocol{},
 				},
 			},
-			expectedRules:        `pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; http.uri; content:"/index.html"; startswith; endswith; http.method; content:"GET"; http.host; content:"www.google.com"; startswith; endswith; sid: 2;)`,
-			expectedUpdatedRules: `pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; sid: 2;)`,
+			expectedRules:        `pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: set,antrea_l7_allowed; http.uri; content:"/index.html"; startswith; endswith; http.method; content:"GET"; http.host; content:"www.google.com"; startswith; endswith; sid: 8;)`,
+			expectedUpdatedRules: `pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: set,antrea_l7_allowed; sid: 7;)`,
 		},
 	}
 
@@ -203,39 +315,80 @@ func TestRuleLifecycle(t *testing.T) {
 			// Test add a L7 NetworkPolicy.
 			assert.NoError(t, fe.AddRule(ruleID, policyName, vlanID, tc.l7Protocols))
 
-			rulesPath := generateTenantRulesPath(vlanID)
 			ok, err := afero.FileContainsBytes(defaultFS, rulesPath, []byte(tc.expectedRules))
 			assert.NoError(t, err)
 			assert.True(t, ok)
 
-			configPath := generateTenantConfigPath(vlanID)
-			ok, err = afero.FileContainsBytes(defaultFS, configPath, []byte(rulesPath))
+			// The rules rejecting the traffic which belongs to no L7 rule are always present.
+			ok, err = afero.FileContainsBytes(defaultFS, rulesPath, []byte(commonRulesData))
 			assert.NoError(t, err)
 			assert.True(t, ok)
 
-			expectedScCommands := sets.New[string]("register-tenant 1 /etc/suricata/antrea-tenant-1.yaml", "register-tenant-handler 1 vlan 1")
+			expectedScCommands := sets.New[string]("ruleset-reload-rules")
 			assert.True(t, fs.startSuricataFnCalled)
 			assert.Equal(t, expectedScCommands, fs.calledScCommands)
 
 			// Update the added L7 NetworkPolicy.
 			assert.NoError(t, fe.AddRule(ruleID, policyName, vlanID, tc.updatedL7Protocols))
-			expectedScCommands.Insert("reload-tenant 1 /etc/suricata/antrea-tenant-1.yaml")
-			assert.Equal(t, expectedScCommands, fs.calledScCommands)
+			ok, err = afero.FileContainsBytes(defaultFS, rulesPath, []byte(tc.expectedUpdatedRules))
+			assert.NoError(t, err)
+			assert.True(t, ok)
 
-			// Delete the L7 NetworkPolicy.
+			// Delete the L7 NetworkPolicy. The rules file is kept, Suricata fails to start without it,
+			// but the rules of the deleted L7 rule are gone.
 			assert.NoError(t, fe.DeleteRule(ruleID, vlanID))
-			expectedScCommands.Insert("unregister-tenant-handler 1 vlan 1", "unregister-tenant 1")
-			assert.Equal(t, expectedScCommands, fs.calledScCommands)
-
-			exists, err := afero.Exists(defaultFS, rulesPath)
+			data, err := afero.ReadFile(defaultFS, rulesPath)
 			assert.NoError(t, err)
-			assert.False(t, exists)
-
-			exists, err = afero.Exists(defaultFS, configPath)
-			assert.NoError(t, err)
-			assert.False(t, exists)
+			assert.Equal(t, commonRulesData, string(data))
 		})
 	}
+}
+
+// TestRuleIsolation verifies that the rules of one L7 rule are scoped to its own VLAN ID, so that
+// adding or deleting an L7 rule never changes the rules of another.
+func TestRuleIsolation(t *testing.T) {
+	defaultFS = afero.NewMemMapFs()
+	defer func() {
+		defaultFS = afero.NewOsFs()
+	}()
+
+	_, err := defaultFS.Create(defaultSuricataConfigPath)
+	assert.NoError(t, err)
+
+	ctrl := gomock.NewController(t)
+	mockOfClient := oftesting.NewMockClient(ctrl)
+	fe := NewReconciler(mockOfClient)
+	fs := newFakeSuricata()
+	fe.suricataScFn = fs.suricataScFunc
+	fe.startSuricataFn = fs.startSuricataFn
+	mockOfClient.EXPECT().InstallL7NetworkPolicyFlows().Times(1)
+
+	protocolsA := []v1beta.L7Protocol{{HTTP: &v1beta.HTTPProtocol{Path: "/a"}}}
+	protocolsB := []v1beta.L7Protocol{{HTTP: &v1beta.HTTPProtocol{Path: "/b"}}}
+	assert.NoError(t, fe.AddRule("ruleA", "AntreaNetworkPolicy:test-a", 1, protocolsA))
+	assert.NoError(t, fe.AddRule("ruleB", "AntreaNetworkPolicy:test-b", 2, protocolsB))
+
+	// Every rule of an L7 rule is scoped to the flowbit of its own VLAN ID.
+	data, err := afero.ReadFile(defaultFS, rulesPath)
+	assert.NoError(t, err)
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		switch {
+		case strings.Contains(line, "test-a"):
+			assert.Contains(t, line, "antrea_l7_1")
+			assert.NotContains(t, line, "antrea_l7_2")
+		case strings.Contains(line, "test-b"):
+			assert.Contains(t, line, "antrea_l7_2")
+			assert.NotContains(t, line, "antrea_l7_1")
+		}
+	}
+
+	// Deleting one L7 rule leaves the rules of the other unchanged apart from their SIDs, which are
+	// handed out as the file is written.
+	assert.NoError(t, fe.DeleteRule("ruleA", 1))
+	data, err = afero.ReadFile(defaultFS, rulesPath)
+	assert.NoError(t, err)
+	assert.NotContains(t, string(data), "test-a")
+	assert.Contains(t, string(data), `pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-b"; flowbits: isset,antrea_l7_2; flowbits: set,antrea_l7_allowed; http.uri; content:"/b"; startswith; endswith; sid: 8;)`)
 }
 
 func TestInitializeL7FlowsOnce(t *testing.T) {
