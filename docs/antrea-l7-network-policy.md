@@ -318,7 +318,6 @@ Allow ingress from client (10.10.1.9) to web (10.10.1.10/public/*).
   "dest_port": 80,
   "proto": "TCP",
   "pkt_src": "wire/pcap",
-  "tenant_id": 2,
   "tx_id": 0,
   "http": {
     "hostname": "10.10.1.10",
@@ -350,7 +349,6 @@ Deny ingress from client (10.10.1.4) to web (10.10.1.3/admin/*).
   "dest_port": 80,
   "proto": "TCP",
   "pkt_src": "wire/pcap",
-  "tenant_id": 2,
   "alert": {
     "action": "blocked",
     "gid": 1,
@@ -359,7 +357,6 @@ Deny ingress from client (10.10.1.4) to web (10.10.1.3/admin/*).
     "signature": "Reject by AntreaNetworkPolicy:default/allow-privileged-url-to-admin-role",
     "category": "",
     "severity": 3,
-    "tenant_id": 2
   },
   "app_proto": "http",
   "direction": "to_server",
@@ -395,7 +392,6 @@ packets in Suricata matching the dst IP address of the packet generating the ale
   "dest_port": 80,
   "proto": "TCP",
   "pkt_src": "wire/pcap",
-  "tenant_id": 2,
   "packet": "dtwWezuaHlOhfWpNgQAAAggARQAAjU/0QABABtRcCgoBBAoKAQOv6gBQgOZTvPTauPuAGAH7TZcAAAEBCAouFZzsR8fBM0dFVCAvYWRtaW4vaW5kZXguaHRtbCBIVFRQLzEuMQ0KSG9zdDogMTAuMTAuMS4zDQpVc2VyLUFnZW50OiBjdXJsLzcuNzQuMA0KQWNjZXB0OiAqLyoNCg0K",
   "packet_info": {
     "linktype": 1
@@ -406,3 +402,8 @@ packets in Suricata matching the dst IP address of the packet generating the ale
 ## Limitations
 
 This feature is currently only supported for Nodes running Linux.
+
+Traffic whose application protocol the detection engine never identifies is forwarded rather than
+dropped. Identification concludes once either side of the connection has sent data, and a connection
+where the client sends data and the peer never answers can stay unidentified for as long as it lasts.
+A layer 7 rule therefore does not stop a client pushing bytes one way to a peer that stays silent.

@@ -71,6 +71,12 @@ func TestL7NetworkPolicy(t *testing.T) {
 	t.Run("TLS", func(t *testing.T) {
 		testL7NetworkPolicyTLS(t, data)
 	})
+	t.Run("HTTP with large request", func(t *testing.T) {
+		testL7NetworkPolicyHTTPLargeRequest(t, data)
+	})
+	t.Run("Isolation between policies", func(t *testing.T) {
+		testL7NetworkPolicyIsolation(t, data)
+	})
 	t.Run("Logging", func(t *testing.T) {
 		testL7NetworkPolicyLogging(t, data)
 	})
@@ -407,6 +413,130 @@ func testL7NetworkPolicyTLS(t *testing.T, data *TestData) {
 
 	probeL7NetworkPolicyTLS(t, data, clientPodName, serverIPs, serverNameAlfa, false)
 	probeL7NetworkPolicyTLS(t, data, clientPodName, serverIPs, serverNameBravo, true)
+}
+
+// probeL7NetworkPolicyHTTPPath verifies whether the client Pod can reach the given HTTP path of the
+// server.
+func probeL7NetworkPolicyHTTPPath(t *testing.T, data *TestData, clientPodName string, targetIPs []*net.IP, path string, canAccess bool) {
+	t.Helper()
+	for _, ip := range targetIPs {
+		url := fmt.Sprintf("%s/%s", net.JoinHostPort(ip.String(), "8080"), path)
+		assert.Eventually(t, func() bool {
+			cmd := []string{"wget", "-O", "-", url, "-T", "1", "-t", "1"}
+			stdout, stderr, err := data.RunCommandFromPod(data.testNamespace, clientPodName, agnhostContainerName, cmd)
+			if canAccess && err != nil {
+				t.Logf("Failed to access %s: %v\nStdout: %s\nStderr: %s", truncateForLog(url), err, stdout, stderr)
+				return false
+			} else if !canAccess && err == nil {
+				t.Logf("Expected not to access %s, but the request succeeded", truncateForLog(url))
+				return false
+			}
+			return true
+		}, 5*time.Second, time.Second)
+	}
+}
+
+func truncateForLog(s string) string {
+	if len(s) <= 64 {
+		return s
+	}
+	return fmt.Sprintf("%s...(%d bytes)", s[:64], len(s))
+}
+
+// testL7NetworkPolicyHTTPLargeRequest verifies that an HTTP request whose request line does not fit
+// in a single packet is evaluated on its merits rather than rejected before the engine has parsed
+// the path it is matched on.
+func testL7NetworkPolicyHTTPLargeRequest(t *testing.T, data *TestData) {
+	clientPodName := "test-l7-http-large-req-client-selected"
+	clientPodLabels := map[string]string{"test-l7-http-large-req-e2e": "client"}
+
+	require.NoError(t, NewPodBuilder(clientPodName, data.testNamespace, agnhostImage).OnNode(nodeName(0)).WithLabels(clientPodLabels).Create(data))
+	_, err := data.podWaitForIPs(defaultTimeout, clientPodName, data.testNamespace)
+	require.NoError(t, err, "Expected IP for Pod '%s'", clientPodName)
+
+	serverPodName := "test-l7-http-large-req-server"
+	serverPodLabels := map[string]string{"test-l7-http-large-req-e2e": "server"}
+	cmd := []string{"/agnhost", "netexec", "--http-port=8080"}
+	require.NoError(t, NewPodBuilder(serverPodName, data.testNamespace, agnhostImage).OnNode(nodeName(0)).WithCommand(cmd).WithLabels(serverPodLabels).Create(data))
+	podIPs, err := data.podWaitForIPs(defaultTimeout, serverPodName, data.testNamespace)
+	require.NoError(t, err, "Expected IP for Pod '%s'", serverPodName)
+	dstPodIPs := podIPs.AsSlice()
+
+	l7Protocols := []crdv1beta1.L7Protocol{
+		{
+			HTTP: &crdv1beta1.HTTPProtocol{
+				Method: "GET",
+				Path:   "/echo*",
+			},
+		},
+	}
+	policyName := "test-l7-http-large-req"
+	createL7NetworkPolicy(t, data, true, policyName, 1, clientPodLabels, serverPodLabels, ProtocolTCP, p8080, l7Protocols)
+	defer data.CRDClient.CrdV1beta1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policyName, metav1.DeleteOptions{})
+	time.Sleep(networkPolicyDelay)
+
+	// The query string makes the request line larger than the MTU, so the engine only has the path to
+	// match on after reassembling more than one packet.
+	largeQuery := "echo?msg=" + strings.Repeat("a", 2500)
+
+	// The path is allowed, so the request must succeed even though its request line spans more than
+	// one packet.
+	probeL7NetworkPolicyHTTPPath(t, data, clientPodName, dstPodIPs, largeQuery, true)
+	// The same request to a path which is not allowed must still be rejected.
+	probeL7NetworkPolicyHTTPPath(t, data, clientPodName, dstPodIPs, "hostname?msg="+strings.Repeat("a", 2500), false)
+	// A request which fits in a single packet behaves the same way.
+	probeL7NetworkPolicyHTTPPath(t, data, clientPodName, dstPodIPs, "echo?msg=small", true)
+	probeL7NetworkPolicyHTTPPath(t, data, clientPodName, dstPodIPs, "hostname", false)
+}
+
+// testL7NetworkPolicyIsolation verifies that the rules of one L7 NetworkPolicy do not apply to the
+// traffic of another. Each policy allows a different HTTP path, and neither its allow nor its deny
+// may affect the other policy's traffic.
+func testL7NetworkPolicyIsolation(t *testing.T, data *TestData) {
+	clientAPodName := "test-l7-isolation-client-a"
+	clientAPodLabels := map[string]string{"test-l7-isolation-e2e": "client-a"}
+	clientBPodName := "test-l7-isolation-client-b"
+	clientBPodLabels := map[string]string{"test-l7-isolation-e2e": "client-b"}
+
+	for podName, labels := range map[string]map[string]string{clientAPodName: clientAPodLabels, clientBPodName: clientBPodLabels} {
+		require.NoError(t, NewPodBuilder(podName, data.testNamespace, agnhostImage).OnNode(nodeName(0)).WithLabels(labels).Create(data))
+		_, err := data.podWaitForIPs(defaultTimeout, podName, data.testNamespace)
+		require.NoError(t, err, "Expected IP for Pod '%s'", podName)
+	}
+
+	serverPodName := "test-l7-isolation-server"
+	serverPodLabels := map[string]string{"test-l7-isolation-e2e": "server"}
+	cmd := []string{"/agnhost", "netexec", "--http-port=8080"}
+	require.NoError(t, NewPodBuilder(serverPodName, data.testNamespace, agnhostImage).OnNode(nodeName(0)).WithCommand(cmd).WithLabels(serverPodLabels).Create(data))
+	podIPs, err := data.podWaitForIPs(defaultTimeout, serverPodName, data.testNamespace)
+	require.NoError(t, err, "Expected IP for Pod '%s'", serverPodName)
+	dstPodIPs := podIPs.AsSlice()
+
+	l7ProtocolsHostname := []crdv1beta1.L7Protocol{{HTTP: &crdv1beta1.HTTPProtocol{Method: "GET", Path: "/host*"}}}
+	l7ProtocolsClientIP := []crdv1beta1.L7Protocol{{HTTP: &crdv1beta1.HTTPProtocol{Method: "GET", Path: "/clientip*"}}}
+
+	policyA := "test-l7-isolation-a"
+	policyB := "test-l7-isolation-b"
+	createL7NetworkPolicy(t, data, true, policyA, 1, clientAPodLabels, serverPodLabels, ProtocolTCP, p8080, l7ProtocolsHostname)
+	createL7NetworkPolicy(t, data, true, policyB, 2, clientBPodLabels, serverPodLabels, ProtocolTCP, p8080, l7ProtocolsClientIP)
+	defer func() {
+		data.CRDClient.CrdV1beta1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policyA, metav1.DeleteOptions{})
+		data.CRDClient.CrdV1beta1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policyB, metav1.DeleteOptions{})
+	}()
+	time.Sleep(networkPolicyDelay)
+
+	// Each client may only reach the path its own policy allows. The other policy's allow rule must not
+	// let it through, and the other policy's deny rule must not block what its own policy allows.
+	probeL7NetworkPolicyHTTPPath(t, data, clientAPodName, dstPodIPs, "hostname", true)
+	probeL7NetworkPolicyHTTPPath(t, data, clientAPodName, dstPodIPs, "clientip", false)
+	probeL7NetworkPolicyHTTPPath(t, data, clientBPodName, dstPodIPs, "clientip", true)
+	probeL7NetworkPolicyHTTPPath(t, data, clientBPodName, dstPodIPs, "hostname", false)
+
+	// Deleting one policy must not change the behaviour of the other.
+	require.NoError(t, data.CRDClient.CrdV1beta1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policyA, metav1.DeleteOptions{}))
+	time.Sleep(networkPolicyDelay)
+	probeL7NetworkPolicyHTTPPath(t, data, clientBPodName, dstPodIPs, "clientip", true)
+	probeL7NetworkPolicyHTTPPath(t, data, clientBPodName, dstPodIPs, "hostname", false)
 }
 
 func testL7NetworkPolicyLogging(t *testing.T, data *TestData) {
