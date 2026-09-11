@@ -86,6 +86,9 @@ func TestL7NetworkPolicy(t *testing.T) {
 	t.Run("HTTP with large body", func(t *testing.T) {
 		testL7NetworkPolicyHTTPLargeBody(t, data)
 	})
+	t.Run("Unidentified traffic", func(t *testing.T) {
+		testL7NetworkPolicyUnidentifiedTraffic(t, data)
+	})
 	t.Run("Logging", func(t *testing.T) {
 		testL7NetworkPolicyLogging(t, data)
 	})
@@ -672,6 +675,57 @@ func testL7NetworkPolicyHTTPLargeBody(t *testing.T, data *TestData) {
 			return true
 		}, 30*time.Second, 2*time.Second)
 	}
+}
+
+// testL7NetworkPolicyUnidentifiedTraffic verifies the limit on what a connection may send before a
+// rule has allowed it. A connection carrying bytes of no known protocol to a peer which never answers
+// is never identified, so no rule can reject it on its protocol, and the limit is what cuts it.
+//
+// The test reads the number of bytes the server received rather than the exit status of the client,
+// because a client whose connection is reset mid-write still exits successfully.
+func testL7NetworkPolicyUnidentifiedTraffic(t *testing.T, data *TestData) {
+	const port = 9999
+	const sent = 262144 // 256 KiB, four times the limit for HTTP
+
+	clientPodName := "test-l7-unidentified-client"
+	clientPodLabels := map[string]string{"test-l7-unidentified-e2e": "client"}
+	require.NoError(t, NewPodBuilder(clientPodName, data.testNamespace, agnhostImage).OnNode(nodeName(0)).WithLabels(clientPodLabels).Create(data))
+	_, err := data.podWaitForIPs(defaultTimeout, clientPodName, data.testNamespace)
+	require.NoError(t, err, "Expected IP for Pod '%s'", clientPodName)
+
+	// A server which accepts the connection, reads everything it is sent and never answers. Its silence
+	// is what keeps the protocol unidentified.
+	serverPodName := "test-l7-unidentified-server"
+	serverPodLabels := map[string]string{"test-l7-unidentified-e2e": "server"}
+	cmd := []string{"bash", "-c", fmt.Sprintf("nc -l -k %d > /tmp/received", port)}
+	require.NoError(t, NewPodBuilder(serverPodName, data.testNamespace, agnhostImage).OnNode(nodeName(0)).WithCommand(cmd).WithLabels(serverPodLabels).Create(data))
+	podIPs, err := data.podWaitForIPs(defaultTimeout, serverPodName, data.testNamespace)
+	require.NoError(t, err, "Expected IP for Pod '%s'", serverPodName)
+
+	policyName := "test-l7-unidentified"
+	createL7NetworkPolicy(t, data, true, policyName, 1, clientPodLabels, serverPodLabels, ProtocolTCP, port,
+		[]crdv1beta1.L7Protocol{{HTTP: &crdv1beta1.HTTPProtocol{}}})
+	defer data.CRDClient.CrdV1beta1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policyName, metav1.DeleteOptions{})
+	time.Sleep(networkPolicyDelay)
+
+	ip := podIPs.AsSlice()[0]
+	pushCmd := []string{"bash", "-c", fmt.Sprintf("head -c %d /dev/zero | tr '\\0' 'a' | nc -w 5 %s %d", sent, ip.String(), port)}
+	_, _, err = data.RunCommandFromPod(data.testNamespace, clientPodName, agnhostContainerName, pushCmd)
+	require.NoError(t, err)
+
+	countCmd := []string{"bash", "-c", "wc -c < /tmp/received"}
+	assert.Eventually(t, func() bool {
+		stdout, _, err := data.RunCommandFromPod(data.testNamespace, serverPodName, agnhostContainerName, countCmd)
+		if err != nil {
+			return false
+		}
+		received, err := strconv.Atoi(strings.TrimSpace(stdout))
+		if err != nil {
+			return false
+		}
+		t.Logf("Server received %d of the %d bytes sent", received, sent)
+		return received < sent
+	}, 20*time.Second, 2*time.Second, "The connection should have been cut before all of it was delivered")
 }
 
 func testL7NetworkPolicyLogging(t *testing.T, data *TestData) {
