@@ -352,7 +352,7 @@ Deny ingress from client (10.10.1.4) to web (10.10.1.3/admin/*).
   "alert": {
     "action": "blocked",
     "gid": 1,
-    "signature_id": 1,
+    "signature_id": 6,
     "rev": 0,
     "signature": "Reject by AntreaNetworkPolicy:default/allow-privileged-url-to-admin-role",
     "category": "",

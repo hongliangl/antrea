@@ -64,9 +64,9 @@ const (
 	// has been allowed.
 	flowbitAllowed = "antrea_l7_allowed"
 
-	// SIDs below sidBase are reserved for the rules which belong to no L7 rule. Each L7 rule owns the
-	// SIDs from sidBase*vlanID to sidBase*(vlanID+1)-1.
-	sidBase = 1000
+	// SID of the rule which belongs to no L7 rule. The rules of the L7 rules are numbered from the one
+	// after it.
+	commonRulesSID = 1
 
 	// How many bytes a flow may send to the server before one of the L7 rule's allow rules has matched
 	// it. A protocol the engine never identifies is never rejected on its merits, because the rules
@@ -144,9 +144,18 @@ rule-files:
 	// by the OVS pipeline, so the rule below should never match, but the rejection is written out
 	// rather than left to Suricata, which has no default deny for traffic whose protocol it never
 	// identifies.
-	commonRulesData = fmt.Sprintf(`reject ip any any -> any any (msg: "Reject by Antrea L7 NetworkPolicy: traffic belongs to no rule"; flow: to_server, established; flowbits: isnotset,%s; sid: 1;)
-`, flowbitAll)
+	commonRulesData = fmt.Sprintf(`reject ip any any -> any any (msg: "Reject by Antrea L7 NetworkPolicy: traffic belongs to no rule"; flow: to_server, established; flowbits: isnotset,%s; sid: %d;)
+`, flowbitAll, commonRulesSID)
 )
+
+// l7Rule is what one L7 rule contributes to the Suricata rules file. What it contributes is rendered
+// when the file is written rather than when the rule is added, because a rule's SIDs depend on how
+// many rules precede it in the file.
+type l7Rule struct {
+	policyName    string
+	vlanID        uint32
+	protoKeywords map[string]sets.Set[string]
+}
 
 type Reconciler struct {
 	// Declared as member variables for testing.
@@ -156,7 +165,7 @@ type Reconciler struct {
 	// rulesMutex protects rulesByVlanID. All the L7 rules share one Suricata rules file, so a change
 	// to any of them rewrites the whole file.
 	rulesMutex    sync.Mutex
-	rulesByVlanID map[uint32]string
+	rulesByVlanID map[uint32]*l7Rule
 
 	ofClient openflow.Client
 
@@ -168,7 +177,7 @@ func NewReconciler(ofClient openflow.Client) *Reconciler {
 	return &Reconciler{
 		suricataScFn:    suricataSc,
 		startSuricataFn: startSuricata,
-		rulesByVlanID:   make(map[uint32]string),
+		rulesByVlanID:   make(map[uint32]*l7Rule),
 		ofClient:        ofClient,
 	}
 }
@@ -194,36 +203,35 @@ var capBytes = map[string]int{
 	protocolTLS:  capBytesTLS,
 }
 
-// generateRulesData generates the Suricata rules enforcing one L7 rule.
+// writeRules writes the Suricata rules enforcing one L7 rule, numbered from sid, and returns the
+// next free SID.
 //
 // Suricata refuses a signature combining a packet level match such as vlan.id with an application
 // layer match, so the VLAN ID allocated to the L7 rule is turned into a flowbit by a packet level
 // rule, and every other rule of the L7 rule matches on that flowbit. This is what keeps the rules of
 // one L7 rule from matching the traffic of another.
-func generateRulesData(policyName string, vlanID uint32, protoKeywords map[string]sets.Set[string]) string {
-	rulesData := bytes.NewBuffer(nil)
-	flowbit := flowbitForVlanID(vlanID)
-	sid := sidBase * int(vlanID)
+func writeRules(rulesData *bytes.Buffer, rule *l7Rule, sid int) int {
+	flowbit := flowbitForVlanID(rule.vlanID)
 
 	// Tag the traffic of this L7 rule. The rule carries no application layer match, otherwise Suricata
 	// would refuse it.
 	fmt.Fprintf(rulesData, `alert ip any any -> any any (vlan.id: %d; flowbits: set,%s; flowbits: set,%s; flowbits: noalert; sid: %d;)`+"\n",
-		vlanID, flowbit, flowbitAll, sid)
+		rule.vlanID, flowbit, flowbitAll, sid)
 	sid++
 
-	protocols := sets.List(sets.KeySet(protoKeywords))
+	protocols := sets.List(sets.KeySet(rule.protoKeywords))
 
 	// Reject the traffic whose protocol is not one this L7 rule allows. A flow whose protocol Suricata
-	// cannot identify at all is not covered, see the limitations in docs/antrea-l7-network-policy.md.
+	// cannot identify at all is not covered by this rule, the one after the next one bounds it.
 	var notProtocols []string
 	for _, proto := range protocols {
 		notProtocols = append(notProtocols, fmt.Sprintf("app-layer-protocol: !%s;", proto))
 	}
 	fmt.Fprintf(rulesData, `reject ip any any -> any any (msg: "Reject by %s"; flowbits: isset,%s; flow: to_server, established; %s sid: %d;)`+"\n",
-		policyName, flowbit, strings.Join(notProtocols, " "), sid)
+		rule.policyName, flowbit, strings.Join(notProtocols, " "), sid)
 	sid++
 	fmt.Fprintf(rulesData, `reject ip any any -> any any (msg: "Reject by %s"; flowbits: isset,%s; flow: to_server, established; app-layer-protocol: failed; sid: %d;)`+"\n",
-		policyName, flowbit, sid)
+		rule.policyName, flowbit, sid)
 	sid++
 
 	// Reject a flow which has sent more than the cap without any allow rule having matched it. This is
@@ -235,36 +243,36 @@ func generateRulesData(policyName string, vlanID uint32, protoKeywords map[strin
 		}
 	}
 	fmt.Fprintf(rulesData, `reject ip any any -> any any (msg: "Reject by %s"; flowbits: isset,%s; flowbits: isnotset,%s; flow: to_server, established; flow.bytes_toserver: >%d; sid: %d;)`+"\n",
-		policyName, flowbit, flowbitAllowed, maxBytes, sid)
+		rule.policyName, flowbit, flowbitAllowed, maxBytes, sid)
 	sid++
 
 	// Reject the traffic of an allowed protocol which none of the allow rules below matches. A protocol
 	// whose criteria are empty allows all of its traffic, so there is nothing left for this rule to
 	// reject and emitting it would only rely on the allow rule outranking it.
 	for _, proto := range protocols {
-		if protoKeywords[proto].Has("") {
+		if rule.protoKeywords[proto].Has("") {
 			continue
 		}
 		fmt.Fprintf(rulesData, `reject %s any any -> any any (msg: "Reject by %s"; flowbits: isset,%s; sid: %d;)`+"\n",
-			deferredRejectHooks[proto], policyName, flowbit, sid)
+			deferredRejectHooks[proto], rule.policyName, flowbit, sid)
 		sid++
 	}
 
 	// Allow the traffic matching the criteria of the L7 rule.
 	for _, proto := range protocols {
-		for _, keywords := range sets.List(protoKeywords[proto]) {
+		for _, keywords := range sets.List(rule.protoKeywords[proto]) {
 			// It is a convention that the sid is provided as the last keyword (or second-to-last if there is a rev)
 			// of a rule.
-			allKeywords := fmt.Sprintf(`msg: "Allow %s by %s"; flowbits: isset,%s; flowbits: set,%s; sid: %d;`, proto, policyName, flowbit, flowbitAllowed, sid)
+			allKeywords := fmt.Sprintf(`msg: "Allow %s by %s"; flowbits: isset,%s; flowbits: set,%s; sid: %d;`, proto, rule.policyName, flowbit, flowbitAllowed, sid)
 			if keywords != "" {
-				allKeywords = fmt.Sprintf(`msg: "Allow %s by %s"; flowbits: isset,%s; flowbits: set,%s; %s sid: %d;`, proto, policyName, flowbit, flowbitAllowed, keywords, sid)
+				allKeywords = fmt.Sprintf(`msg: "Allow %s by %s"; flowbits: isset,%s; flowbits: set,%s; %s sid: %d;`, proto, rule.policyName, flowbit, flowbitAllowed, keywords, sid)
 			}
 			fmt.Fprintf(rulesData, "pass %s any any -> any any (%s)\n", proto, allKeywords)
 			sid++
 		}
 	}
 
-	return rulesData.String()
+	return sid
 }
 
 func writeConfigFile(path string, data *bytes.Buffer) error {
@@ -365,7 +373,8 @@ func (r *Reconciler) AddRule(ruleID, policyName string, vlanID uint32, l7Protoco
 	}
 
 	klog.InfoS("Reconciling L7 rule", "RuleID", ruleID, "PolicyName", policyName)
-	if err := r.updateRules(vlanID, generateRulesData(policyName, vlanID, protoKeywords)); err != nil {
+	rule := &l7Rule{policyName: policyName, vlanID: vlanID, protoKeywords: protoKeywords}
+	if err := r.updateRules(vlanID, rule); err != nil {
 		return fmt.Errorf("failed to update Suricata rules for L7 rule %s of %s: %w", ruleID, policyName, err)
 	}
 	return nil
@@ -377,22 +386,22 @@ func (r *Reconciler) DeleteRule(ruleID string, vlanID uint32) error {
 		klog.V(5).Infof("DeleteRule took %v", time.Since(start))
 	}()
 
-	if err := r.updateRules(vlanID, ""); err != nil {
+	if err := r.updateRules(vlanID, nil); err != nil {
 		return fmt.Errorf("failed to update Suricata rules for L7 rule %s: %w", ruleID, err)
 	}
 	return nil
 }
 
-// updateRules sets the rules of the L7 rule owning the given VLAN ID, removing them when rulesData is
-// empty, then rewrites the rules file and asks Suricata to reload it.
-func (r *Reconciler) updateRules(vlanID uint32, rulesData string) error {
+// updateRules sets the L7 rule owning the given VLAN ID, removing it when rule is nil, then rewrites
+// the rules file and asks Suricata to reload it.
+func (r *Reconciler) updateRules(vlanID uint32, rule *l7Rule) error {
 	r.rulesMutex.Lock()
 	defer r.rulesMutex.Unlock()
 
-	if rulesData == "" {
+	if rule == nil {
 		delete(r.rulesByVlanID, vlanID)
 	} else {
-		r.rulesByVlanID[vlanID] = rulesData
+		r.rulesByVlanID[vlanID] = rule
 	}
 	if err := writeConfigFile(rulesPath, r.buildRulesFileLocked()); err != nil {
 		return fmt.Errorf("failed to write Suricata rules file %s: %w", rulesPath, err)
@@ -409,8 +418,16 @@ func (r *Reconciler) updateRules(vlanID uint32, rulesData string) error {
 	return nil
 }
 
-// buildRulesFileLocked returns the content of the rules file. The VLAN IDs are sorted so that the
-// same set of L7 rules always produces the same file.
+// buildRulesFileLocked returns the content of the rules file.
+//
+// SIDs are handed out as the file is written, which is what keeps them unique. Deriving them from the
+// VLAN ID instead would need a fixed number of SIDs per L7 rule, and an L7 rule with more criteria
+// than that would take the SIDs of the next one. Suricata refuses a rules file holding a duplicate
+// SID, so one such L7 rule would stop every L7 rule on the Node from being enforced.
+//
+// The VLAN IDs are sorted so that the same set of L7 rules always produces the same file, and so the
+// same SIDs. They do change when an L7 rule is added or removed, which is why the policy a rejection
+// belongs to is reported in its message rather than being looked up from its SID.
 func (r *Reconciler) buildRulesFileLocked() *bytes.Buffer {
 	vlanIDs := make([]uint32, 0, len(r.rulesByVlanID))
 	for vlanID := range r.rulesByVlanID {
@@ -419,8 +436,9 @@ func (r *Reconciler) buildRulesFileLocked() *bytes.Buffer {
 	sort.Slice(vlanIDs, func(i, j int) bool { return vlanIDs[i] < vlanIDs[j] })
 
 	buf := bytes.NewBufferString(commonRulesData)
+	sid := commonRulesSID + 1
 	for _, vlanID := range vlanIDs {
-		buf.WriteString(r.rulesByVlanID[vlanID])
+		sid = writeRules(buf, r.rulesByVlanID[vlanID], sid)
 	}
 	return buf
 }

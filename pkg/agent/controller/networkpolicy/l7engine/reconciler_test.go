@@ -17,7 +17,9 @@
 package l7engine
 
 import (
+	"bytes"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -149,12 +151,14 @@ func TestStartSuricata(t *testing.T) {
 	assert.True(t, ok)
 }
 
-func TestGenerateRulesData(t *testing.T) {
+func TestWriteRules(t *testing.T) {
 	testCases := []struct {
 		name          string
 		vlanID        uint32
 		protoKeywords map[string]sets.Set[string]
+		sid           int
 		expected      string
+		expectedSID   int
 	}{
 		{
 			name:   "protocol HTTP",
@@ -162,39 +166,88 @@ func TestGenerateRulesData(t *testing.T) {
 			protoKeywords: map[string]sets.Set[string]{
 				protocolHTTP: sets.New[string](`http.uri; content:"/index.html"; startswith; endswith;`),
 			},
-			expected: `alert ip any any -> any any (vlan.id: 1; flowbits: set,antrea_l7_1; flowbits: set,antrea_l7; flowbits: noalert; sid: 1000;)
-reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flow: to_server, established; app-layer-protocol: !http; sid: 1001;)
-reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flow: to_server, established; app-layer-protocol: failed; sid: 1002;)
-reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: isnotset,antrea_l7_allowed; flow: to_server, established; flow.bytes_toserver: >65536; sid: 1003;)
-reject http1:request_headers any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; sid: 1004;)
-pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: set,antrea_l7_allowed; http.uri; content:"/index.html"; startswith; endswith; sid: 1005;)
+			sid: 2,
+			expected: `alert ip any any -> any any (vlan.id: 1; flowbits: set,antrea_l7_1; flowbits: set,antrea_l7; flowbits: noalert; sid: 2;)
+reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flow: to_server, established; app-layer-protocol: !http; sid: 3;)
+reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flow: to_server, established; app-layer-protocol: failed; sid: 4;)
+reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: isnotset,antrea_l7_allowed; flow: to_server, established; flow.bytes_toserver: >65536; sid: 5;)
+reject http1:request_headers any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; sid: 6;)
+pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: set,antrea_l7_allowed; http.uri; content:"/index.html"; startswith; endswith; sid: 7;)
 `,
+			expectedSID: 8,
 		},
 		{
 			// The HTTP criteria are empty, so the rule allows all HTTP and no rule rejecting HTTP on its
-			// content is generated.
-			name:   "protocol HTTP and TLS, HTTP allowing anything",
+			// content is generated. The SIDs continue from where the preceding L7 rule left off.
+			name:   "protocol HTTP allowing anything, and TLS",
 			vlanID: 2,
 			protoKeywords: map[string]sets.Set[string]{
 				protocolHTTP: sets.New[string](""),
 				protocolTLS:  sets.New[string](`tls.sni; content:"foo.bar.com"; startswith; endswith;`),
 			},
-			expected: `alert ip any any -> any any (vlan.id: 2; flowbits: set,antrea_l7_2; flowbits: set,antrea_l7; flowbits: noalert; sid: 2000;)
-reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flow: to_server, established; app-layer-protocol: !http; app-layer-protocol: !tls; sid: 2001;)
-reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flow: to_server, established; app-layer-protocol: failed; sid: 2002;)
-reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flowbits: isnotset,antrea_l7_allowed; flow: to_server, established; flow.bytes_toserver: >65536; sid: 2003;)
-reject tls:client_hello_done any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; sid: 2004;)
-pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flowbits: set,antrea_l7_allowed; sid: 2005;)
-pass tls any any -> any any (msg: "Allow tls by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flowbits: set,antrea_l7_allowed; tls.sni; content:"foo.bar.com"; startswith; endswith; sid: 2006;)
+			sid: 8,
+			expected: `alert ip any any -> any any (vlan.id: 2; flowbits: set,antrea_l7_2; flowbits: set,antrea_l7; flowbits: noalert; sid: 8;)
+reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flow: to_server, established; app-layer-protocol: !http; app-layer-protocol: !tls; sid: 9;)
+reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flow: to_server, established; app-layer-protocol: failed; sid: 10;)
+reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flowbits: isnotset,antrea_l7_allowed; flow: to_server, established; flow.bytes_toserver: >65536; sid: 11;)
+reject tls:client_hello_done any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; sid: 12;)
+pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flowbits: set,antrea_l7_allowed; sid: 13;)
+pass tls any any -> any any (msg: "Allow tls by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flowbits: set,antrea_l7_allowed; tls.sni; content:"foo.bar.com"; startswith; endswith; sid: 14;)
 `,
+			expectedSID: 15,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.expected, generateRulesData("AntreaNetworkPolicy:test-l7", tc.vlanID, tc.protoKeywords))
+			buf := bytes.NewBuffer(nil)
+			rule := &l7Rule{policyName: "AntreaNetworkPolicy:test-l7", vlanID: tc.vlanID, protoKeywords: tc.protoKeywords}
+			assert.Equal(t, tc.expectedSID, writeRules(buf, rule, tc.sid))
+			assert.Equal(t, tc.expected, buf.String())
 		})
 	}
+}
+
+// TestRulesFileSIDsAreUnique verifies that no two rules in the file share a SID, whatever the L7
+// rules are. Suricata refuses a rules file holding a duplicate SID, so a collision would stop every
+// L7 rule on the Node from being enforced.
+func TestRulesFileSIDsAreUnique(t *testing.T) {
+	defaultFS = afero.NewMemMapFs()
+	defer func() {
+		defaultFS = afero.NewOsFs()
+	}()
+	_, err := defaultFS.Create(defaultSuricataConfigPath)
+	assert.NoError(t, err)
+
+	ctrl := gomock.NewController(t)
+	mockOfClient := oftesting.NewMockClient(ctrl)
+	fe := NewReconciler(mockOfClient)
+	fs := newFakeSuricata()
+	fe.suricataScFn = fs.suricataScFunc
+	fe.startSuricataFn = fs.startSuricataFn
+	mockOfClient.EXPECT().InstallL7NetworkPolicyFlows().Times(1)
+
+	// One L7 rule with many more criteria than the others, which is what used to take the SIDs of the
+	// L7 rule after it.
+	var manyProtocols []v1beta.L7Protocol
+	for i := 0; i < 2000; i++ {
+		manyProtocols = append(manyProtocols, v1beta.L7Protocol{HTTP: &v1beta.HTTPProtocol{Path: fmt.Sprintf("/p%d", i)}})
+	}
+	assert.NoError(t, fe.AddRule("ruleA", "AntreaNetworkPolicy:test-a", 1, manyProtocols))
+	assert.NoError(t, fe.AddRule("ruleB", "AntreaNetworkPolicy:test-b", 2, []v1beta.L7Protocol{{HTTP: &v1beta.HTTPProtocol{Path: "/b"}}}))
+
+	data, err := afero.ReadFile(defaultFS, rulesPath)
+	assert.NoError(t, err)
+	sidRegexp := regexp.MustCompile(`sid: (\d+);`)
+	seen := sets.New[string]()
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	for _, line := range lines {
+		m := sidRegexp.FindStringSubmatch(line)
+		require.Len(t, m, 2, "Every rule carries a SID: %s", line)
+		require.False(t, seen.Has(m[1]), "SID %s is used more than once", m[1])
+		seen.Insert(m[1])
+	}
+	assert.Len(t, lines, seen.Len())
 }
 
 func TestRuleLifecycle(t *testing.T) {
@@ -225,8 +278,8 @@ func TestRuleLifecycle(t *testing.T) {
 					HTTP: &v1beta.HTTPProtocol{},
 				},
 			},
-			expectedRules:        `pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: set,antrea_l7_allowed; http.uri; content:"/index.html"; startswith; endswith; http.method; content:"GET"; http.host; content:"www.google.com"; startswith; endswith; sid: 1005;)`,
-			expectedUpdatedRules: `pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: set,antrea_l7_allowed; sid: 1004;)`,
+			expectedRules:        `pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: set,antrea_l7_allowed; http.uri; content:"/index.html"; startswith; endswith; http.method; content:"GET"; http.host; content:"www.google.com"; startswith; endswith; sid: 7;)`,
+			expectedUpdatedRules: `pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: set,antrea_l7_allowed; sid: 6;)`,
 		},
 	}
 
@@ -319,12 +372,13 @@ func TestRuleIsolation(t *testing.T) {
 		}
 	}
 
-	// Deleting one L7 rule leaves the other untouched.
+	// Deleting one L7 rule leaves the rules of the other unchanged apart from their SIDs, which are
+	// handed out as the file is written.
 	assert.NoError(t, fe.DeleteRule("ruleA", 1))
 	data, err = afero.ReadFile(defaultFS, rulesPath)
 	assert.NoError(t, err)
 	assert.NotContains(t, string(data), "test-a")
-	assert.Contains(t, string(data), `pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-b"; flowbits: isset,antrea_l7_2; flowbits: set,antrea_l7_allowed; http.uri; content:"/b"; startswith; endswith; sid: 2005;)`)
+	assert.Contains(t, string(data), `pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-b"; flowbits: isset,antrea_l7_2; flowbits: set,antrea_l7_allowed; http.uri; content:"/b"; startswith; endswith; sid: 7;)`)
 }
 
 func TestInitializeL7FlowsOnce(t *testing.T) {
