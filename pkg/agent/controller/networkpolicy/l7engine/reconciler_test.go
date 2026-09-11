@@ -149,6 +149,14 @@ func TestStartSuricata(t *testing.T) {
 	ok, err = afero.FileContainsBytes(defaultFS, defaultSuricataConfigPath, []byte("include: /etc/suricata/antrea.yaml"))
 	assert.NoError(t, err)
 	assert.True(t, ok)
+
+	// Suricata fails to start without the rules file, and writing it fails without the directory.
+	exists, err := afero.DirExists(defaultFS, rulesDir)
+	assert.NoError(t, err)
+	assert.True(t, exists)
+	ok, err = afero.FileContainsBytes(defaultFS, rulesPath, []byte(commonRulesData))
+	assert.NoError(t, err)
+	assert.True(t, ok)
 }
 
 func TestWriteRules(t *testing.T) {

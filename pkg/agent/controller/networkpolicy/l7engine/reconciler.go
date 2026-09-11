@@ -458,6 +458,9 @@ func (r *Reconciler) startSuricata() error {
 	}
 
 	// Suricata fails to start when a configured rules file is missing, so create it before starting.
+	if err = defaultFS.MkdirAll(rulesDir, 0755); err != nil {
+		return fmt.Errorf("failed to create Suricata rules directory %s: %w", rulesDir, err)
+	}
 	if err = writeConfigFile(rulesPath, bytes.NewBufferString(commonRulesData)); err != nil {
 		return fmt.Errorf("failed to write Suricata rules file %s: %w", rulesPath, err)
 	}
@@ -490,11 +493,8 @@ func (r *Reconciler) startSuricata() error {
 }
 
 func startSuricata() {
-	// Ensure that rules directory exists.
-	if err := os.MkdirAll(rulesDir, 0755); err != nil {
-		klog.ErrorS(err, "Failed to create Suricata rule directory", "directory", rulesDir)
-	}
-	// Create log directory for Suricata.
+	// Create log directory for Suricata. The rules directory is created by the caller, which writes the
+	// rules file into it before Suricata is started.
 	antreaSuricataLogPath := filepath.Join(logdir.GetLogDir(), antreaSuricataLogSubdir)
 	if err := os.MkdirAll(antreaSuricataLogPath, 0755); err != nil {
 		klog.ErrorS(err, "Failed to create L7 Network Policy log directory", "directory", antreaSuricataLogPath)
