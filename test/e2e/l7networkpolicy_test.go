@@ -77,6 +77,15 @@ func TestL7NetworkPolicy(t *testing.T) {
 	t.Run("Isolation between policies", func(t *testing.T) {
 		testL7NetworkPolicyIsolation(t, data)
 	})
+	t.Run("Whole protocol", func(t *testing.T) {
+		testL7NetworkPolicyWholeProtocol(t, data)
+	})
+	t.Run("Multiple criteria", func(t *testing.T) {
+		testL7NetworkPolicyMultipleCriteria(t, data)
+	})
+	t.Run("HTTP with large body", func(t *testing.T) {
+		testL7NetworkPolicyHTTPLargeBody(t, data)
+	})
 	t.Run("Logging", func(t *testing.T) {
 		testL7NetworkPolicyLogging(t, data)
 	})
@@ -537,6 +546,132 @@ func testL7NetworkPolicyIsolation(t *testing.T, data *TestData) {
 	time.Sleep(networkPolicyDelay)
 	probeL7NetworkPolicyHTTPPath(t, data, clientBPodName, dstPodIPs, "clientip", true)
 	probeL7NetworkPolicyHTTPPath(t, data, clientBPodName, dstPodIPs, "hostname", false)
+}
+
+// testL7NetworkPolicyWholeProtocol verifies a rule which allows a protocol without narrowing it,
+// written as "http: {}" or "tls: {}". Every connection of that protocol is allowed and everything
+// else is rejected.
+func testL7NetworkPolicyWholeProtocol(t *testing.T, data *TestData) {
+	t.Run("HTTP", func(t *testing.T) {
+		clientPodName := "test-l7-any-http-client"
+		clientPodLabels := map[string]string{"test-l7-any-http-e2e": "client"}
+		require.NoError(t, NewPodBuilder(clientPodName, data.testNamespace, agnhostImage).OnNode(nodeName(0)).WithLabels(clientPodLabels).Create(data))
+		_, err := data.podWaitForIPs(defaultTimeout, clientPodName, data.testNamespace)
+		require.NoError(t, err, "Expected IP for Pod '%s'", clientPodName)
+
+		serverPodName := "test-l7-any-http-server"
+		serverPodLabels := map[string]string{"test-l7-any-http-e2e": "server"}
+		cmd := []string{"/agnhost", "netexec", "--http-port=8080"}
+		require.NoError(t, NewPodBuilder(serverPodName, data.testNamespace, agnhostImage).OnNode(nodeName(0)).WithCommand(cmd).WithLabels(serverPodLabels).Create(data))
+		podIPs, err := data.podWaitForIPs(defaultTimeout, serverPodName, data.testNamespace)
+		require.NoError(t, err, "Expected IP for Pod '%s'", serverPodName)
+
+		policyName := "test-l7-any-http"
+		createL7NetworkPolicy(t, data, true, policyName, 1, clientPodLabels, serverPodLabels, ProtocolTCP, p8080,
+			[]crdv1beta1.L7Protocol{{HTTP: &crdv1beta1.HTTPProtocol{}}})
+		defer data.CRDClient.CrdV1beta1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policyName, metav1.DeleteOptions{})
+		time.Sleep(networkPolicyDelay)
+
+		// Every HTTP path is allowed, and the probe also checks that a non-HTTP connection to the same
+		// port is rejected, which is what the rule exists for.
+		probeL7NetworkPolicyHTTP(t, data, serverPodName, clientPodName, podIPs.AsSlice(), true, true)
+	})
+
+	t.Run("TLS", func(t *testing.T) {
+		clientPodName := "test-l7-any-tls-client"
+		clientPodLabels := map[string]string{"test-l7-any-tls-e2e": "client"}
+		require.NoError(t, NewPodBuilder(clientPodName, data.testNamespace, agnhostImage).OnNode(nodeName(0)).WithLabels(clientPodLabels).Create(data))
+		_, err := data.podWaitForIPs(defaultTimeout, clientPodName, data.testNamespace)
+		require.NoError(t, err, "Expected IP for Pod '%s'", clientPodName)
+
+		serverPodName := "test-l7-any-tls-server"
+		serverPodLabels := map[string]string{"test-l7-any-tls-e2e": "server"}
+		cmd := []string{"/agnhost", "netexec", "--http-port=443", "--tls-cert-file=/localhost.crt", "--tls-private-key-file=/localhost.key"}
+		require.NoError(t, NewPodBuilder(serverPodName, data.testNamespace, agnhostImage).OnNode(nodeName(0)).WithCommand(cmd).WithLabels(serverPodLabels).Create(data))
+		podIPs, err := data.podWaitForIPs(defaultTimeout, serverPodName, data.testNamespace)
+		require.NoError(t, err, "Expected IP for Pod '%s'", serverPodName)
+		serverIPs := podIPs.AsSlice()
+
+		policyName := "test-l7-any-tls"
+		createL7NetworkPolicy(t, data, false, policyName, 1, nil, clientPodLabels, ProtocolTCP, 443,
+			[]crdv1beta1.L7Protocol{{TLS: &crdv1beta1.TLSProtocol{}}})
+		defer data.CRDClient.CrdV1beta1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policyName, metav1.DeleteOptions{})
+		time.Sleep(networkPolicyDelay)
+
+		// The rule narrows nothing, so every server name is allowed. Rejecting them instead is the
+		// failure this test exists to catch.
+		probeL7NetworkPolicyTLS(t, data, clientPodName, serverIPs, "www.alfa.test.l7.tls", true)
+		probeL7NetworkPolicyTLS(t, data, clientPodName, serverIPs, "mail.bravo.test.l7.tls", true)
+	})
+}
+
+// testL7NetworkPolicyMultipleCriteria verifies that a rule listing several criteria allows a request
+// matching any one of them, and rejects a request matching none.
+func testL7NetworkPolicyMultipleCriteria(t *testing.T, data *TestData) {
+	clientPodName := "test-l7-multi-criteria-client"
+	clientPodLabels := map[string]string{"test-l7-multi-criteria-e2e": "client"}
+	require.NoError(t, NewPodBuilder(clientPodName, data.testNamespace, agnhostImage).OnNode(nodeName(0)).WithLabels(clientPodLabels).Create(data))
+	_, err := data.podWaitForIPs(defaultTimeout, clientPodName, data.testNamespace)
+	require.NoError(t, err, "Expected IP for Pod '%s'", clientPodName)
+
+	serverPodName := "test-l7-multi-criteria-server"
+	serverPodLabels := map[string]string{"test-l7-multi-criteria-e2e": "server"}
+	cmd := []string{"/agnhost", "netexec", "--http-port=8080"}
+	require.NoError(t, NewPodBuilder(serverPodName, data.testNamespace, agnhostImage).OnNode(nodeName(0)).WithCommand(cmd).WithLabels(serverPodLabels).Create(data))
+	podIPs, err := data.podWaitForIPs(defaultTimeout, serverPodName, data.testNamespace)
+	require.NoError(t, err, "Expected IP for Pod '%s'", serverPodName)
+	dstPodIPs := podIPs.AsSlice()
+
+	policyName := "test-l7-multi-criteria"
+	createL7NetworkPolicy(t, data, true, policyName, 1, clientPodLabels, serverPodLabels, ProtocolTCP, p8080,
+		[]crdv1beta1.L7Protocol{
+			{HTTP: &crdv1beta1.HTTPProtocol{Method: "GET", Path: "/host*"}},
+			{HTTP: &crdv1beta1.HTTPProtocol{Method: "GET", Path: "/echo*"}},
+		})
+	defer data.CRDClient.CrdV1beta1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policyName, metav1.DeleteOptions{})
+	time.Sleep(networkPolicyDelay)
+
+	probeL7NetworkPolicyHTTPPath(t, data, clientPodName, dstPodIPs, "hostname", true)
+	probeL7NetworkPolicyHTTPPath(t, data, clientPodName, dstPodIPs, "echo?msg=hello", true)
+	probeL7NetworkPolicyHTTPPath(t, data, clientPodName, dstPodIPs, "clientip", false)
+}
+
+// testL7NetworkPolicyHTTPLargeBody verifies that a request body larger than the amount of traffic a
+// connection may send before a rule has allowed it does not cause the connection to be cut. The
+// request is allowed on its request line, so the body that follows is not subject to that limit.
+func testL7NetworkPolicyHTTPLargeBody(t *testing.T, data *TestData) {
+	clientPodName := "test-l7-large-body-client"
+	clientPodLabels := map[string]string{"test-l7-large-body-e2e": "client"}
+	require.NoError(t, NewPodBuilder(clientPodName, data.testNamespace, agnhostImage).OnNode(nodeName(0)).WithLabels(clientPodLabels).Create(data))
+	_, err := data.podWaitForIPs(defaultTimeout, clientPodName, data.testNamespace)
+	require.NoError(t, err, "Expected IP for Pod '%s'", clientPodName)
+
+	serverPodName := "test-l7-large-body-server"
+	serverPodLabels := map[string]string{"test-l7-large-body-e2e": "server"}
+	cmd := []string{"/agnhost", "netexec", "--http-port=8080"}
+	require.NoError(t, NewPodBuilder(serverPodName, data.testNamespace, agnhostImage).OnNode(nodeName(0)).WithCommand(cmd).WithLabels(serverPodLabels).Create(data))
+	podIPs, err := data.podWaitForIPs(defaultTimeout, serverPodName, data.testNamespace)
+	require.NoError(t, err, "Expected IP for Pod '%s'", serverPodName)
+
+	policyName := "test-l7-large-body"
+	createL7NetworkPolicy(t, data, true, policyName, 1, clientPodLabels, serverPodLabels, ProtocolTCP, p8080,
+		[]crdv1beta1.L7Protocol{{HTTP: &crdv1beta1.HTTPProtocol{Path: "/echo*"}}})
+	defer data.CRDClient.CrdV1beta1().NetworkPolicies(data.testNamespace).Delete(context.TODO(), policyName, metav1.DeleteOptions{})
+	time.Sleep(networkPolicyDelay)
+
+	for _, ip := range podIPs.AsSlice() {
+		url := fmt.Sprintf("http://%s/echo?msg=hello", net.JoinHostPort(ip.String(), "8080"))
+		// 256 KiB, comfortably above the limit, which is 64 KiB for HTTP.
+		cmd := []string{"bash", "-c", fmt.Sprintf("head -c 262144 /dev/zero | tr '\\0' 'a' | curl -s -o /dev/null --data-binary @- --connect-timeout 5 --max-time 20 %s", url)}
+		assert.Eventually(t, func() bool {
+			stdout, stderr, err := data.RunCommandFromPod(data.testNamespace, clientPodName, agnhostContainerName, cmd)
+			if err != nil {
+				t.Logf("Failed to post a large body to %s: %v\nStdout: %s\nStderr: %s", url, err, stdout, stderr)
+				return false
+			}
+			return true
+		}, 30*time.Second, 2*time.Second)
+	}
 }
 
 func testL7NetworkPolicyLogging(t *testing.T, data *TestData) {
