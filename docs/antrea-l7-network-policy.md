@@ -403,11 +403,18 @@ packets in Suricata matching the dst IP address of the packet generating the ale
 
 This feature is currently only supported for Nodes running Linux.
 
-A connection which none of a rule's criteria has matched within five seconds is rejected. This covers
-traffic whose application protocol the detection engine never identifies, which it cannot reject on
-its protocol, since identification only concludes once either side of the connection has sent data.
+A connection which none of a rule's criteria has matched is rejected once it has sent 64 KiB, or
+after five seconds, whichever comes first. This covers traffic whose application protocol the
+detection engine never identifies, which cannot be rejected on its protocol, since identification
+only concludes once either side of the connection has sent data.
 
-The limit applies only until one of the rule's criteria has matched the connection, so an allowed
+Both limits apply only until one of the rule's criteria has matched the connection, so an allowed
 request keeps its connection for as long as it likes, however large its body, and a keep-alive
 connection stays allowed for its later requests. Only a connection which has never matched anything
 is cut, and it is reported like any other rejection.
+
+Traffic of a protocol the rule does not allow reaches the application before it is rejected, up to
+those limits. The rejection is decided once the engine has parsed the fields the rule matches on,
+which is what lets a request larger than the MTU be allowed, and until then the traffic is forwarded.
+A client sending something other than the allowed protocol therefore sees the connection closed by
+the application it reached rather than reset by the engine.

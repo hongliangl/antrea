@@ -68,7 +68,8 @@ const (
 	// after it.
 	commonRulesSID = 1
 
-	// How long a flow may go without any of the L7 rule's allow rules having matched it.
+	// How much a flow may send, and for how long, without any of the L7 rule's allow rules having
+	// matched it.
 	//
 	// A protocol the engine never identifies is never rejected on its merits, because the rules doing
 	// that wait for an identification which only concludes once either side has sent data. A client
@@ -77,12 +78,23 @@ const (
 	// anything without a newline leaves both sides waiting and the flow unidentified for as long as it
 	// is held open.
 	//
-	// A flow is exempt as soon as an allow rule has matched it, so this bounds how long a flow can go
-	// unexamined, not how long it can live. A request which is allowed keeps its connection for as
-	// long as it likes, however large its body, and a keep-alive connection stays allowed for its
-	// later requests. Only a flow which has never matched anything is cut, which the implementation
-	// this replaced did on its first packet.
+	// The two bound different things and both are needed. Time alone does not bound volume, since a
+	// flow can send as fast as the link allows before it expires. Volume alone does not bound a flow
+	// which trickles, and cannot be set low enough to, because the bytes it counts are the request
+	// line and the headers of a request which is about to be allowed.
+	//
+	// A flow is exempt from both as soon as an allow rule has matched it, so they bound what a flow
+	// can do before it is examined, not what it can do at all. A request which is allowed keeps its
+	// connection for as long as it likes, however large its body, and a keep-alive connection stays
+	// allowed for its later requests.
+	//
+	// The volume values are above the request line and header limits of common servers, 8 KiB for the
+	// request line in Apache and nginx and 32 KiB or less in total headers, so they cut nothing a
+	// server would have served. The TLS value is the size of one TLS record, which every real client
+	// hello fits in several times over.
 	maxUnmatchedFlowAgeSeconds = 5
+	maxUnmatchedBytesHTTP      = 65536
+	maxUnmatchedBytesTLS       = 16384
 )
 
 type scCmdRet struct {
@@ -198,6 +210,13 @@ var deferredRejectHooks = map[string]string{
 	protocolTLS:  "tls:client_hello_done",
 }
 
+// maxUnmatchedBytes is the volume bound described above for each protocol. An L7 rule allowing more
+// than one protocol uses the largest of them.
+var maxUnmatchedBytes = map[string]int{
+	protocolHTTP: maxUnmatchedBytesHTTP,
+	protocolTLS:  maxUnmatchedBytesTLS,
+}
+
 // writeRules writes the Suricata rules enforcing one L7 rule, numbered from sid, and returns the
 // next free SID.
 //
@@ -229,8 +248,18 @@ func writeRules(rulesData *bytes.Buffer, rule *l7Rule, sid int) int {
 		rule.policyName, flowbit, sid)
 	sid++
 
-	// Reject a flow which no allow rule has matched for long enough. This is what covers a flow whose
-	// protocol is never identified, see the comment on maxUnmatchedFlowAgeSeconds.
+	// Reject a flow which no allow rule has matched, once it has sent enough or lasted long enough.
+	// This is what covers a flow whose protocol is never identified, see the comment on
+	// maxUnmatchedFlowAgeSeconds.
+	maxBytes := 0
+	for _, proto := range protocols {
+		if maxUnmatchedBytes[proto] > maxBytes {
+			maxBytes = maxUnmatchedBytes[proto]
+		}
+	}
+	fmt.Fprintf(rulesData, `reject ip any any -> any any (msg: "Reject by %s"; flowbits: isset,%s; flowbits: isnotset,%s; flow: to_server, established; flow.bytes_toserver: >%d; sid: %d;)`+"\n",
+		rule.policyName, flowbit, flowbitAllowed, maxBytes, sid)
+	sid++
 	fmt.Fprintf(rulesData, `reject ip any any -> any any (msg: "Reject by %s"; flowbits: isset,%s; flowbits: isnotset,%s; flow: to_server, established; flow.age: >%d; sid: %d;)`+"\n",
 		rule.policyName, flowbit, flowbitAllowed, maxUnmatchedFlowAgeSeconds, sid)
 	sid++
