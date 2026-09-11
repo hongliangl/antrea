@@ -404,6 +404,13 @@ packets in Suricata matching the dst IP address of the packet generating the ale
 This feature is currently only supported for Nodes running Linux.
 
 Traffic whose application protocol the detection engine never identifies is forwarded rather than
-dropped. Identification concludes once either side of the connection has sent data, and a connection
-where the client sends data and the peer never answers can stay unidentified for as long as it lasts.
-A layer 7 rule therefore does not stop a client pushing bytes one way to a peer that stays silent.
+dropped. Identification concludes once either side of the connection has sent data, so a connection
+where the client sends data and the peer never answers can stay unidentified. Such a connection is
+cut once it has sent 64 KiB to the server, which bounds it but does not stop a client opening a new
+one. A layer 7 rule therefore limits rather than prevents a client pushing bytes one way to a peer
+that stays silent, and each cut connection is reported like any other rejection.
+
+The limit applies only until one of the rule's criteria has matched the connection. It covers the
+HTTP request line, and the request headers when the rule matches on `host`, but never the request
+body, and for TLS it covers the client hello. It is above the limits common servers apply to those
+themselves, so a request it cuts would not have been served anyway.

@@ -165,8 +165,9 @@ func TestGenerateRulesData(t *testing.T) {
 			expected: `alert ip any any -> any any (vlan.id: 1; flowbits: set,antrea_l7_1; flowbits: set,antrea_l7; flowbits: noalert; sid: 1000;)
 reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flow: to_server, established; app-layer-protocol: !http; sid: 1001;)
 reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flow: to_server, established; app-layer-protocol: failed; sid: 1002;)
-reject http1:request_headers any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; sid: 1003;)
-pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; http.uri; content:"/index.html"; startswith; endswith; sid: 1004;)
+reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: isnotset,antrea_l7_allowed; flow: to_server, established; flow.bytes_toserver: >65536; sid: 1003;)
+reject http1:request_headers any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; sid: 1004;)
+pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: set,antrea_l7_allowed; http.uri; content:"/index.html"; startswith; endswith; sid: 1005;)
 `,
 		},
 		{
@@ -179,10 +180,11 @@ pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; 
 			expected: `alert ip any any -> any any (vlan.id: 2; flowbits: set,antrea_l7_2; flowbits: set,antrea_l7; flowbits: noalert; sid: 2000;)
 reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flow: to_server, established; app-layer-protocol: !http; app-layer-protocol: !tls; sid: 2001;)
 reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flow: to_server, established; app-layer-protocol: failed; sid: 2002;)
-reject http1:request_headers any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; sid: 2003;)
-reject tls:client_hello_done any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; sid: 2004;)
-pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; sid: 2005;)
-pass tls any any -> any any (msg: "Allow tls by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; tls.sni; content:"foo.bar.com"; startswith; endswith; sid: 2006;)
+reject ip any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flowbits: isnotset,antrea_l7_allowed; flow: to_server, established; flow.bytes_toserver: >65536; sid: 2003;)
+reject http1:request_headers any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; sid: 2004;)
+reject tls:client_hello_done any any -> any any (msg: "Reject by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; sid: 2005;)
+pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flowbits: set,antrea_l7_allowed; sid: 2006;)
+pass tls any any -> any any (msg: "Allow tls by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_2; flowbits: set,antrea_l7_allowed; tls.sni; content:"foo.bar.com"; startswith; endswith; sid: 2007;)
 `,
 		},
 	}
@@ -222,8 +224,8 @@ func TestRuleLifecycle(t *testing.T) {
 					HTTP: &v1beta.HTTPProtocol{},
 				},
 			},
-			expectedRules:        `pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; http.uri; content:"/index.html"; startswith; endswith; http.method; content:"GET"; http.host; content:"www.google.com"; startswith; endswith; sid: 1004;)`,
-			expectedUpdatedRules: `pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; sid: 1004;)`,
+			expectedRules:        `pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: set,antrea_l7_allowed; http.uri; content:"/index.html"; startswith; endswith; http.method; content:"GET"; http.host; content:"www.google.com"; startswith; endswith; sid: 1005;)`,
+			expectedUpdatedRules: `pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-l7"; flowbits: isset,antrea_l7_1; flowbits: set,antrea_l7_allowed; sid: 1005;)`,
 		},
 	}
 
@@ -321,7 +323,7 @@ func TestRuleIsolation(t *testing.T) {
 	data, err = afero.ReadFile(defaultFS, rulesPath)
 	assert.NoError(t, err)
 	assert.NotContains(t, string(data), "test-a")
-	assert.Contains(t, string(data), `pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-b"; flowbits: isset,antrea_l7_2; http.uri; content:"/b"; startswith; endswith; sid: 2004;)`)
+	assert.Contains(t, string(data), `pass http any any -> any any (msg: "Allow http by AntreaNetworkPolicy:test-b"; flowbits: isset,antrea_l7_2; flowbits: set,antrea_l7_allowed; http.uri; content:"/b"; startswith; endswith; sid: 2005;)`)
 }
 
 func TestInitializeL7FlowsOnce(t *testing.T) {

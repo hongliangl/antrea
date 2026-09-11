@@ -60,9 +60,27 @@ const (
 	flowbitAll    = "antrea_l7"
 	flowbitPrefix = "antrea_l7_"
 
+	// Set by the allow rules of every L7 rule, so that the cap below stops applying to a flow which
+	// has been allowed.
+	flowbitAllowed = "antrea_l7_allowed"
+
 	// SIDs below sidBase are reserved for the rules which belong to no L7 rule. Each L7 rule owns the
 	// SIDs from sidBase*vlanID to sidBase*(vlanID+1)-1.
 	sidBase = 1000
+
+	// How many bytes a flow may send to the server before one of the L7 rule's allow rules has matched
+	// it. A protocol the engine never identifies is never rejected on its merits, because the rules
+	// doing that wait for an identification which only happens once either side has sent data. A flow
+	// whose peer stays silent would otherwise carry an unbounded amount of traffic past the L7 rule.
+	//
+	// The cap only applies while a flow has not been allowed, so it bounds the request line, and the
+	// headers when the L7 rule matches on the Host header, but never the request body. The HTTP value
+	// is above the request line and header limits of common servers, 8 KiB for the request line in
+	// Apache and nginx and 32 KiB or less in total headers, so a request this cap rejects would have
+	// been rejected by the server as well. The TLS value is the size of one TLS record, which every
+	// real client hello fits in several times over.
+	capBytesHTTP = 65536
+	capBytesTLS  = 16384
 )
 
 type scCmdRet struct {
@@ -169,6 +187,13 @@ var deferredRejectHooks = map[string]string{
 	protocolTLS:  "tls:client_hello_done",
 }
 
+// capBytes is the value of the cap described above for each protocol. An L7 rule allowing more than
+// one protocol uses the largest of them.
+var capBytes = map[string]int{
+	protocolHTTP: capBytesHTTP,
+	protocolTLS:  capBytesTLS,
+}
+
 // generateRulesData generates the Suricata rules enforcing one L7 rule.
 //
 // Suricata refuses a signature combining a packet level match such as vlan.id with an application
@@ -201,6 +226,18 @@ func generateRulesData(policyName string, vlanID uint32, protoKeywords map[strin
 		policyName, flowbit, sid)
 	sid++
 
+	// Reject a flow which has sent more than the cap without any allow rule having matched it. This is
+	// what bounds a flow whose protocol is never identified, see the comment on capBytesHTTP.
+	maxBytes := 0
+	for _, proto := range protocols {
+		if capBytes[proto] > maxBytes {
+			maxBytes = capBytes[proto]
+		}
+	}
+	fmt.Fprintf(rulesData, `reject ip any any -> any any (msg: "Reject by %s"; flowbits: isset,%s; flowbits: isnotset,%s; flow: to_server, established; flow.bytes_toserver: >%d; sid: %d;)`+"\n",
+		policyName, flowbit, flowbitAllowed, maxBytes, sid)
+	sid++
+
 	// Reject the traffic of an allowed protocol which none of the allow rules below matches.
 	for _, proto := range protocols {
 		fmt.Fprintf(rulesData, `reject %s any any -> any any (msg: "Reject by %s"; flowbits: isset,%s; sid: %d;)`+"\n",
@@ -213,9 +250,9 @@ func generateRulesData(policyName string, vlanID uint32, protoKeywords map[strin
 		for _, keywords := range sets.List(protoKeywords[proto]) {
 			// It is a convention that the sid is provided as the last keyword (or second-to-last if there is a rev)
 			// of a rule.
-			allKeywords := fmt.Sprintf(`msg: "Allow %s by %s"; flowbits: isset,%s; sid: %d;`, proto, policyName, flowbit, sid)
+			allKeywords := fmt.Sprintf(`msg: "Allow %s by %s"; flowbits: isset,%s; flowbits: set,%s; sid: %d;`, proto, policyName, flowbit, flowbitAllowed, sid)
 			if keywords != "" {
-				allKeywords = fmt.Sprintf(`msg: "Allow %s by %s"; flowbits: isset,%s; %s sid: %d;`, proto, policyName, flowbit, keywords, sid)
+				allKeywords = fmt.Sprintf(`msg: "Allow %s by %s"; flowbits: isset,%s; flowbits: set,%s; %s sid: %d;`, proto, policyName, flowbit, flowbitAllowed, keywords, sid)
 			}
 			fmt.Fprintf(rulesData, "pass %s any any -> any any (%s)\n", proto, allKeywords)
 			sid++
