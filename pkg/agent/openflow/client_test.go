@@ -1027,6 +1027,28 @@ func Test_client_UpdatePodFlows(t *testing.T) {
 	}
 }
 
+func Test_client_InstallPodFlowsWithDuplicateIP(t *testing.T) {
+	podIP := net.ParseIP("10.10.0.66")
+	podMAC, _ := net.ParseMAC("00:00:10:10:00:66")
+	otherPodMAC, _ := net.ParseMAC("00:00:10:10:00:67")
+
+	ctrl := gomock.NewController(t)
+	m := opstest.NewMockOFEntryOperations(ctrl)
+	fc := newFakeClient(m, true, false, config.K8sNode, config.TrafficEncapModeEncap)
+	defer resetPipelines()
+	// Only the first Pod reaches OVS.
+	m.EXPECT().AddAll(gomock.Any()).Return(nil).Times(1)
+
+	require.NoError(t, fc.InstallPodFlows("pod1", []net.IP{podIP}, podMAC, 100, 0, nil))
+
+	// The L3Forwarding flow matches on the Pod IP and nothing else, so the second Pod would overwrite
+	// the flow of the first one.
+	err := fc.InstallPodFlows("pod2", []net.IP{podIP}, otherPodMAC, 101, 0, nil)
+	assert.ErrorContains(t, err, "pod1")
+	_, ok := fc.featurePodConnectivity.podCachedFlows.Load("pod2")
+	assert.False(t, ok)
+}
+
 func Test_client_GetPodFlowKeys(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	m := opstest.NewMockOFEntryOperations(ctrl)

@@ -93,7 +93,9 @@ type Client interface {
 	// semantics(call succeeds if all the flows are installed successfully, otherwise no
 	// flows will be installed). Calls to InstallPodFlows are idempotent. Concurrent calls
 	// to InstallPodFlows and / or UninstallPodFlows are supported as long as they are all
-	// for different interfaceNames.
+	// for different interfaceNames. It fails when one of the flows is already installed for
+	// another interfaceName. Two Pods with the same IP build the same L3Forwarding flow, so
+	// the second one would overwrite the first.
 	InstallPodFlows(interfaceName string, podInterfaceIPs []net.IP, podInterfaceMAC net.HardwareAddr, ofPort uint32, vlanID uint16, labelID *uint32) error
 
 	// UninstallPodFlows removes the connection to the local Pod specified with the
@@ -643,6 +645,36 @@ func (c *client) UninstallNodeFlows(hostname string) error {
 	return c.deleteFlows(c.featurePodConnectivity.nodeCachedFlows, hostname)
 }
 
+// findPodFlowOwner looks for a flow which another Pod interface already has. It returns that interface
+// and that flow, or two empty strings.
+//
+// The L3Forwarding flow of a Pod matches on the Pod IP and nothing else. Two Pods with the same IP build
+// the same flow. OVS stores one entry per match, so the second Pod overwrites the first one. Deleting the
+// second Pod deletes that entry. The first Pod is then left with nothing to receive traffic with.
+//
+// The other flows of a Pod carry its port or its MAC. The two Pods build different ones and both are
+// stored. Those flows do not protect anything, they just do not collide.
+func (c *client) findPodFlowOwner(interfaceName string, flows []binding.Flow) (string, string) {
+	matches := make(map[string]struct{}, len(flows))
+	for _, flow := range flows {
+		matches[flow.MatchString()] = struct{}{}
+	}
+	var owner, conflictingMatch string
+	c.featurePodConnectivity.podCachedFlows.Range(func(key, value any) bool {
+		if key.(string) == interfaceName {
+			return true
+		}
+		for match := range value.(flowMessageCache) {
+			if _, ok := matches[match]; ok {
+				owner, conflictingMatch = key.(string), match
+				return false
+			}
+		}
+		return true
+	})
+	return owner, conflictingMatch
+}
+
 func (c *client) InstallPodFlows(interfaceName string, podInterfaceIPs []net.IP, podInterfaceMAC net.HardwareAddr, ofPort uint32, vlanID uint16, labelID *uint32) error {
 	c.replayMutex.RLock()
 	defer c.replayMutex.RUnlock()
@@ -680,6 +712,11 @@ func (c *client) InstallPodFlows(interfaceName string, podInterfaceIPs []net.IP,
 			flows = append(flows, c.featurePodConnectivity.podVLANFlow(ofPort, vlanID))
 		}
 	}
+	if owner, match := c.findPodFlowOwner(interfaceName, flows); owner != "" {
+		return fmt.Errorf("cannot install the flows of %s, %s already has the flow %q, and OVS holds one entry per match",
+			interfaceName, owner, match)
+	}
+
 	err := c.modifyFlows(c.featurePodConnectivity.podCachedFlows, interfaceName, flows)
 	if err != nil {
 		return err
