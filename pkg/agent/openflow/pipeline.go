@@ -2540,15 +2540,21 @@ func (f *featureService) endpointDNATFlow(endpointIP net.IP, endpointPort uint16
 		flowBuilder = flowBuilder.MatchXXReg(EndpointIP6Field.GetRegID(), ipVal)
 	}
 
-	return flowBuilder.Action().
+	ctAction := flowBuilder.Action().
 		CT(true, EndpointDNATTable.GetNext(), f.dnatCtZones[ipProtocol], f.ctZoneSrcField).
 		DNAT(
 			&binding.IPRange{StartIP: endpointIP, EndIP: endpointIP},
 			&binding.PortRange{StartPort: endpointPort, EndPort: endpointPort},
 		).
-		LoadToCtMark(ServiceCTMark).
-		CTDone().
-		Done()
+		LoadToCtMark(ServiceCTMark)
+	// Record the endpoint on the connection, so that a reply packet, which is un-DNATed by the time it is redirected
+	// to an application-aware engine, can be given the endpoint back as its source. See EndpointIPv4CTLabel.
+	if f.enableL7NetworkPolicy && ipProtocol == binding.ProtocolIP {
+		ctAction = ctAction.
+			LoadToLabelField(uint64(binary.BigEndian.Uint32(endpointIP.To4())), EndpointIPv4CTLabel).
+			LoadToLabelField(uint64(endpointPort), EndpointPortCTLabel)
+	}
+	return ctAction.CTDone().Done()
 }
 
 // dsrServiceNoDNATFlows generates the flows which prevent traffic in DSR mode from being DNATed on the ingress Node.

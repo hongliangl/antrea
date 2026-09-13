@@ -236,4 +236,12 @@ var (
 
 	// Field to store the VLAN ID allocated for a L7 NetworkPolicy rule.
 	L7NPRuleVlanIDCTLabel = binding.NewCTLabel(64, 75)
+
+	// Fields to store the port and the IPv4 address of the endpoint a Service connection was DNATed to. They are
+	// written when the connection is committed in EndpointDNATTable and read to restore the endpoint as the source
+	// of a reply packet before the packet is redirected to an application-aware engine, because by then the reply
+	// has been un-DNATed and carries the Service IP instead. They are only written when L7 NetworkPolicy is enabled.
+	// An IPv6 endpoint address does not fit in the bits left, so the fields are not used for IPv6 connections.
+	EndpointPortCTLabel = binding.NewCTLabel(80, 95)
+	EndpointIPv4CTLabel = binding.NewCTLabel(96, 127)
 )

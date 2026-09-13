@@ -50,6 +50,7 @@ type featureService struct {
 	enableProxy           bool
 	proxyAll              bool
 	enableDSR             bool
+	enableL7NetworkPolicy bool
 	connectUplinkToBridge bool
 	ctZoneSrcField        *binding.RegField
 
@@ -72,6 +73,7 @@ func newFeatureService(
 	enableProxy,
 	proxyAll,
 	enableDSR,
+	enableL7NetworkPolicy,
 	connectUplinkToBridge bool) *featureService {
 	gatewayIPs := make(map[binding.Protocol]net.IP)
 	virtualIPs := make(map[binding.Protocol]net.IP)
@@ -126,6 +128,7 @@ func newFeatureService(
 		enableProxy:            enableProxy,
 		proxyAll:               proxyAll,
 		enableDSR:              enableDSR,
+		enableL7NetworkPolicy:  enableL7NetworkPolicy,
 		connectUplinkToBridge:  connectUplinkToBridge,
 		ctZoneSrcField:         getZoneSrcField(connectUplinkToBridge),
 		category:               cookie.Service,

@@ -1339,6 +1339,51 @@ func Test_client_InstallEndpointFlows(t *testing.T) {
 	}
 }
 
+// Test_client_InstallEndpointFlowsWithL7NetworkPolicy verifies that the endpoint is recorded on an IPv4 Service
+// connection when L7 NetworkPolicy is enabled, and that nothing is recorded on an IPv6 one, whose endpoint address does
+// not fit in ct_label.
+func Test_client_InstallEndpointFlowsWithL7NetworkPolicy(t *testing.T) {
+	testCases := []struct {
+		name          string
+		protocol      binding.Protocol
+		endpoint      proxy.Endpoint
+		expectedFlows []string
+	}{
+		{
+			name:     "TCPv4 Endpoint",
+			protocol: binding.ProtocolTCP,
+			endpoint: proxy.NewBaseEndpointInfo("10.10.0.100", 80, false, true, false, false, nil, nil),
+			expectedFlows: []string{
+				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,tcp,reg3=0xa0a0064,reg4=0x20050/0x7ffff actions=ct(commit,table=AntreaPolicyEgressRule,zone=65520,nat(dst=10.10.0.100:80),exec(set_field:0x10/0x10->ct_mark,set_field:0xa0a0064000000000000000000000000/0xffffffff000000000000000000000000->ct_label,set_field:0x5000000000000000000000/0xffff00000000000000000000->ct_label))",
+			},
+		},
+		{
+			name:     "TCPv6 Endpoint",
+			protocol: binding.ProtocolTCPv6,
+			endpoint: proxy.NewBaseEndpointInfo("fec0:10:10::100", 80, false, true, false, false, nil, nil),
+			expectedFlows: []string{
+				"cookie=0x1030000000000, table=EndpointDNAT, priority=200,tcp6,reg4=0x20050/0x7ffff,xxreg3=0xfec00010001000000000000000000100 actions=ct(commit,table=AntreaPolicyEgressRule,zone=65510,nat(dst=[fec0:10:10::100]:80),exec(set_field:0x10/0x10->ct_mark))",
+			},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			m := opstest.NewMockOFEntryOperations(ctrl)
+
+			fc := newFakeClient(m, true, true, config.K8sNode, config.TrafficEncapModeEncap, enableL7NetworkPolicy)
+			defer resetPipelines()
+
+			m.EXPECT().AddAll(gomock.Any()).Return(nil).Times(1)
+			assert.NoError(t, fc.InstallEndpointFlows(tc.protocol, []proxy.Endpoint{tc.endpoint}))
+			cacheKey := generateEndpointFlowCacheKey(tc.endpoint.IP(), tc.endpoint.Port(), tc.protocol)
+			fCacheI, ok := fc.featureService.cachedFlows.Load(cacheKey)
+			require.True(t, ok)
+			assert.ElementsMatch(t, tc.expectedFlows, getFlowStrings(fCacheI))
+		})
+	}
+}
+
 func Test_client_InstallServiceFlows(t *testing.T) {
 	clusterGroupID := binding.GroupIDType(100)
 	localGroupID := binding.GroupIDType(101)
@@ -3076,28 +3121,70 @@ func TestSubscribeOFPortStatusMessage(t *testing.T) {
 }
 
 func Test_client_InstallL7NetworkPolicyFlows(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	m := opstest.NewMockOFEntryOperations(ctrl)
-
-	fc := newFakeClient(m, true, false, config.K8sNode, config.TrafficEncapModeEncap, enableL7NetworkPolicy)
-	defer resetPipelines()
-
-	expectedFlows := []string{
-		"cookie=0x1020000000000, table=Classifier, priority=200,in_port=11,vlan_tci=0x1000/0x1000 actions=pop_vlan,set_field:0x7/0xf->reg0,goto_table:UnSNAT",
-		"cookie=0x1020000000000, table=ConntrackZone, priority=212,ip,reg0=0x0/0x800000 actions=set_field:0x800000/0x800000->reg0,ct(table=ConntrackZone,zone=65520)",
-		"cookie=0x1020000000000, table=ConntrackZone, priority=210,ct_state=+rpl+trk,ct_mark=0x80/0x80,ip actions=goto_table:Output",
-		"cookie=0x1020000000000, table=ConntrackZone, priority=211,ct_state=+rpl+trk,ip,reg0=0x7/0xf actions=ct(table=L3Forwarding,zone=65520,nat)",
-		"cookie=0x1020000000000, table=ConntrackZone, priority=211,ct_state=-rpl+trk,ip,reg0=0x7/0xf actions=goto_table:L3Forwarding",
-		"cookie=0x1020000000000, table=ConntrackZone, priority=210,ct_state=-rpl+trk,ct_mark=0x80/0x80,ip actions=ct(table=ConntrackState,zone=65520,nat)",
-		"cookie=0x1020000000000, table=TrafficControl, priority=210,reg0=0x7/0xf actions=goto_table:Output",
-		"cookie=0x1020000000000, table=Output, priority=213,reg0=0x7/0xf actions=output:NXM_NX_REG1[]",
-		"cookie=0x1020000000000, table=Output, priority=212,ct_mark=0x80/0x80 actions=push_vlan:0x8100,move:NXM_NX_CT_LABEL[64..75]->OXM_OF_VLAN_VID[0..11],output:10",
+	testCases := []struct {
+		name          string
+		enableIPv6    bool
+		expectedFlows []string
+	}{
+		{
+			// Only the packets returning from the engine pay the extra CT lookup which restores their CT state. A
+			// reply packet to be redirected is matched after the regular CT action, in ConntrackStateTable, where
+			// the endpoint recorded on the connection is moved back into it.
+			name: "IPv4",
+			expectedFlows: []string{
+				"cookie=0x1020000000000, table=Classifier, priority=200,in_port=11,vlan_tci=0x1000/0x1000 actions=pop_vlan,set_field:0x7/0xf->reg0,goto_table:UnSNAT",
+				"cookie=0x1020000000000, table=ConntrackZone, priority=212,ip,reg0=0x7/0x80000f actions=set_field:0x800000/0x800000->reg0,ct(table=ConntrackZone,zone=65520)",
+				"cookie=0x1020000000000, table=ConntrackZone, priority=211,ct_state=+rpl+trk,ip,reg0=0x7/0xf actions=ct(table=L3Forwarding,zone=65520,nat)",
+				"cookie=0x1020000000000, table=ConntrackZone, priority=211,ct_state=-rpl+trk,ip,reg0=0x7/0xf actions=goto_table:L3Forwarding",
+				"cookie=0x1020000000000, table=ConntrackState, priority=211,ct_state=+rpl+trk,ct_mark=0x80/0x80,ct_label=0x0/0xffffffff000000000000000000000000,tcp actions=goto_table:Output",
+				"cookie=0x1020000000000, table=ConntrackState, priority=211,ct_state=+rpl+trk,ct_mark=0x80/0x80,ct_label=0x0/0xffffffff000000000000000000000000,udp actions=goto_table:Output",
+				"cookie=0x1020000000000, table=ConntrackState, priority=210,ct_state=+rpl+trk,ct_mark=0x80/0x80,tcp actions=move:NXM_NX_CT_LABEL[96..127]->NXM_OF_IP_SRC[],move:NXM_NX_CT_LABEL[80..95]->OXM_OF_TCP_SRC[],goto_table:Output",
+				"cookie=0x1020000000000, table=ConntrackState, priority=210,ct_state=+rpl+trk,ct_mark=0x80/0x80,udp actions=move:NXM_NX_CT_LABEL[96..127]->NXM_OF_IP_SRC[],move:NXM_NX_CT_LABEL[80..95]->OXM_OF_UDP_SRC[],goto_table:Output",
+				"cookie=0x1020000000000, table=TrafficControl, priority=210,reg0=0x7/0xf actions=goto_table:Output",
+				"cookie=0x1020000000000, table=Output, priority=213,reg0=0x7/0xf actions=output:NXM_NX_REG1[]",
+				"cookie=0x1020000000000, table=Output, priority=212,ct_mark=0x80/0x80 actions=push_vlan:0x8100,move:NXM_NX_CT_LABEL[64..75]->OXM_OF_VLAN_VID[0..11],output:10",
+			},
+		},
+		{
+			// An IPv6 endpoint address does not fit in ct_label, so IPv6 keeps identifying a reply packet to be
+			// redirected before the regular CT action, at the cost of an extra CT lookup for every IPv6 packet.
+			name:       "dual stack",
+			enableIPv6: true,
+			expectedFlows: []string{
+				"cookie=0x1020000000000, table=Classifier, priority=200,in_port=11,vlan_tci=0x1000/0x1000 actions=pop_vlan,set_field:0x7/0xf->reg0,goto_table:UnSNAT",
+				"cookie=0x1020000000000, table=ConntrackZone, priority=212,ip,reg0=0x7/0x80000f actions=set_field:0x800000/0x800000->reg0,ct(table=ConntrackZone,zone=65520)",
+				"cookie=0x1020000000000, table=ConntrackZone, priority=211,ct_state=+rpl+trk,ip,reg0=0x7/0xf actions=ct(table=L3Forwarding,zone=65520,nat)",
+				"cookie=0x1020000000000, table=ConntrackZone, priority=211,ct_state=-rpl+trk,ip,reg0=0x7/0xf actions=goto_table:L3Forwarding",
+				"cookie=0x1020000000000, table=ConntrackState, priority=211,ct_state=+rpl+trk,ct_mark=0x80/0x80,ct_label=0x0/0xffffffff000000000000000000000000,tcp actions=goto_table:Output",
+				"cookie=0x1020000000000, table=ConntrackState, priority=211,ct_state=+rpl+trk,ct_mark=0x80/0x80,ct_label=0x0/0xffffffff000000000000000000000000,udp actions=goto_table:Output",
+				"cookie=0x1020000000000, table=ConntrackState, priority=210,ct_state=+rpl+trk,ct_mark=0x80/0x80,tcp actions=move:NXM_NX_CT_LABEL[96..127]->NXM_OF_IP_SRC[],move:NXM_NX_CT_LABEL[80..95]->OXM_OF_TCP_SRC[],goto_table:Output",
+				"cookie=0x1020000000000, table=ConntrackState, priority=210,ct_state=+rpl+trk,ct_mark=0x80/0x80,udp actions=move:NXM_NX_CT_LABEL[96..127]->NXM_OF_IP_SRC[],move:NXM_NX_CT_LABEL[80..95]->OXM_OF_UDP_SRC[],goto_table:Output",
+				"cookie=0x1020000000000, table=ConntrackZone, priority=212,ipv6,reg0=0x0/0x800000 actions=set_field:0x800000/0x800000->reg0,ct(table=ConntrackZone,zone=65510)",
+				"cookie=0x1020000000000, table=ConntrackZone, priority=211,ct_state=+rpl+trk,ipv6,reg0=0x7/0xf actions=ct(table=L3Forwarding,zone=65510,nat)",
+				"cookie=0x1020000000000, table=ConntrackZone, priority=211,ct_state=-rpl+trk,ipv6,reg0=0x7/0xf actions=goto_table:L3Forwarding",
+				"cookie=0x1020000000000, table=ConntrackZone, priority=210,ct_state=+rpl+trk,ct_mark=0x80/0x80,ipv6 actions=goto_table:Output",
+				"cookie=0x1020000000000, table=ConntrackZone, priority=210,ct_state=-rpl+trk,ct_mark=0x80/0x80,ipv6 actions=ct(table=ConntrackState,zone=65510,nat)",
+				"cookie=0x1020000000000, table=TrafficControl, priority=210,reg0=0x7/0xf actions=goto_table:Output",
+				"cookie=0x1020000000000, table=Output, priority=213,reg0=0x7/0xf actions=output:NXM_NX_REG1[]",
+				"cookie=0x1020000000000, table=Output, priority=212,ct_mark=0x80/0x80 actions=push_vlan:0x8100,move:NXM_NX_CT_LABEL[64..75]->OXM_OF_VLAN_VID[0..11],output:10",
+			},
+		},
 	}
 
-	m.EXPECT().AddAll(gomock.Any()).Return(nil).Times(1)
-	cacheKey := "l7_np_flows"
-	require.NoError(t, fc.InstallL7NetworkPolicyFlows())
-	fCacheI, ok := fc.featureNetworkPolicy.cachedFlows.Load(cacheKey)
-	require.True(t, ok)
-	assert.ElementsMatch(t, expectedFlows, getFlowStrings(fCacheI))
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			m := opstest.NewMockOFEntryOperations(ctrl)
+
+			fc := newFakeClient(m, true, tc.enableIPv6, config.K8sNode, config.TrafficEncapModeEncap, enableL7NetworkPolicy)
+			defer resetPipelines()
+
+			m.EXPECT().AddAll(gomock.Any()).Return(nil).Times(1)
+			cacheKey := "l7_np_flows"
+			require.NoError(t, fc.InstallL7NetworkPolicyFlows())
+			fCacheI, ok := fc.featureNetworkPolicy.cachedFlows.Load(cacheKey)
+			require.True(t, ok)
+			assert.ElementsMatch(t, tc.expectedFlows, getFlowStrings(fCacheI))
+		})
+	}
 }

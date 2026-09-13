@@ -998,6 +998,7 @@ func (c *client) generatePipelines() {
 			c.enableProxy,
 			c.proxyAll,
 			c.enableDSR,
+			c.enableL7NetworkPolicy,
 			c.connectUplinkToBridge)
 		c.activatedFeatures = append(c.activatedFeatures, c.featureService)
 		c.traceableFeatures = append(c.traceableFeatures, c.featureService)

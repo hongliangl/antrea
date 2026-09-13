@@ -2335,18 +2335,6 @@ func (f *featureNetworkPolicy) l7NPTrafficControlFlows() []binding.Flow {
 			ctZone = CtZoneV6
 		}
 		flows = append(flows,
-			// This generates the flow to restore the corresponding connection tracking (CT) state, excluding NAT, of
-			// packets and resubmit them back to the ConntrackTable. CtStateNotRestoredRegMark and CtStateRestoredRegMark
-			// are used to prevent packets from being resubmitted in a cyclic manner, ensuring that the packets are
-			// resubmitted only once.
-			ConntrackTable.ofTable.BuildFlow(priorityHigh+2).
-				MatchProtocol(ipProtocol).
-				MatchRegMark(CtStateNotRestoredRegMark).
-				Action().LoadRegMark(CtStateRestoredRegMark).
-				Action().CT(false, ConntrackTable.GetID(), ctZone, f.ctZoneSrcField).
-				CTDone().
-				Cookie(cookieID).
-				Done(),
 			// This generates the flow to match the reply packets returning from the application-aware engine. If the
 			// packets belong to a Service connection, DNAT is applied to restore the original source IP (Service IP) with
 			// a connection tracking (CT) action. If the packets don't belong to a Service connection, the CT action is
@@ -2377,31 +2365,102 @@ func (f *featureNetworkPolicy) l7NPTrafficControlFlows() []binding.Flow {
 				Action().GotoStage(stageRouting).
 				Cookie(cookieID).
 				Done(),
-			// This generates the flow to match the reply packets that should be redirected to the application-aware engine.
-			// A connection tracking (CT) action with NAT is not needed because the DNAT will be done after they are returned
-			// from the application-aware engine.
-			ConntrackTable.ofTable.BuildFlow(priorityHigh).
-				MatchProtocol(ipProtocol).
-				MatchCTStateRpl(true).
-				MatchCTStateTrk(true).
-				MatchCTMark(L7NPRedirectCTMark).
-				Action().GotoStage(stageOutput).
-				Cookie(cookieID).
-				Done(),
-			// This generates the flow to match request packets that are going to be redirected to the application-aware
-			// engine. A connection tracking (CT) action with NAT is needed because the DNAT should be done before they
-			// are redirected to the application-aware engine.
-			ConntrackTable.ofTable.BuildFlow(priorityHigh).
-				MatchProtocol(ipProtocol).
-				MatchCTStateRpl(false).
-				MatchCTStateTrk(true).
-				MatchCTMark(L7NPRedirectCTMark).
-				Action().CT(false, ConntrackTable.GetNext(), ctZone, f.ctZoneSrcField).
-				NAT().
-				CTDone().
-				Cookie(cookieID).
-				Done(),
 		)
+		if ipProtocol == binding.ProtocolIP {
+			flows = append(flows,
+				// This generates the flow to restore the connection tracking (CT) state, excluding NAT, of the packets
+				// returning from the application-aware engine, and resubmit them back to the ConntrackTable so that the
+				// two flows above can tell request packets from reply packets. CtStateNotRestoredRegMark and
+				// CtStateRestoredRegMark prevent the packets from being resubmitted more than once. No other packet needs
+				// this extra lookup: a reply packet to be redirected is identified after the regular CT action in
+				// ConntrackStateTable, see below.
+				ConntrackTable.ofTable.BuildFlow(priorityHigh+2).
+					MatchProtocol(ipProtocol).
+					MatchRegMark(FromL7NPReturnRegMark, CtStateNotRestoredRegMark).
+					Action().LoadRegMark(CtStateRestoredRegMark).
+					Action().CT(false, ConntrackTable.GetID(), ctZone, f.ctZoneSrcField).
+					CTDone().
+					Cookie(cookieID).
+					Done(),
+			)
+			// These generate the flows to match the reply packets that should be redirected to the application-aware
+			// engine, after the regular CT action in ConntrackTable has looked them up and un-DNATed them. The source of
+			// a reply packet of a Service connection is the Service IP at this point, while the request packet was
+			// redirected with the endpoint as its destination, so the engine would see two halves which do not form one
+			// connection. The endpoint was recorded on the connection when it was committed in EndpointDNATTable, and is
+			// moved back into the packet before it is redirected. A connection which is not a Service connection has no
+			// endpoint recorded, the first flow matches it on the zero field and skips the move, since moving the zero
+			// would blank the source. Both forward the packets to stageOutput directly, where the flow matching
+			// L7NPRedirectCTMark outputs them to the engine.
+			for _, l4Protocol := range []binding.Protocol{binding.ProtocolTCP, binding.ProtocolUDP} {
+				srcPortField := binding.OxmFieldTCPSrc
+				if l4Protocol == binding.ProtocolUDP {
+					srcPortField = binding.OxmFieldUDPSrc
+				}
+				flows = append(flows,
+					ConntrackStateTable.ofTable.BuildFlow(priorityHigh+1).
+						MatchProtocol(l4Protocol).
+						MatchCTStateRpl(true).
+						MatchCTStateTrk(true).
+						MatchCTMark(L7NPRedirectCTMark).
+						MatchCTLabelField(0, 0, EndpointIPv4CTLabel).
+						Action().GotoStage(stageOutput).
+						Cookie(cookieID).
+						Done(),
+					ConntrackStateTable.ofTable.BuildFlow(priorityHigh).
+						MatchProtocol(l4Protocol).
+						MatchCTStateRpl(true).
+						MatchCTStateTrk(true).
+						MatchCTMark(L7NPRedirectCTMark).
+						Action().MoveRange(binding.NxmFieldCtLabel, binding.NxmFieldSrcIPv4, *EndpointIPv4CTLabel.GetRange(), binding.Range{0, 31}).
+						Action().MoveRange(binding.NxmFieldCtLabel, srcPortField, *EndpointPortCTLabel.GetRange(), binding.Range{0, 15}).
+						Action().GotoStage(stageOutput).
+						Cookie(cookieID).
+						Done(),
+				)
+			}
+		} else {
+			flows = append(flows,
+				// This generates the flow to restore the corresponding connection tracking (CT) state, excluding NAT, of
+				// packets and resubmit them back to the ConntrackTable. CtStateNotRestoredRegMark and CtStateRestoredRegMark
+				// are used to prevent packets from being resubmitted in a cyclic manner, ensuring that the packets are
+				// resubmitted only once. Every IPv6 packet pays this extra lookup, because an IPv6 endpoint address does
+				// not fit in ct_label and the reply packets can therefore not be handled after the regular CT action the
+				// way IPv4 ones are.
+				ConntrackTable.ofTable.BuildFlow(priorityHigh+2).
+					MatchProtocol(ipProtocol).
+					MatchRegMark(CtStateNotRestoredRegMark).
+					Action().LoadRegMark(CtStateRestoredRegMark).
+					Action().CT(false, ConntrackTable.GetID(), ctZone, f.ctZoneSrcField).
+					CTDone().
+					Cookie(cookieID).
+					Done(),
+				// This generates the flow to match the reply packets that should be redirected to the application-aware engine.
+				// A connection tracking (CT) action with NAT is not needed because the DNAT will be done after they are returned
+				// from the application-aware engine.
+				ConntrackTable.ofTable.BuildFlow(priorityHigh).
+					MatchProtocol(ipProtocol).
+					MatchCTStateRpl(true).
+					MatchCTStateTrk(true).
+					MatchCTMark(L7NPRedirectCTMark).
+					Action().GotoStage(stageOutput).
+					Cookie(cookieID).
+					Done(),
+				// This generates the flow to match request packets that are going to be redirected to the application-aware
+				// engine. A connection tracking (CT) action with NAT is needed because the DNAT should be done before they
+				// are redirected to the application-aware engine.
+				ConntrackTable.ofTable.BuildFlow(priorityHigh).
+					MatchProtocol(ipProtocol).
+					MatchCTStateRpl(false).
+					MatchCTStateTrk(true).
+					MatchCTMark(L7NPRedirectCTMark).
+					Action().CT(false, ConntrackTable.GetNext(), ctZone, f.ctZoneSrcField).
+					NAT().
+					CTDone().
+					Cookie(cookieID).
+					Done(),
+			)
+		}
 	}
 
 	return flows

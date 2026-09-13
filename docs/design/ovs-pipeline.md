@@ -247,11 +247,13 @@ field will be set to 0 in the Ct mark until it is guaranteed to be allowed.
 We use some bits of the `ct_label` field of OVS conntrack to carry information throughout the pipeline. To enhance
 usability, we assign friendly names to the bits we use.
 
-| Field Range | Field Name            | Description                        |
-|-------------|-----------------------|------------------------------------|
-| bits 0-31   | IngressRuleCTLabel    | Ingress rule ID.                   |
-| bits 32-63  | EgressRuleCTLabel     | Egress rule ID.                    |
-| bits 64-75  | L7NPRuleVlanIDCTLabel | VLAN ID for L7 NetworkPolicy rule. |
+| Field Range | Field Name            | Description                                                                                        |
+|-------------|-----------------------|----------------------------------------------------------------------------------------------------|
+| bits 0-31   | IngressRuleCTLabel    | Ingress rule ID.                                                                                   |
+| bits 32-63  | EgressRuleCTLabel     | Egress rule ID.                                                                                    |
+| bits 64-75  | L7NPRuleVlanIDCTLabel | VLAN ID for L7 NetworkPolicy rule.                                                                 |
+| bits 80-95  | EndpointPortCTLabel   | Port of the endpoint a Service connection was DNATed to, when L7 NetworkPolicy is enabled.         |
+| bits 96-127 | EndpointIPv4CTLabel   | IPv4 address of the endpoint a Service connection was DNATed to, when L7 NetworkPolicy is enabled. |
 
 ### OVS Ct Zone
 
@@ -1154,6 +1156,12 @@ of `EndpointPortField` storing the Endpoint port and `EpSelectedRegMark`). Then 
 performing DNAT'd and forwarding it to table [ConntrackState] with the "tracked" state associated with `CtZone`.
 We set `ServiceCTMark`, which will be consumed in tables [L3Forwarding] and [ConntrackCommit], and which indicates that
 the current packet and subsequent packets of the connection are for a Service.
+
+When L7 NetworkPolicy is enabled, the endpoint an IPv4 connection was DNATed to is also persisted to `EndpointIPv4CTLabel`
+and `EndpointPortCTLabel`. A reply packet of a Service connection to be redirected to an application-aware engine has
+been un-DNATed by the time it is redirected, so its source is the Service IP while the request was redirected with the
+endpoint as its destination. The two fields let table [ConntrackState] give the reply packet the endpoint back as its
+source before it is redirected, so that the engine sees the two directions of one connection.
 
 Flow 4 is to resubmit the packets which are not matched by flows 1-3 back to table [ServiceLB] to select Endpoint again.
 
