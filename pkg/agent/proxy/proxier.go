@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 	apimachinerytypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	discoveryinformers "k8s.io/client-go/informers/discovery/v1"
@@ -241,7 +242,7 @@ func (p *proxier) removeStaleService(svcPortName k8sproxy.ServicePortName, svcPo
 		delete(p.endpointsInstalledMap, svcPortName)
 	}
 	delete(p.serviceInstalledMap, svcPortName)
-	p.ipToServiceMap.delete(svcInfo)
+	p.ipToServiceMap.delete(svcPortName)
 	return true
 }
 
@@ -982,8 +983,6 @@ func (p *proxier) updateServiceExternalAddresses(pSvcInfo, svcInfo *types.Servic
 		}
 		deletedExternalIPs := smallSliceDifference(pSvcInfo.ExternalIPs(), svcInfo.ExternalIPs())
 		addedExternalIPs := smallSliceDifference(svcInfo.ExternalIPs(), pSvcInfo.ExternalIPs())
-		// The deleted ExternalIPs need to be removed from the map explicitly while the added ExternalIPs (they are always included in the current ExternalIPs) will be added at the end of installServices.
-		p.ipToServiceMap.deleteServiceIPs(generateServiceInfoStrings(pSvcInfo.Protocol(), pSvcInfo.Port(), deletedExternalIPs))
 		if err := p.uninstallExternalIPService(pSvcInfoStr, deletedExternalIPs, pSvcPort, pSvcProto); err != nil {
 			klog.ErrorS(err, "Error when uninstalling ExternalIP flows and configurations for Service", "ServiceInfo", pSvcInfoStr)
 			return false
@@ -996,10 +995,6 @@ func (p *proxier) updateServiceExternalAddresses(pSvcInfo, svcInfo *types.Servic
 	if p.proxyLoadBalancerIPs {
 		deletedLoadBalancerIPs := smallSliceDifference(pSvcInfo.LoadBalancerVIPs(), svcInfo.LoadBalancerVIPs())
 		addedLoadBalancerIPs := smallSliceDifference(svcInfo.LoadBalancerVIPs(), pSvcInfo.LoadBalancerVIPs())
-
-		// The deleted LoadBalancerIPs need to be removed from the map explicitly while the added LoadBalancerIPs (they are always included in the current LoadBalancerIPs) will be added at the end of installServices.
-		p.ipToServiceMap.deleteServiceIPs(generateServiceInfoStrings(pSvcInfo.Protocol(), pSvcInfo.Port(), deletedLoadBalancerIPs))
-
 		if err := p.uninstallLoadBalancerService(pSvcInfoStr, deletedLoadBalancerIPs, pSvcPort, pSvcProto); err != nil {
 			klog.ErrorS(err, "Error when uninstalling LoadBalancer flows and configurations for Service", "ServiceInfo", pSvcInfoStr)
 			return false
@@ -1713,8 +1708,9 @@ func (p *ProxyServer) GetProxyProvider() Proxier {
 
 func newIPToServiceMap(nodePortAddresses []net.IP) *ipToServiceMap {
 	return &ipToServiceMap{
-		serviceStringMap:  map[string]k8sproxy.ServicePortName{},
-		nodePortAddresses: nodePortAddresses,
+		serviceStringMap:        map[string]k8sproxy.ServicePortName{},
+		serviceStringsByService: map[k8sproxy.ServicePortName]sets.Set[string]{},
+		nodePortAddresses:       nodePortAddresses,
 	}
 }
 
@@ -1726,35 +1722,45 @@ type ipToServiceMap struct {
 	serviceStringMapMutex sync.RWMutex
 	// serviceStringMap provides map from serviceString(IP:Port/Protocol) to ServicePortName.
 	serviceStringMap map[string]k8sproxy.ServicePortName
+	// serviceStringsByService stores the serviceStrings added for each Service, so that the ones which are no
+	// longer used, after the port, the NodePort or an IP of the Service has changed, or after the Service has been
+	// deleted, can be removed.
+	serviceStringsByService map[k8sproxy.ServicePortName]sets.Set[string]
 	// nodePortAddresses are the set of node IPs used for mapping to services of type NodePort
 	nodePortAddresses []net.IP
 }
 
-// add registers a new Service to the map.
+// add registers a Service to the map, or updates it. The serviceStrings added for the Service before which it no
+// longer has are removed.
 func (m *ipToServiceMap) add(serviceInfo *types.ServiceInfo, servicePortName k8sproxy.ServicePortName) {
 	m.serviceStringMapMutex.Lock()
 	defer m.serviceStringMapMutex.Unlock()
 
-	for _, serviceStr := range getServiceIPStrings(serviceInfo, m.nodePortAddresses) {
+	serviceStrings := sets.New[string](getServiceIPStrings(serviceInfo, m.nodePortAddresses)...)
+	m.deleteServiceStringsLocked(servicePortName, m.serviceStringsByService[servicePortName].Difference(serviceStrings))
+	for serviceStr := range serviceStrings {
 		m.serviceStringMap[serviceStr] = servicePortName
 	}
+	m.serviceStringsByService[servicePortName] = serviceStrings
 }
 
-// delete removes the Service from the map with thread safety.
-func (m *ipToServiceMap) delete(serviceInfo *types.ServiceInfo) {
-	m.deleteServiceIPs(getServiceIPStrings(serviceInfo, m.nodePortAddresses))
-}
-
-// deleteServiceIPs removes the associated keys from the map for the given set
-// of Service IPs.
-//
-// Deleting a key that does not exist is safely ignored.
-func (m *ipToServiceMap) deleteServiceIPs(serviceStrings []string) {
+// delete removes all the serviceStrings of the Service from the map.
+func (m *ipToServiceMap) delete(servicePortName k8sproxy.ServicePortName) {
 	m.serviceStringMapMutex.Lock()
 	defer m.serviceStringMapMutex.Unlock()
 
-	for _, serviceStr := range serviceStrings {
-		delete(m.serviceStringMap, serviceStr)
+	m.deleteServiceStringsLocked(servicePortName, m.serviceStringsByService[servicePortName])
+	delete(m.serviceStringsByService, servicePortName)
+}
+
+// deleteServiceStringsLocked removes the given serviceStrings of the Service from the map. A serviceString which
+// has been taken by another Service since, such as a NodePort released by the Service and allocated to another one,
+// is left to that Service.
+func (m *ipToServiceMap) deleteServiceStringsLocked(servicePortName k8sproxy.ServicePortName, serviceStrings sets.Set[string]) {
+	for serviceStr := range serviceStrings {
+		if m.serviceStringMap[serviceStr] == servicePortName {
+			delete(m.serviceStringMap, serviceStr)
+		}
 	}
 }
 

@@ -4122,7 +4122,7 @@ func TestIPToServiceMap(t *testing.T) {
 		net.ParseIP(loadBalancerIP),
 	}, []net.IP{}, 80, corev1.ProtocolTCP, servicePortName)
 
-	m.delete(serviceInfo)
+	m.delete(servicePortName)
 	assert.Len(t, m.serviceStringMap, 0)
 
 	nodePortPort := 12345
@@ -4153,8 +4153,50 @@ func TestIPToServiceMap(t *testing.T) {
 	m.add(nodePortServiceInfo, nodePortServicePortName)
 
 	verifyIPToServiceMap(t, m, nodeIPs, []net.IP{}, nodePortPort, corev1.ProtocolTCP, nodePortServicePortName)
-	m.delete(nodePortServiceInfo)
+	m.delete(nodePortServicePortName)
 	verifyIPToServiceMap(t, m, []net.IP{}, nodeIPs, nodePortPort, corev1.ProtocolTCP, nodePortServicePortName)
+}
+
+// TestIPToServiceMapUpdate verifies that the serviceStrings a Service no longer has are removed when it is updated
+// and when it is deleted, without removing a serviceString which another Service has taken since.
+func TestIPToServiceMapUpdate(t *testing.T) {
+	nodeIP := net.ParseIP("4.4.4.4")
+	makeServiceInfo := func(port, nodePort int32) *types.ServiceInfo {
+		servicePort := &corev1.ServicePort{Protocol: corev1.ProtocolTCP, Port: port, NodePort: nodePort}
+		service := &corev1.Service{Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeNodePort, ClusterIP: "1.1.1.1"}}
+		return &types.ServiceInfo{BaseServicePortInfo: k8sproxy.NewBaseServiceInfo(service, corev1.IPv4Protocol, servicePort)}
+	}
+	svc1 := k8sproxy.ServicePortName{NamespacedName: apimachinerytypes.NamespacedName{Namespace: "ns", Name: "svc1"}, Port: "http"}
+	svc2 := k8sproxy.ServicePortName{NamespacedName: apimachinerytypes.NamespacedName{Namespace: "ns", Name: "svc2"}, Port: "http"}
+	m := newIPToServiceMap([]net.IP{nodeIP})
+
+	m.add(makeServiceInfo(80, 30008), svc1)
+	assert.Equal(t, map[string]k8sproxy.ServicePortName{
+		"1.1.1.1:80/TCP":    svc1,
+		"4.4.4.4:30008/TCP": svc1,
+	}, m.serviceStringMap)
+
+	// The port and the NodePort of the Service change.
+	m.add(makeServiceInfo(81, 30009), svc1)
+	assert.Equal(t, map[string]k8sproxy.ServicePortName{
+		"1.1.1.1:81/TCP":    svc1,
+		"4.4.4.4:30009/TCP": svc1,
+	}, m.serviceStringMap)
+
+	// Another Service takes the NodePort the first one has just released, then the first one takes it back before
+	// the second one is updated. Deleting the first Service must not remove what the second one still has.
+	m.add(makeServiceInfo(82, 30008), svc2)
+	m.add(makeServiceInfo(81, 30008), svc1)
+	m.add(makeServiceInfo(82, 30010), svc2)
+	m.delete(svc1)
+	assert.Equal(t, map[string]k8sproxy.ServicePortName{
+		"1.1.1.1:82/TCP":    svc2,
+		"4.4.4.4:30010/TCP": svc2,
+	}, m.serviceStringMap)
+
+	m.delete(svc2)
+	assert.Empty(t, m.serviceStringMap)
+	assert.Empty(t, m.serviceStringsByService)
 }
 
 func TestServiceSyncRetriesAfterTransientFailure(t *testing.T) {
