@@ -2845,6 +2845,63 @@ func testServiceInternalTrafficPolicyUpdate(t *testing.T, protocol binding.Proto
 	assertEndpoints(t, expectedLocalEps, svcEndpointsMap)
 }
 
+// TestServiceEndpointConditionUpdate verifies that the groups of a Service are installed again when the Endpoints
+// of the Service change without changing the set of Endpoints, and when the topology labels of the Node change. With
+// externalTrafficPolicy Local, a local Endpoint which starts terminating is still reachable through the local group,
+// so it stays in the set of installed Endpoints, but it must leave the cluster group.
+func TestServiceEndpointConditionUpdate(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockOFClient, mockRouteClient := getMockClients(ctrl)
+	fp := newFakeProxier(mockRouteClient, mockOFClient, nil, openflow.NewGroupAllocator(), false)
+	protocol := binding.ProtocolTCP
+	svcIP := svc1IP(false)
+	ep1IP := ep1IP(false)
+	ep2IP := ep2IP(false)
+
+	svc := makeTestNodePortService(&svcPortName, svcIP, nil, int32(svcPort), int32(svcNodePort), corev1.ProtocolTCP, nil,
+		corev1.ServiceInternalTrafficPolicyCluster, corev1.ServiceExternalTrafficPolicyLocal)
+	makeServiceMap(fp, svc)
+	remoteEp, remoteEpPort := makeTestEndpointSliceEndpointAndPort(&svcPortName, ep1IP, int32(svcPort), corev1.ProtocolTCP, false)
+	localEp, _ := makeTestEndpointSliceEndpointAndPort(&svcPortName, ep2IP, int32(svcPort), corev1.ProtocolTCP, true)
+	endpointSlice := makeTestEndpointSlice(svcPortName.Namespace, svcPortName.Name, []discovery.Endpoint{*remoteEp, *localEp},
+		[]discovery.EndpointPort{*remoteEpPort}, false)
+	makeEndpointSliceMap(fp, endpointSlice)
+
+	remoteEpInfo := makeTestEndpointInfo(ep1IP.String(), svcPort, false, true, true, false, nil, nil)
+	localEpInfo := makeTestEndpointInfo(ep2IP.String(), svcPort, true, true, true, false, nil, nil)
+	mockOFClient.EXPECT().InstallEndpointFlows(protocol, gomock.InAnyOrder([]k8sproxy.Endpoint{remoteEpInfo, localEpInfo}))
+	mockOFClient.EXPECT().InstallServiceGroup(binding.GroupIDType(1), false, []k8sproxy.Endpoint{localEpInfo})
+	mockOFClient.EXPECT().InstallServiceGroup(binding.GroupIDType(2), false, gomock.InAnyOrder([]k8sproxy.Endpoint{remoteEpInfo, localEpInfo}))
+	mockOFClient.EXPECT().InstallServiceFlows(gomock.Any())
+	require.NoError(t, fp.syncProxyRules())
+
+	// The local Endpoint starts terminating. It is still serving, so it stays in the local group, but it must leave
+	// the cluster group. The first installation of the cluster group fails, and it must be retried by the next sync
+	// even though nothing has changed since.
+	updatedEndpointSlice := endpointSlice.DeepCopy()
+	updatedEndpointSlice.Endpoints[1].Conditions = discovery.EndpointConditions{
+		Ready:       ptr.To(false),
+		Serving:     ptr.To(true),
+		Terminating: ptr.To(true),
+	}
+	fp.endpointsChanges.OnEndpointSliceUpdate(updatedEndpointSlice, false)
+	terminatingLocalEpInfo := makeTestEndpointInfo(ep2IP.String(), svcPort, true, false, true, true, nil, nil)
+	mockOFClient.EXPECT().InstallServiceGroup(binding.GroupIDType(1), false, []k8sproxy.Endpoint{terminatingLocalEpInfo}).Times(2)
+	mockOFClient.EXPECT().InstallServiceGroup(binding.GroupIDType(2), false, []k8sproxy.Endpoint{remoteEpInfo}).Return(fmt.Errorf("error"))
+	assert.Error(t, fp.syncProxyRules())
+	mockOFClient.EXPECT().InstallServiceGroup(binding.GroupIDType(2), false, []k8sproxy.Endpoint{remoteEpInfo})
+	require.NoError(t, fp.syncProxyRules())
+
+	// Nothing has changed, so the groups are not installed again.
+	require.NoError(t, fp.syncProxyRules())
+
+	// The topology labels of the Node change, which can change the Endpoints of every Service.
+	fp.OnTopologyChange(map[string]string{corev1.LabelTopologyZone: "zone-1"})
+	mockOFClient.EXPECT().InstallServiceGroup(binding.GroupIDType(1), false, []k8sproxy.Endpoint{terminatingLocalEpInfo})
+	mockOFClient.EXPECT().InstallServiceGroup(binding.GroupIDType(2), false, []k8sproxy.Endpoint{remoteEpInfo})
+	require.NoError(t, fp.syncProxyRules())
+}
+
 func TestServiceInternalTrafficPolicyUpdate(t *testing.T) {
 	t.Run("IPv4", func(t *testing.T) {
 		t.Run("ClusterIP TCP", func(t *testing.T) {

@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 	apimachinerytypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	discoveryinformers "k8s.io/client-go/informers/discovery/v1"
@@ -117,6 +118,13 @@ type proxier struct {
 	endpointsInstalledMap k8sproxy.EndpointsMap
 	// endpointReferenceCounter stores the number of times an Endpoint is referenced by Services.
 	endpointReferenceCounter map[string]int
+	// servicesToUpdateEndpoints stores the Services whose groups must be installed again, because their Endpoints or
+	// the topology labels of the Node have changed. A Service is removed once its groups have been installed. It is
+	// needed because a change of the conditions of an Endpoint, or of the topology labels, can change which group an
+	// Endpoint belongs to without changing the set of Endpoints, which is all the diff of installed Endpoints sees.
+	servicesToUpdateEndpoints sets.Set[k8sproxy.ServicePortName]
+	// needFullSync is set when the topology labels of the Node change, which can change the Endpoints of every Service.
+	needFullSync bool
 	// groupCounter is used to allocate groupID.
 	groupCounter types.GroupCounter
 
@@ -241,6 +249,7 @@ func (p *proxier) removeStaleService(svcPortName k8sproxy.ServicePortName, svcPo
 		delete(p.endpointsInstalledMap, svcPortName)
 	}
 	delete(p.serviceInstalledMap, svcPortName)
+	p.servicesToUpdateEndpoints.Delete(svcPortName)
 	p.ipToServiceMap.delete(svcInfo)
 	return true
 }
@@ -792,6 +801,9 @@ func (p *proxier) installService(svcPortName k8sproxy.ServicePortName, svcPort k
 		// otherwise it would fail to install Service flows because the group doesn't exist.
 		needUpdateEndpoints = true
 	}
+	if p.servicesToUpdateEndpoints.Has(svcPortName) {
+		needUpdateEndpoints = true
+	}
 
 	clusterEndpoints, localEndpoints, allReachableEndpoints := p.categorizeEndpoints(endpointsToInstall, svcInfo, p.hostname, p.topologyLabels)
 	// Get the stale Endpoints and new Endpoints based on the diff of endpointsInstalled and allReachableEndpoints.
@@ -868,6 +880,7 @@ func (p *proxier) installService(svcPortName k8sproxy.ServicePortName, svcPort k
 	// sync recomputes the diff and retries.
 	p.updateEndpointsStates(svcPortName, svcInfo.OFProtocol, newEndpoints, staleEndpoints)
 	p.serviceInstalledMap[svcPortName] = svcPort
+	p.servicesToUpdateEndpoints.Delete(svcPortName)
 	return true
 }
 
@@ -1064,8 +1077,14 @@ func (p *proxier) syncProxyRules() error {
 	// GetServiceFlowKeys().
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.endpointsChanges.Update(p.endpointsMap)
+	endpointsUpdateResult := p.endpointsChanges.Update(p.endpointsMap)
 	p.serviceChanges.Update(p.serviceMap)
+	for svcPortName := range p.serviceMap {
+		if p.needFullSync || endpointsUpdateResult.UpdatedServices.Has(svcPortName.NamespacedName) {
+			p.servicesToUpdateEndpoints.Insert(svcPortName)
+		}
+	}
+	p.needFullSync = false
 
 	// Both steps program the OVS data path and can fail transiently (e.g. a bundle reply timing out). Each
 	// reports whether any Service could not be fully synced; we aggregate that and turn it into an error at
@@ -1245,6 +1264,7 @@ func (p *proxier) OnServiceSynced() {
 func (p *proxier) OnTopologyChange(topologyLabels map[string]string) {
 	p.mu.Lock()
 	p.topologyLabels = topologyLabels
+	p.needFullSync = true
 	p.mu.Unlock()
 	klog.V(4).InfoS("Updated proxier node topology labels", "labels", topologyLabels)
 	p.Sync()
@@ -1412,6 +1432,7 @@ func newProxier(
 		endpointsInstalledMap:                k8sproxy.EndpointsMap{},
 		endpointsMap:                         k8sproxy.EndpointsMap{},
 		endpointReferenceCounter:             map[string]int{},
+		servicesToUpdateEndpoints:            sets.New[k8sproxy.ServicePortName](),
 		topologyLabels:                       map[string]string{},
 		ipToServiceMap:                       newIPToServiceMap(nodePortAddresses),
 		groupCounter:                         groupCounter,
