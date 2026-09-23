@@ -170,11 +170,10 @@ to the registers we use.
 |               |             |                                 | 0x4            | FromUplinkRegMark               | Packet source is uplink port.                                                                        |
 |               |             |                                 | 0x5            | FromBridgeRegMark               | Packet source is local bridge port.                                                                  |
 |               |             |                                 | 0x6            | FromTCReturnRegMark             | Packet source is TrafficControl return port.                                                         |
+|               |             |                                 | 0x7            | FromL7NPReturnRegMark           | Packet source is the return port of an application-aware engine.                                     |
 |               | bits 4-7    | PktDestinationField             | 0x1            | ToTunnelRegMark                 | Packet destination is tunnel port.                                                                   |
 |               |             |                                 | 0x2            | ToGatewayRegMark                | Packet destination is the local Antrea gateway port.                                                 |
-|               |             |                                 | 0x3            | ToLocalRegMark                  | Packet destination is local Pod port.                                                                |
 |               |             |                                 | 0x4            | ToUplinkRegMark                 | Packet destination is uplink port.                                                                   |
-|               |             |                                 | 0x5            | ToBridgeRegMark                 | Packet destination is local bridge port.                                                             |
 |               | bit  9      |                                 | 0b0            | NotRewriteMACRegMark            | Packet's source/destination MAC address does not need to be rewritten.                               |
 |               |             |                                 | 0b1            | RewriteMACRegMark               | Packet's source/destination MAC address needs to be rewritten.                                       |
 |               | bit  10     |                                 | 0b1            | APDenyRegMark                   | Packet denied (Drop/Reject) by Antrea NetworkPolicy.                                                 |
@@ -184,9 +183,11 @@ to the registers we use.
 |               | bit  13     |                                 | 0b1            | GeneratedRejectPacketOutRegMark | Indicates packet is a generated reject response packet-out.                                          |
 |               | bit  14     |                                 | 0b1            | SvcNoEpRegMark                  | Indicates packet towards a Service without Endpoint.                                                 |
 |               | bit  19     |                                 | 0b1            | RemoteSNATRegMark               | Indicates packet needs SNAT on a remote Node.                                                        |
-|               | bit  22     |                                 | 0b1            | L7NPRedirectRegMark             | Indicates L7 Antrea NetworkPolicy disposition of redirect.                                           |
+|               | bit  20     | L7NPRegField                    | 0b1            | L7NPRedirectRegMark             | Indicates L7 Antrea NetworkPolicy disposition of redirect.                                           |
 |               | bits 21-22  | OutputRegField                  | 0b01           | OutputToOFPortRegMark           | Output packet to an OVS port.                                                                        |
 |               |             |                                 | 0b10           | OutputToControllerRegMark       | Send packet to Antrea Agent.                                                                         |
+|               | bit  23     |                                 | 0b0            | CtStateNotRestoredRegMark       | Packet has not had its CT state restored (used by L7NetworkPolicy).                                  |
+|               |             |                                 | 0b1            | CtStateRestoredRegMark          | Packet has had its CT state restored (used by L7NetworkPolicy).                                      |
 |               | bits 25-32  | PacketInOperationField          |                |                                 | Field to store NetworkPolicy packetIn operation.                                                     |
 | NXM_NX_REG1   | bits 0-31   | TargetOFPortField               |                |                                 | Egress OVS port of packet.                                                                           |
 | NXM_NX_REG2   | bits 0-31   | SwapField                       |                |                                 | Swap values in flow fields in OpenFlow actions.                                                      |
@@ -229,7 +230,8 @@ usability, we assign friendly names to the bits we use.
 
 | Field Range | Field Name            | Ct Mark Value | Ct Mark Name       | Description                                                     |
 |-------------|-----------------------|---------------|--------------------|-----------------------------------------------------------------|
-| bits 0-3    | ConnSourceCTMarkField | 0b0010        | FromGatewayCTMark  | Connection source is the Antrea gateway port.                   |
+| bits 0-3    | ConnSourceCTMarkField | 0b0001        | FromTunnelCTMark   | Connection source is the tunnel port.                           |
+|             |                       | 0b0010        | FromGatewayCTMark  | Connection source is the Antrea gateway port.                   |
 |             |                       | 0b0101        | FromBridgeCTMark   | Connection source is the local bridge port.                     |
 | bit 4       |                       | 0b1           | ServiceCTMark      | Connection is for Service.                                      |
 |             |                       | 0b0           | NotServiceCTMark   | Connection is not for Service.                                  |
@@ -774,8 +776,8 @@ If you dump the flows of this table, you may see the following:
 1. table=Classifier, priority=210,ip,in_port="antrea-gw0",nw_src=10.10.0.1 actions=set_field:0x2/0xf->reg0,set_field:0x10000000/0x10000000->reg4,goto_table:SpoofGuard
 2. table=Classifier, priority=200,in_port="antrea-gw0" actions=set_field:0x2/0xf->reg0,set_field:0x8000000/0x8000000->reg4,goto_table:SpoofGuard
 3. table=Classifier, priority=200,in_port="antrea-tun0" actions=set_field:0x1/0xf->reg0,set_field:0x200/0x200->reg0,goto_table:UnSNAT
-4. table=Classifier, priority=200,in_port="antrea-tc-tap2" actions=set_field:0x6/0xf->reg0,goto_table:L3Forwarding
-5. table=Classifier, priority=200,in_port="antrea-l7-tap1",vlan_tci=0x1000/0x1000 actions=pop_vlan,set_field:0x6/0xf->reg0,goto_table:L3Forwarding
+4. table=Classifier, priority=200,in_port="antrea-tc-tap1" actions=set_field:0x6/0xf->reg0,goto_table:L3Forwarding
+5. table=Classifier, priority=200,in_port="antrea-l7-tap1",vlan_tci=0x1000/0x1000 actions=pop_vlan,set_field:0x7/0xf->reg0,goto_table:UnSNAT
 6. table=Classifier, priority=190,in_port="client-6-3353ef" actions=set_field:0x3/0xf->reg0,set_field:0x10000000/0x10000000->reg4,goto_table:SpoofGuard
 7. table=Classifier, priority=190,in_port="web-7975-274540" actions=set_field:0x3/0xf->reg0,set_field:0x10000000/0x10000000->reg4,goto_table:SpoofGuard
 8. table=Classifier, priority=190,in_port="db-755c6-5080e3" actions=set_field:0x3/0xf->reg0,set_field:0x10000000/0x10000000->reg4,goto_table:SpoofGuard
@@ -814,9 +816,10 @@ returned packets destined for remote Nodes are forwarded through the tunnel. `Fr
 in table [TrafficControl], is loaded to mark the packet source.
 
 Flow 5 is for case 5, matching packets returned back from an application-aware engine through a specific port, stripping
-the VLAN ID used by the application-aware engine, and forwarding them to table [L3Forwarding] to decide the egress port.
-Like flow 4, the purpose of forwarding the packets to table [L3Forwarding] is to load the tunnel destination IP for
-packets destined for remote Nodes, and `FromTCReturnRegMark` is also loaded.
+the VLAN ID used by the application-aware engine, and forwarding them to table [UnSNAT]. Unlike flow 4, the packets go
+through table [ConntrackZone] again, because a reply packet of a Service connection is sent to the engine before it is
+un-DNATed, and it is un-DNATed in table [ConntrackZone] once it is back. `FromL7NPReturnRegMark` is loaded to mark the
+packet source.
 
 Flows 6-8 are for case 6, matching packets from local Pods and forwarding them to table [SpoofGuard] to do legitimacy
 verification. The following reg marks are loaded:
@@ -909,15 +912,40 @@ uniquely containing a "tracked" state within each ct zone.
 If you dump the flows of this table, you may see the following:
 
 ```text
-1. table=ConntrackZone, priority=200,ip actions=ct(table=ConntrackState,zone=65520,nat)
-2. table=ConntrackZone, priority=0 actions=goto_table:ConntrackState
+1. table=ConntrackZone, priority=212,ip,reg0=0x0/0x800000 actions=set_field:0x800000/0x800000->reg0,ct(table=ConntrackZone,zone=65520)
+2. table=ConntrackZone, priority=211,ct_state=+rpl+trk,ip,reg0=0x7/0xf actions=ct(table=L3Forwarding,zone=65520,nat)
+3. table=ConntrackZone, priority=211,ct_state=-rpl+trk,ip,reg0=0x7/0xf actions=goto_table:L3Forwarding
+4. table=ConntrackZone, priority=210,ct_state=+rpl+trk,ct_mark=0x80/0x80,ip actions=goto_table:Output
+5. table=ConntrackZone, priority=210,ct_state=-rpl+trk,ct_mark=0x80/0x80,ip actions=ct(table=ConntrackState,zone=65520,nat)
+6. table=ConntrackZone, priority=200,ip actions=ct(table=ConntrackState,zone=65520,nat)
+7. table=ConntrackZone, priority=0 actions=goto_table:ConntrackState
 ```
 
-Flow 1 invokes `ct` action on packets from all connections, and the packets are then forwarded to table [ConntrackState]
+Flows 1-5 are installed for feature `L7NetworkPolicy`. An application-aware engine must see both directions of a
+connection with the same addresses, so a reply packet of a Service connection redirected to the engine must reach it
+before it is un-DNATed. Whether a packet is such a reply is only known from its connection tracking state, so every
+packet is looked up first without NAT.
+
+Flow 1 invokes `ct` action without `nat` on every packet, which restores the "tracked" state without changing the packet,
+and resubmits the packet to this table. `CtStateRestoredRegMark` is loaded so that the packet is not matched by this
+flow again.
+
+Flows 2-3 match packets returned from the application-aware engine, with `FromL7NPReturnRegMark`. Reply packets are
+un-DNATed by a `ct` action with `nat` and forwarded to table [L3Forwarding]. Request packets, which were DNATed before
+they were redirected, are forwarded to table [L3Forwarding] directly. The target is table [L3Forwarding] so that the
+tunnel destination IP is loaded for packets destined for remote Nodes.
+
+Flow 4 matches reply packets of connections with `L7NPRedirectCTMark` and forwards them to table [Output] without
+un-DNAT, where they are output to the application-aware engine.
+
+Flow 5 matches request packets of connections with `L7NPRedirectCTMark` and invokes `ct` action with `nat`, so that
+they are DNATed before they are redirected.
+
+Flow 6 invokes `ct` action on packets from all connections, and the packets are then forwarded to table [ConntrackState]
 with the "tracked" state associated with `CtZone`. Note that for packets in an established Service (DNATed) connection,
 not the first packet of a Service connection, DNAT or un-DNAT is performed on them  before they are forwarded.
 
-Flow 2 is the table-miss flow that should remain unused.
+Flow 7 is the table-miss flow that should remain unused.
 
 ### ConntrackState
 
@@ -1612,11 +1640,12 @@ If you dump the flows of this table, you may see the following:
 
 ```text
 1. table=TrafficControl, priority=210,reg0=0x200006/0x60000f actions=goto_table:Output
-2. table=TrafficControl, priority=200,reg1=0x25 actions=set_field:0x22->reg9,set_field:0x800000/0xc00000->reg4,goto_table:IngressSecurityClassifier
-3. table=TrafficControl, priority=200,in_port="web-7975-274540" actions=set_field:0x22->reg9,set_field:0x800000/0xc00000->reg4,goto_table:IngressSecurityClassifier
-4. table=TrafficControl, priority=200,reg1=0x26 actions=set_field:0x27->reg9,set_field:0x400000/0xc00000->reg4,goto_table:IngressSecurityClassifier
-5. table=TrafficControl, priority=200,in_port="db-755c6-5080e3" actions=set_field:0x27->reg9,set_field:0x400000/0xc00000->reg4,goto_table:IngressSecurityClassifier
-6. table=TrafficControl, priority=0 actions=goto_table:IngressSecurityClassifier
+2. table=TrafficControl, priority=210,reg0=0x7/0xf actions=goto_table:Output
+3. table=TrafficControl, priority=200,reg1=0x25 actions=set_field:0x22->reg9,set_field:0x800000/0xc00000->reg4,goto_table:IngressSecurityClassifier
+4. table=TrafficControl, priority=200,in_port="web-7975-274540" actions=set_field:0x22->reg9,set_field:0x800000/0xc00000->reg4,goto_table:IngressSecurityClassifier
+5. table=TrafficControl, priority=200,reg1=0x26 actions=set_field:0x27->reg9,set_field:0x400000/0xc00000->reg4,goto_table:IngressSecurityClassifier
+6. table=TrafficControl, priority=200,in_port="db-755c6-5080e3" actions=set_field:0x27->reg9,set_field:0x400000/0xc00000->reg4,goto_table:IngressSecurityClassifier
+7. table=TrafficControl, priority=0 actions=goto_table:IngressSecurityClassifier
 ```
 
 Flow 1 matches packets returned from TrafficControl return ports and forwards them to table [Output], where the packets
@@ -1624,17 +1653,20 @@ are output to the port to which they are destined. To identify such packets, `Ou
 the packets should be output to an OVS port, and `FromTCReturnRegMark` loaded in table [Classifier], indicating that
 the packets are from a TrafficControl return port, are used.
 
-Flows 2-3 are installed for the sample [TrafficControl redirect-web-to-local] to mark the packets associated with the
-Pods labeled by `app: web` using `TrafficControlRedirectRegMark`. Flow 2 handles the ingress direction, while flow 3
+Flow 2 is installed for feature `L7NetworkPolicy`. It matches packets returned from an application-aware engine, with
+`FromL7NPReturnRegMark`, and forwards them to table [Output] in the same way, so that they are not redirected again.
+
+Flows 3-4 are installed for the sample [TrafficControl redirect-web-to-local] to mark the packets associated with the
+Pods labeled by `app: web` using `TrafficControlRedirectRegMark`. Flow 3 handles the ingress direction, while flow 4
 handles the egress direction. In table [Output], these packets will be redirected to a TrafficControl target port
 specified in `TrafficControlTargetOFPortField`, of which value is loaded in these 2 flows.
 
-Flows 4-5 are installed for the sample [TrafficControl mirror-db-to-local] to mark the packets associated with the Pods
-labeled by `app: db` using `TrafficControlMirrorRegMark`. Similar to flows 2-3, flows 4-5 also handles the two directions.
+Flows 5-6 are installed for the sample [TrafficControl mirror-db-to-local] to mark the packets associated with the Pods
+labeled by `app: db` using `TrafficControlMirrorRegMark`. Similar to flows 3-4, flows 5-6 also handles the two directions.
 In table [Output], these packets will be mirrored (duplicated) to a TrafficControl target port specified in
 `TrafficControlTargetOFPortField`, of which value is loaded in these 2 flows.
 
-Flow 6 is the table-miss flow.
+Flow 7 is the table-miss flow.
 
 ### IngressSecurityClassifier
 
@@ -1869,54 +1901,61 @@ Flow 2 is the table-miss flow.
 This is the final table in the pipeline, responsible for handling the output of packets from OVS. It addresses the
 following cases:
 
-1. Output packets to an application-aware engine for further L7 protocol processing.
-2. Output packets to a target port and a mirroring port defined in a TrafficControl CR with `Mirror` action.
-3. Output packets to a port defined in a TrafficControl CR with `Redirect` action.
-4. Output packets from hairpin connections to the ingress port where they were received.
-5. Output packets to a target port.
-6. Output packets to the OpenFlow controller (Antrea Agent).
-7. Drop packets.
+1. Output packets returned from an application-aware engine to the port to which they are destined.
+2. Output packets to an application-aware engine for further L7 protocol processing.
+3. Output packets to a target port and a mirroring port defined in a TrafficControl CR with `Mirror` action.
+4. Output packets to a port defined in a TrafficControl CR with `Redirect` action.
+5. Output packets from hairpin connections to the ingress port where they were received.
+6. Output packets to a target port.
+7. Output packets to the OpenFlow controller (Antrea Agent).
+8. Drop packets.
 
 If you dump the flows of this table, you may see the following:
 
 ```text
-1. table=Output, priority=212,ct_mark=0x80/0x80,reg0=0x200000/0x600000 actions=push_vlan:0x8100,move:NXM_NX_CT_LABEL[64..75]->OXM_OF_VLAN_VID[],output:"antrea-l7-tap0"
-2. table=Output, priority=211,reg0=0x200000/0x600000,reg4=0x400000/0xc00000 actions=output:NXM_NX_REG1[],output:NXM_NX_REG9[]
-3. table=Output, priority=211,reg0=0x200000/0x600000,reg4=0x800000/0xc00000 actions=output:NXM_NX_REG9[]
-4. table=Output, priority=210,ct_mark=0x40/0x40 actions=IN_PORT
-5. table=Output, priority=200,reg0=0x200000/0x600000 actions=output:NXM_NX_REG1[]
-6. table=Output, priority=200,reg0=0x2400000/0xfe600000 actions=meter:256,controller(reason=no_match,id=62373,userdata=01.01)
-7. table=Output, priority=200,reg0=0x4400000/0xfe600000 actions=meter:256,controller(reason=no_match,id=62373,userdata=01.02)
-8. table=Output, priority=0 actions=drop
+1. table=Output, priority=213,reg0=0x7/0xf actions=output:NXM_NX_REG1[]
+2. table=Output, priority=212,ct_mark=0x80/0x80 actions=push_vlan:0x8100,move:NXM_NX_CT_LABEL[64..75]->OXM_OF_VLAN_VID[],output:"antrea-l7-tap0"
+3. table=Output, priority=211,reg0=0x200000/0x600000,reg4=0x400000/0xc00000 actions=output:NXM_NX_REG1[],output:NXM_NX_REG9[]
+4. table=Output, priority=211,reg0=0x200000/0x600000,reg4=0x800000/0xc00000 actions=output:NXM_NX_REG9[]
+5. table=Output, priority=210,ct_mark=0x40/0x40 actions=IN_PORT
+6. table=Output, priority=200,reg0=0x200000/0x600000 actions=output:NXM_NX_REG1[]
+7. table=Output, priority=200,reg0=0x2400000/0xfe600000 actions=meter:256,controller(reason=no_match,id=62373,userdata=01.01)
+8. table=Output, priority=200,reg0=0x4400000/0xfe600000 actions=meter:256,controller(reason=no_match,id=62373,userdata=01.02)
+9. table=Output, priority=0 actions=drop
 ```
 
-Flow 1 is for case 1. It matches packets with `L7NPRedirectCTMark` and `OutputToOFPortRegMark`, and then outputs them to
-the port `antrea-l7-tap0` specifically created for connecting to an application-aware engine. Notably, these packets are pushed
-with an 802.1Q header and loaded with the VLAN ID value persisted in `L7NPRuleVlanIDCTLabel` before being output, due to
-the implementation of Antrea-native L7 NetworkPolicy. The application-aware engine enforcing L7 policies (e.g., Suricata)
-can leverage the VLAN ID to determine which set of rules to apply to the packet.
+Flow 1 is for case 1. It matches packets returned from an application-aware engine, with `FromL7NPReturnRegMark`, and
+outputs them to the port specified in `TargetOFPortField`. It has the highest priority so that these packets are not
+matched by flow 2 and redirected to the engine again.
 
-Flow 2 is for case 2. It matches packets with `TrafficControlMirrorRegMark` and `OutputToOFPortRegMark`, and then
+Flow 2 is for case 2. It matches packets with `L7NPRedirectCTMark`, and then outputs them to the port `antrea-l7-tap0`
+specifically created for connecting to an application-aware engine. Notably, these packets are pushed with an 802.1Q
+header and loaded with the VLAN ID value persisted in `L7NPRuleVlanIDCTLabel` before being output, due to the
+implementation of Antrea-native L7 NetworkPolicy. The application-aware engine enforcing L7 policies (e.g., Suricata)
+can leverage the VLAN ID to determine which set of rules to apply to the packet. Reply packets of these connections
+reach this flow directly from table [ConntrackZone].
+
+Flow 3 is for case 3. It matches packets with `TrafficControlMirrorRegMark` and `OutputToOFPortRegMark`, and then
 outputs them to the port specified in `TargetOFPortField` and the port specified in `TrafficControlTargetOFPortField`.
 Unlike the `Redirect` action, the `Mirror` action creates an additional copy of the packet.
 
-Flow 3 is for case 3. It matches packets with `TrafficControlRedirectRegMark` and `OutputToOFPortRegMark`, and then
+Flow 4 is for case 4. It matches packets with `TrafficControlRedirectRegMark` and `OutputToOFPortRegMark`, and then
 outputs them to the port specified in `TrafficControlTargetOFPortField`.
 
-Flow 4 is for case 4. It matches packets from hairpin connections by matching `HairpinCTMark` and outputs them back to the
+Flow 5 is for case 5. It matches packets from hairpin connections by matching `HairpinCTMark` and outputs them back to the
 port where they were received.
 
-Flow 5 is for case 5. It matches packets by matching `OutputToOFPortRegMark` and outputs them to the OVS port specified by
+Flow 6 is for case 6. It matches packets by matching `OutputToOFPortRegMark` and outputs them to the OVS port specified by
 the value stored in `TargetOFPortField`.
 
-Flows 6-7 are for case 6. They match packets by matching `OutputToControllerRegMark` and the value stored in
+Flows 7-8 are for case 7. They match packets by matching `OutputToControllerRegMark` and the value stored in
 `PacketInOperationField`, then output them to the OpenFlow controller (Antrea Agent) with corresponding user data.
 
 In practice, you will see additional flows similar to these ones to accommodate different scenarios (different
 PacketInOperationField values). Note that packets sent to controller are metered to avoid overrunning the antrea-agent
 and using too many resources.
 
-Flow 8 is the table-miss flow for case 7. It drops packets that do not match any of the flows in this table.
+Flow 9 is the table-miss flow for case 8. It drops packets that do not match any of the flows in this table.
 
 [ARPSpoofGuard]: #arpspoofguard
 [AntreaPolicyEgressRule]: #antreapolicyegressrule
