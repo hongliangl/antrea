@@ -93,6 +93,7 @@ type clientOptions struct {
 	enableTrafficControl       bool
 	enableMulticluster         bool
 	enableL7NetworkPolicy      bool
+	egressInNetworkConfig      bool
 	trafficEncryptionMode      config.TrafficEncryptionModeType
 }
 
@@ -165,6 +166,12 @@ func enableTrafficControl(o *clientOptions) {
 
 func enableMulticluster(o *clientOptions) {
 	o.enableMulticluster = true
+}
+
+// setEgressInNetworkConfig sets NetworkConfig.EnableEgress from the Egress option, as the agent does. It is opt-in
+// because it gives a noEncap Node a tunnel port, and existing noEncap expectations were written without one.
+func setEgressInNetworkConfig(o *clientOptions) {
+	o.egressInNetworkConfig = true
 }
 
 func setTrafficEncryptionMode(trafficEncryptionMode config.TrafficEncryptionModeType) clientOptionsFn {
@@ -467,6 +474,7 @@ func newFakeClientWithBridge(
 		IPv6Enabled:           enableIPv6,
 		TrafficEncapMode:      trafficEncapMode,
 		TrafficEncryptionMode: o.trafficEncryptionMode,
+		EnableEgress:          o.enableEgress && o.egressInNetworkConfig,
 	}
 	tunnelOFPort := uint32(0)
 	if networkConfig.NeedsTunnelInterface() {

@@ -39,6 +39,11 @@ generated code after running it.
 
 ## Generated Documentation
 
+The [OVS pipeline snapshots](../design/ovs-pipeline/snapshots/README.md) record the flows the
+Agent installs for a set of configurations, and a unit test checks them against the code. If you
+make any change to the flows in `pkg/agent/openflow`, re-generate the snapshots by invoking `make
+pipeline-snapshots` and commit them with your change.
+
 [Prometheus integration document](../prometheus-integration.md) contains a list
 of supported metrics, which could be affected by third party component
 changes. The collection of metrics is done from a running Kind deployment, in

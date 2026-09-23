@@ -356,6 +356,11 @@ codegen:
 	@echo "===> Updating generated code <==="
 	$(CURDIR)/hack/update-codegen.sh
 
+.PHONY: pipeline-snapshots
+pipeline-snapshots:
+	@echo "===> Updating OVS pipeline snapshots <==="
+	UPDATE_PIPELINE_SNAPSHOTS=1 $(GO) test ./pkg/agent/openflow/ -run '^TestPipelineSnapshots$$' -count=1
+
 .PHONY: mockgen
 mockgen:
 	@echo "===> Updating generated mock code <==="
