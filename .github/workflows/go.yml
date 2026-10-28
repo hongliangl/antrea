@@ -237,6 +237,8 @@ jobs:
       run: make test-tidy
     - name: Check code generation
       run: ./ci/check-codegen.sh
+    - name: Check BPF code generation
+      run: ./ci/check-bpf-objects.sh
     - name: Check manifest
       run: ./ci/check-manifest.sh
     - name: Check copyright

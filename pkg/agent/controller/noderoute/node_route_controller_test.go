@@ -117,7 +117,7 @@ func newController(t testing.TB, networkConfig *config.NetworkConfig, objects ..
 	ipsecCertificateManager := &fakeIPsecCertificateManager{}
 	ovsCtlClient := ovsctltest.NewMockOVSCtlClient(ctrl)
 	wireguardClient := wgtest.NewMockInterface(ctrl)
-	c := NewNodeRouteController(informerFactory.Core().V1().Nodes(), ofClient, ovsCtlClient, ovsClient, routeClient, interfaceStore, networkConfig, nodeConfig, wireguardClient, ipsecCertificateManager, utilwait.NewGroup())
+	c := NewNodeRouteController(informerFactory.Core().V1().Nodes(), ofClient, ovsCtlClient, ovsClient, routeClient, nil, interfaceStore, networkConfig, nodeConfig, wireguardClient, ipsecCertificateManager, utilwait.NewGroup())
 	require.Equal(t, 24, c.maskSizeV4)
 	require.Equal(t, 48, c.maskSizeV6)
 	// Check that the podSubnets set already includes local PodCIDRs.
