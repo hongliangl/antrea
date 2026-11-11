@@ -21,8 +21,6 @@
 #define IP_TTL_OFF         (ETH_HLEN + 8)  // IPv4 TTL offset from the Ethernet header start.
 #define IP_CHECK_OFF       (ETH_HLEN + 10) // IPv4 checksum offset from the Ethernet header start.
 #define IPV6_HOP_LIMIT_OFF (ETH_HLEN + 7)  // IPv6 Hop Limit offset from the Ethernet header start.
-#define IPV4_FRAGMENT_MASK 0x3fff          // More-fragments flag and fragment offset.
-#define FLOW_CACHE_SIZE    65536           // Maximum directional entries per address family.
 
 // stats indices shared with the Go client.
 #define STAT_FWD         0 // Redirect requested toward a peer Node.
@@ -33,25 +31,25 @@
 #define STAT_TTL_EXPIRED 5 // TTL/Hop Limit exhausted, or IPv4 TTL/checksum update failed.
 #define STAT_TOO_BIG     6 // Packet needs MTU handling by the host stack.
 
-// Kernel helper IDs, declared locally to avoid a libbpf dependency.
-static void *(*bpf_map_lookup_elem)(void *map, const void *key) = (void *)1;
+enum forwarding_target {
+	FORWARD_TO_REMOTE_NODE, // Look up the peer Node in the route map.
+	FORWARD_TO_LOCAL_POD,   // Use the packet destination as the next hop.
+};
 
-static long (*bpf_map_update_elem)(void *map,
-                                   const void *key,
-                                   const void *value,
-                                   __u64 flags) = (void *)BPF_FUNC_map_update_elem;
+// Kernel helper IDs, declared locally to avoid a libbpf dependency.
+static void *(*bpf_map_lookup_elem)(void *map, const void *key) = (void *)BPF_FUNC_map_lookup_elem;
 
 static long (*bpf_skb_store_bytes)(struct __sk_buff *skb,
                                    __u32 offset,
                                    const void *from,
                                    __u32 len,
-                                   __u64 flags) = (void *)9;
+                                   __u64 flags) = (void *)BPF_FUNC_skb_store_bytes;
 
 static long (*bpf_l3_csum_replace)(struct __sk_buff *skb,
                                    __u32 offset,
                                    __u64 from,
                                    __u64 to,
-                                   __u64 size) = (void *)10;
+                                   __u64 size) = (void *)BPF_FUNC_l3_csum_replace;
 
 static long (*bpf_redirect_neigh)(__u32 ifindex,
                                   struct bpf_redir_neigh *params,
@@ -61,7 +59,7 @@ static long (*bpf_redirect_neigh)(__u32 ifindex,
 static long (*bpf_fib_lookup)(void *ctx,
                               struct bpf_fib_lookup *params,
                               int plen,
-                              __u32 flags) = (void *)69;
+                              __u32 flags) = (void *)BPF_FUNC_fib_lookup;
 
 static long (*bpf_check_mtu)(void *ctx,
                              __u32 ifindex,
@@ -95,55 +93,6 @@ struct bpf_map_def pod_routes = {
 	.map_flags = BPF_F_NO_PREALLOC,
 };
 
-// Keys follow packet direction; addresses and ports stay in network byte order.
-struct flow_key4 {
-	__be32 saddr;
-	__be32 daddr;
-	__be16 sport;
-	__be16 dport;
-	__u8 protocol;
-	__u8 padding[3];
-};
-
-struct flow_entry4 {
-	__u32 ifindex;
-	__be32 next_hop;
-	__u32 route_generation;
-};
-
-__attribute__((section(".bpf_maps"), used))
-struct bpf_map_def flow_cache4 = {
-	.type = BPF_MAP_TYPE_LRU_HASH,
-	.key_size = sizeof(struct flow_key4),
-	.value_size = sizeof(struct flow_entry4),
-	.max_entries = FLOW_CACHE_SIZE,
-	.map_flags = 0,
-};
-
-struct flow_key6 {
-	struct in6_addr saddr;
-	struct in6_addr daddr;
-	__be16 sport;
-	__be16 dport;
-	__u8 protocol;
-	__u8 padding[3];
-};
-
-struct flow_entry6 {
-	__u32 ifindex;
-	struct in6_addr next_hop;
-	__u32 route_generation;
-};
-
-__attribute__((section(".bpf_maps"), used))
-struct bpf_map_def flow_cache6 = {
-	.type = BPF_MAP_TYPE_LRU_HASH,
-	.key_size = sizeof(struct flow_key6),
-	.value_size = sizeof(struct flow_entry6),
-	.max_entries = FLOW_CACHE_SIZE,
-	.map_flags = 0,
-};
-
 // Address fields use network byte order; other fields use host byte order.
 struct ip_config4 {
 	__u32 prefixlen;
@@ -164,8 +113,6 @@ struct node_config {
 	__u32 forwarding_enabled;
 	struct ip_config4 ipv4;
 	struct ip_config6 ipv6;
-	__u32 transport_ifindex;
-	__u32 route_generation;
 };
 
 // Node configuration, refreshed when interfaces change.
@@ -331,98 +278,49 @@ static inline int check_mtu(struct __sk_buff *skb, __u32 ifindex, __u32 egress_m
 	return bpf_check_mtu(skb, ifindex, &mtu, 0, BPF_MTU_CHK_SEGS);
 }
 
-// Fragmented packets keep the uncached path because later fragments have no transport ports.
-__attribute__((always_inline))
-static inline int flow_key4_of(struct __sk_buff *skb,
-                               const struct iphdr *ip,
-                               struct flow_key4 *key) {
-	if (ip->frag_off & __builtin_bswap16(IPV4_FRAGMENT_MASK)) {
-		return 0;
-	}
-
-	const __be16 *ports = (const void *)(ip + 1);
-	void *data_end = (void *)(long)skb->data_end;
-	if ((const void *)(ports + 2) > data_end) {
-		return 0;
-	}
-
-	key->saddr = ip->saddr;
-	key->daddr = ip->daddr;
-	key->sport = ports[0];
-	key->dport = ports[1];
-	key->protocol = ip->protocol;
-	return 1;
-}
-
-// Cache only the routing result; the kernel supplies Ethernet addresses on every redirect.
+// Resolve each packet through the FIB; the kernel supplies Ethernet addresses on redirect.
 __attribute__((always_inline))
 static inline int redirect_via(struct __sk_buff *skb,
                                struct iphdr *ip,
-                               const struct node_config *config,
-                               int to_local_pod,
+                               enum forwarding_target target,
                                __u32 egress_mtu,
                                __u32 miss_stat) {
-	// Capture the generation before route lookup so an in-flight fill cannot revive an old route.
-	__u32 generation = config->route_generation;
-	struct flow_key4 key = {};
-	struct flow_entry4 entry = {};
-	int cacheable = flow_key4_of(skb, ip, &key);
-	struct flow_entry4 *cached = 0;
-	if (cacheable) {
-		cached = bpf_map_lookup_elem(&flow_cache4, &key);
-	}
-
-	if (cached != 0 && cached->route_generation == generation) {
-		entry = *cached;
+	__u32 next_hop;
+	if (target == FORWARD_TO_LOCAL_POD) {
+		if (!is_remote_pod_ip(ip->saddr)) {
+			increment_stat(STAT_PASS);
+			return TC_ACT_OK;
+		}
+		next_hop = ip->daddr;
 	} else {
-		__u32 next_hop;
-		__u32 output_ifindex;
-		if (to_local_pod) {
-			if (!is_remote_pod_ip(ip->saddr)) {
-				increment_stat(STAT_PASS);
-				return TC_ACT_OK;
-			}
-			next_hop = ip->daddr;
-			output_ifindex = config->gateway_ifindex;
-		} else {
-			next_hop = next_hop_of(ip->daddr);
-			if (next_hop == 0) {
-				increment_stat(STAT_PASS);
-				return TC_ACT_OK;
-			}
-			output_ifindex = config->transport_ifindex;
-		}
-
-		struct bpf_fib_lookup fib = {};
-		fib.family = AF_INET;
-		fib.ipv4_dst = next_hop;
-		fib.ifindex = skb->ifindex;
-
-		int fib_ret = bpf_fib_lookup(skb,
-		                            &fib,
-		                            sizeof(fib),
-		                            BPF_FIB_LOOKUP_DIRECT | BPF_FIB_LOOKUP_SKIP_NEIGH);
-		switch (fib_ret) {
-		case BPF_FIB_LKUP_RET_SUCCESS:
-			break;
-		case BPF_FIB_LKUP_RET_FRAG_NEEDED:
-			increment_stat(STAT_TOO_BIG);
+		next_hop = next_hop_of(ip->daddr);
+		if (next_hop == 0) {
+			increment_stat(STAT_PASS);
 			return TC_ACT_OK;
-		default:
-			increment_stat(miss_stat);
-			return TC_ACT_OK;
-		}
-
-		entry.ifindex = fib.ifindex;
-		entry.next_hop = fib.ipv4_dst;
-		entry.route_generation = generation;
-		// MTUs are fixed for the gateway and transport interfaces; other outputs stay uncached.
-		if (cacheable && entry.ifindex == output_ifindex) {
-			bpf_map_update_elem(&flow_cache4, &key, &entry, BPF_ANY);
 		}
 	}
 
-	if (check_mtu(skb, entry.ifindex, egress_mtu) != BPF_MTU_CHK_RET_SUCCESS) {
+	struct bpf_fib_lookup fib = {};
+	fib.family = AF_INET;
+	fib.ipv4_dst = next_hop;
+	fib.ifindex = skb->ifindex;
+
+	int fib_ret = bpf_fib_lookup(skb,
+	                            &fib,
+	                            sizeof(fib),
+	                            BPF_FIB_LOOKUP_DIRECT | BPF_FIB_LOOKUP_SKIP_NEIGH);
+	switch (fib_ret) {
+	case BPF_FIB_LKUP_RET_SUCCESS:
+		break;
+	case BPF_FIB_LKUP_RET_FRAG_NEEDED:
+		increment_stat(STAT_TOO_BIG);
+		return TC_ACT_OK;
+	default:
+		increment_stat(miss_stat);
+		return TC_ACT_OK;
+	}
+
+	if (check_mtu(skb, fib.ifindex, egress_mtu) != BPF_MTU_CHK_RET_SUCCESS) {
 		increment_stat(STAT_TOO_BIG);
 		return TC_ACT_OK;
 	}
@@ -434,8 +332,8 @@ static inline int redirect_via(struct __sk_buff *skb,
 
 	struct bpf_redir_neigh neighbor = {};
 	neighbor.nh_family = AF_INET;
-	neighbor.ipv4_nh = entry.next_hop;
-	int ret = bpf_redirect_neigh(entry.ifindex, &neighbor, sizeof(neighbor), 0);
+	neighbor.ipv4_nh = fib.ipv4_dst;
+	int ret = bpf_redirect_neigh(fib.ifindex, &neighbor, sizeof(neighbor), 0);
 	if (ret != TC_ACT_REDIRECT) {
 		increment_stat(miss_stat);
 	}
@@ -458,8 +356,7 @@ static inline int forward_ipv4(struct __sk_buff *skb, struct iphdr *ip) {
 
 	int ret = redirect_via(skb,
 	                       ip,
-	                       config,
-	                       0,
+	                       FORWARD_TO_REMOTE_NODE,
 	                       config->transport_mtu,
 	                       STAT_FWD_MISS);
 	if (ret == TC_ACT_REDIRECT) {
@@ -486,8 +383,7 @@ static inline int return_ipv4(struct __sk_buff *skb, struct iphdr *ip) {
 
 	int ret = redirect_via(skb,
 	                       ip,
-	                       config,
-	                       1,
+	                       FORWARD_TO_LOCAL_POD,
 	                       config->gateway_mtu,
 	                       STAT_RETURN_MISS);
 	if (ret == TC_ACT_REDIRECT) {
@@ -580,92 +476,50 @@ static inline int is_remote_pod_ipv6(const struct in6_addr *addr) {
 	return bpf_map_lookup_elem(&pod_routes6, &key) != 0;
 }
 
-__attribute__((always_inline))
-static inline int flow_key6_of(struct __sk_buff *skb,
-                               const struct ipv6hdr *ip,
-                               struct flow_key6 *key) {
-	const __be16 *ports = (const void *)(ip + 1);
-	void *data_end = (void *)(long)skb->data_end;
-	if ((const void *)(ports + 2) > data_end) {
-		return 0;
-	}
-
-	key->saddr = ip->saddr;
-	key->daddr = ip->daddr;
-	key->sport = ports[0];
-	key->dport = ports[1];
-	key->protocol = ip->nexthdr;
-	return 1;
-}
-
 // IPv6 counterpart of redirect_via; Hop Limit changes require no header checksum update.
 __attribute__((always_inline))
 static inline int redirect_via6(struct __sk_buff *skb,
                                 struct ipv6hdr *ip,
-                                const struct node_config *config,
-                                int to_local_pod,
+                                enum forwarding_target target,
                                 __u32 egress_mtu,
                                 __u32 miss_stat) {
-	__u32 generation = config->route_generation;
-	struct flow_key6 key = {};
-	struct flow_entry6 entry = {};
-	int cacheable = flow_key6_of(skb, ip, &key);
-	struct flow_entry6 *cached = 0;
-	if (cacheable) {
-		cached = bpf_map_lookup_elem(&flow_cache6, &key);
-	}
-
-	if (cached != 0 && cached->route_generation == generation) {
-		entry = *cached;
+	const struct in6_addr *next_hop;
+	if (target == FORWARD_TO_LOCAL_POD) {
+		if (!is_remote_pod_ipv6(&ip->saddr)) {
+			increment_stat(STAT_PASS);
+			return TC_ACT_OK;
+		}
+		next_hop = &ip->daddr;
 	} else {
-		const struct in6_addr *next_hop;
-		__u32 output_ifindex;
-		if (to_local_pod) {
-			if (!is_remote_pod_ipv6(&ip->saddr)) {
-				increment_stat(STAT_PASS);
-				return TC_ACT_OK;
-			}
-			next_hop = &ip->daddr;
-			output_ifindex = config->gateway_ifindex;
-		} else {
-			next_hop = next_hop6_of(&ip->daddr);
-			if (next_hop == 0) {
-				increment_stat(STAT_PASS);
-				return TC_ACT_OK;
-			}
-			output_ifindex = config->transport_ifindex;
-		}
-
-		struct bpf_fib_lookup fib = {};
-		fib.family = AF_INET6;
-		fib.ifindex = skb->ifindex;
-		__builtin_memcpy(fib.ipv6_dst, next_hop, sizeof(fib.ipv6_dst));
-		__builtin_memcpy(fib.ipv6_src, &ip->saddr, sizeof(fib.ipv6_src));
-
-		int fib_ret = bpf_fib_lookup(skb,
-		                            &fib,
-		                            sizeof(fib),
-		                            BPF_FIB_LOOKUP_DIRECT | BPF_FIB_LOOKUP_SKIP_NEIGH);
-		switch (fib_ret) {
-		case BPF_FIB_LKUP_RET_SUCCESS:
-			break;
-		case BPF_FIB_LKUP_RET_FRAG_NEEDED:
-			increment_stat(STAT_TOO_BIG);
+		next_hop = next_hop6_of(&ip->daddr);
+		if (next_hop == 0) {
+			increment_stat(STAT_PASS);
 			return TC_ACT_OK;
-		default:
-			increment_stat(miss_stat);
-			return TC_ACT_OK;
-		}
-
-		entry.ifindex = fib.ifindex;
-		__builtin_memcpy(&entry.next_hop, fib.ipv6_dst, sizeof(entry.next_hop));
-		entry.route_generation = generation;
-		if (cacheable && entry.ifindex == output_ifindex) {
-			bpf_map_update_elem(&flow_cache6, &key, &entry, BPF_ANY);
 		}
 	}
 
-	if (check_mtu(skb, entry.ifindex, egress_mtu) != BPF_MTU_CHK_RET_SUCCESS) {
+	struct bpf_fib_lookup fib = {};
+	fib.family = AF_INET6;
+	fib.ifindex = skb->ifindex;
+	__builtin_memcpy(fib.ipv6_dst, next_hop, sizeof(fib.ipv6_dst));
+	__builtin_memcpy(fib.ipv6_src, &ip->saddr, sizeof(fib.ipv6_src));
+
+	int fib_ret = bpf_fib_lookup(skb,
+	                            &fib,
+	                            sizeof(fib),
+	                            BPF_FIB_LOOKUP_DIRECT | BPF_FIB_LOOKUP_SKIP_NEIGH);
+	switch (fib_ret) {
+	case BPF_FIB_LKUP_RET_SUCCESS:
+		break;
+	case BPF_FIB_LKUP_RET_FRAG_NEEDED:
+		increment_stat(STAT_TOO_BIG);
+		return TC_ACT_OK;
+	default:
+		increment_stat(miss_stat);
+		return TC_ACT_OK;
+	}
+
+	if (check_mtu(skb, fib.ifindex, egress_mtu) != BPF_MTU_CHK_RET_SUCCESS) {
 		increment_stat(STAT_TOO_BIG);
 		return TC_ACT_OK;
 	}
@@ -683,8 +537,8 @@ static inline int redirect_via6(struct __sk_buff *skb,
 
 	struct bpf_redir_neigh neighbor = {};
 	neighbor.nh_family = AF_INET6;
-	__builtin_memcpy(neighbor.ipv6_nh, &entry.next_hop, sizeof(neighbor.ipv6_nh));
-	int ret = bpf_redirect_neigh(entry.ifindex, &neighbor, sizeof(neighbor), 0);
+	__builtin_memcpy(neighbor.ipv6_nh, fib.ipv6_dst, sizeof(neighbor.ipv6_nh));
+	int ret = bpf_redirect_neigh(fib.ifindex, &neighbor, sizeof(neighbor), 0);
 	if (ret != TC_ACT_REDIRECT) {
 		increment_stat(miss_stat);
 	}
@@ -707,8 +561,7 @@ static inline int forward_ipv6(struct __sk_buff *skb, struct ipv6hdr *ip) {
 
 	int ret = redirect_via6(skb,
 	                        ip,
-	                        config,
-	                        0,
+	                        FORWARD_TO_REMOTE_NODE,
 	                        config->transport_mtu,
 	                        STAT_FWD_MISS);
 	if (ret == TC_ACT_REDIRECT) {
@@ -735,8 +588,7 @@ static inline int return_ipv6(struct __sk_buff *skb, struct ipv6hdr *ip) {
 
 	int ret = redirect_via6(skb,
 	                        ip,
-	                        config,
-	                        1,
+	                        FORWARD_TO_LOCAL_POD,
 	                        config->gateway_mtu,
 	                        STAT_RETURN_MISS);
 	if (ret == TC_ACT_REDIRECT) {

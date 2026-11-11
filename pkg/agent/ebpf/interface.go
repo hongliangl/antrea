@@ -21,10 +21,9 @@
 // masquerade of the traffic leaving the cluster, Egress, Service handling and the Node network policies stay
 // where they are, in iptables and in the OVS pipeline.
 //
-// Kernel routes remain installed for unsupported packets and failed route lookups. The programs cache
-// directional five-tuples and use bpf_redirect_neigh to obtain Ethernet addresses from the kernel neighbor
-// subsystem. The Agent registers managed neighbors for resolution and refresh, and invalidates cached
-// routing results when peer routes change.
+// Kernel routes remain installed for unsupported packets and failed route lookups. The programs use
+// bpf_redirect_neigh to obtain Ethernet addresses from the kernel neighbor subsystem. The Agent
+// registers managed neighbors for resolution and refresh.
 //
 // The programs live in bpf/host_datapath.bpf.c. hack/gen-bpf-objects extracts their compiled instructions
 // into internal/objects, so the Agent needs neither a compiler nor an ELF loader at runtime.

@@ -96,8 +96,6 @@ type nodeConfig struct {
 	forwardingEnabled uint32
 	ipv4              ipConfig4
 	ipv6              ipConfig6
-	transportIfIndex  uint32
-	routeGeneration   uint32
 }
 
 // storedInterfaceState records the initial attachment target and its availability.
@@ -222,10 +220,9 @@ func (c *client) Initialize(agentNodeConfig *agentconfig.NodeConfig) error {
 	}
 
 	config := nodeConfig{
-		transportMTU:     uint32(transport.MTU),
-		gatewayMTU:       uint32(gateway.MTU),
-		gatewayIfIndex:   uint32(gateway.Index),
-		transportIfIndex: uint32(transport.Index),
+		transportMTU:   uint32(transport.MTU),
+		gatewayMTU:     uint32(gateway.MTU),
+		gatewayIfIndex: uint32(gateway.Index),
 	}
 	if agentNodeConfig.PodIPv4CIDR != nil {
 		ones, _ := agentNodeConfig.PodIPv4CIDR.Mask.Size()
@@ -448,9 +445,6 @@ func (c *client) AddPodRoute(podCIDR *net.IPNet, nextHop net.IP) error {
 	if !c.initialized {
 		return nil
 	}
-	if c.nextHops[podCIDR.String()].Equal(nextHop) {
-		return nil
-	}
 
 	mapName := getMapPodRouteName(podCIDR)
 	key := routeKeyOf(podCIDR)
@@ -461,9 +455,6 @@ func (c *client) AddPodRoute(podCIDR *net.IPNet, nextHop net.IP) error {
 		0)
 	if err != nil {
 		return fmt.Errorf("adding the route to %s via %s: %w", podCIDR, nextHop, err)
-	}
-	if err = c.invalidateFlowCache(); err != nil {
-		return err
 	}
 
 	c.nextHops[podCIDR.String()] = append(net.IP(nil), nextHop...)
@@ -486,23 +477,10 @@ func (c *client) DeletePodRoute(podCIDR *net.IPNet) error {
 	if err != nil && err != unix.ENOENT {
 		return fmt.Errorf("deleting the route to %s: %w", podCIDR, err)
 	}
-	if err == nil || c.nextHops[podCIDR.String()] != nil {
-		if err = c.invalidateFlowCache(); err != nil {
-			return err
-		}
-	}
 	delete(c.nextHops, podCIDR.String())
 	c.syncNeighbors()
 
 	return nil
-}
-
-// invalidateFlowCache publishes a new generation after the route map has changed.
-// In-flight BPF fills retain the old generation and cannot revive a stale route.
-func (c *client) invalidateFlowCache() error {
-	config := c.nodeConfig
-	config.routeGeneration++
-	return c.writeNodeConfig(config)
 }
 
 func (c *client) Stats() (Stats, error) {

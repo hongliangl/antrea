@@ -34,25 +34,13 @@ Antrea NetworkPolicy. This feature adds no NAT or connection tracking in eBPF.
 
 The Node route controller copies remote Pod CIDRs and peer Node IPs into the
 `pod_routes` and `pod_routes6` BPF maps only when `NeedsDirectRoutingToPeer` is true.
-Peers reached through tunnels are excluded from both maps. The program caches directional
-TCP/UDP five-tuples in `flow_cache4` and `flow_cache6`. Each value holds an output interface,
-the resolved next-hop IP and a route generation. The two directions have separate entries.
+Peers reached through tunnels are excluded from both maps. For each matching packet,
+the program selects the peer Node or local Pod IP, then calls `bpf_fib_lookup` to
+resolve the output interface and actual next hop. It skips neighbor lookup.
 
-On a cache miss, the program selects the peer Node or local Pod IP, then calls
-`bpf_fib_lookup` to resolve the output interface and actual next hop. It skips neighbor
-lookup and caches the routing result for the gateway or transport output interface.
-IPv4 fragments use the uncached path because later fragments have no transport ports.
-
-On a cache hit, the program skips the route-map and FIB lookups. It decrements IPv4 TTL
-or IPv6 Hop Limit, updates the IPv4 header checksum, then calls `bpf_redirect_neigh`
-with the cached interface and next hop. The kernel supplies Ethernet addresses from its
-neighbor subsystem and sends the packet. The miss path uses the same redirect helper.
-
-After a route-map change, the Antrea Agent advances the route generation. Older cache
-entries are ignored and relearned. BPF captures the generation before route lookup, so
-an in-flight fill cannot revive a route from an earlier generation. Repeated updates of
-an unchanged route preserve the cache. The cache uses LRU eviction without periodic
-expiration; it contains disposable forwarding results, not TCP connection or NAT state.
+The program decrements IPv4 TTL or IPv6 Hop Limit, updates the IPv4 header checksum,
+then calls `bpf_redirect_neigh` with the resolved interface and next hop. The kernel
+supplies Ethernet addresses from its neighbor subsystem and sends the packet.
 
 Pod addresses are identified by Pod CIDRs. The local gateway IP is excluded so that
 Node-originated traffic keeps using the host stack. Loading fails if the Node's own
@@ -81,8 +69,8 @@ netfilter `FORWARD` hook, so iptables/nftables rules at that hook do not apply t
 ## Neighbor refresh
 
 `bpf_redirect_neigh` uses the kernel neighbor subsystem for Ethernet addresses,
-neighbor probing and unresolved-packet queuing. Flow-cache entries do not contain MAC
-addresses, so a neighbor update does not require rewriting cached flows.
+neighbor probing and unresolved-packet queuing. The programs do not cache MAC
+addresses, so neighbor updates take effect through the kernel.
 
 The Antrea Agent registers peer Node IPs on the transport interface and local Pod IPs on
 `antrea-gw0` with `NTF_EXT_MANAGED` and `NTF_EXT_LEARNED`. The kernel then resolves
@@ -168,8 +156,6 @@ the packet rather than returning a packet with an already modified TTL to the st
 Each route map holds up to 1024 CIDR entries. IPv4 and IPv6 use separate maps;
 both families share one Node configuration structure and one set of counters. Route keys store IP bytes in
 network order for longest-prefix matching.
-Each flow cache holds up to 65536 directional entries. Cache insertion failure leaves
-the resolved packet's forwarding behavior unchanged.
 
 ## Limitations
 
@@ -177,8 +163,6 @@ the resolved packet's forwarding behavior unchanged.
   source IP (for example, noEncap with `noSNAT: true`) are not supported. Backend
   replies can bypass host reverse NAT and break the connection, for both IPv4 and IPv6.
 - Interface replacement or MTU changes require restarting the Antrea Agent.
-- Flow-cache invalidation follows Antrea-managed route changes. Independent changes to
-  kernel routes are not monitored for cache invalidation.
 - CNI Pod updates trigger registration or release after updating the interface store;
   the periodic check repairs any missed updates.
 - Neighbor flag ownership is tracked only in memory. An Antrea Agent crash can leave managed
