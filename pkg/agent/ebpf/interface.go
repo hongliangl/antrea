@@ -21,10 +21,10 @@
 // masquerade of the traffic leaving the cluster, Egress, Service handling and the Node network policies stay
 // where they are, in iptables and in the OVS pipeline.
 //
-// Those routes are still installed while this runs. This datapath comes before them and, whenever it cannot
-// handle a packet, leaves it to them, so a Node keeps forwarding exactly what it forwards without it. That is
-// what lets it fall back when a next hop is unresolved. The Agent registers managed neighbors so the kernel
-// resolves and refreshes them even when packets bypass the host stack.
+// Kernel routes remain installed for unsupported packets and failed route lookups. The programs cache
+// directional five-tuples and use bpf_redirect_neigh to obtain Ethernet addresses from the kernel neighbor
+// subsystem. The Agent registers managed neighbors for resolution and refresh, and invalidates cached
+// routing results when peer routes change.
 //
 // The programs live in bpf/host_datapath.bpf.c. hack/gen-bpf-objects extracts their compiled instructions
 // into internal/objects, so the Agent needs neither a compiler nor an ELF loader at runtime.
@@ -41,14 +41,12 @@ type interfaceStore interface {
 	GetContainerIPs() []net.IP
 }
 
-// Stats counts what the programs did, per packet. A miss or a pass is a packet the host network stack handled
-// instead, not a packet which was lost.
+// Stats counts packet processing outcomes. Redirect counters record attempts, not confirmed delivery.
 type Stats struct {
-	// Forwarded and Returned count the packets sent to a peer Node and to a local Pod.
+	// Forwarded and Returned count redirect requests toward a peer Node and a local Pod.
 	Forwarded uint64
 	Returned  uint64
-	// ForwardMisses and ReturnMisses count the packets which were meant to be forwarded but were left to
-	// the stack, for example because the neighbor was not resolved yet.
+	// ForwardMisses and ReturnMisses count lookup, packet rewrite and redirect-helper failures.
 	ForwardMisses uint64
 	ReturnMisses  uint64
 	// Passed counts the packets which are not cross-Node Pod packets.

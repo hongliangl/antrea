@@ -34,14 +34,25 @@ Antrea NetworkPolicy. This feature adds no NAT or connection tracking in eBPF.
 
 The Node route controller copies remote Pod CIDRs and peer Node IPs into the
 `pod_routes` and `pod_routes6` BPF maps only when `NeedsDirectRoutingToPeer` is true.
-Peers reached through tunnels are excluded from both maps. For each matching packet,
-the program:
+Peers reached through tunnels are excluded from both maps. The program caches directional
+TCP/UDP five-tuples in `flow_cache4` and `flow_cache6`. Each value holds an output interface,
+the resolved next-hop IP and a route generation. The two directions have separate entries.
 
-1. Finds the peer Node IP in the route map, or selects the local Pod IP for inbound traffic.
-2. Calls `bpf_fib_lookup` to get the output interface and MAC addresses from the kernel's
-   routing and neighbor tables.
-3. Decrements IPv4 TTL or IPv6 Hop Limit, updates the IPv4 header checksum, rewrites the
-   Ethernet addresses and redirects the packet.
+On a cache miss, the program selects the peer Node or local Pod IP, then calls
+`bpf_fib_lookup` to resolve the output interface and actual next hop. It skips neighbor
+lookup and caches the routing result for the gateway or transport output interface.
+IPv4 fragments use the uncached path because later fragments have no transport ports.
+
+On a cache hit, the program skips the route-map and FIB lookups. It decrements IPv4 TTL
+or IPv6 Hop Limit, updates the IPv4 header checksum, then calls `bpf_redirect_neigh`
+with the cached interface and next hop. The kernel supplies Ethernet addresses from its
+neighbor subsystem and sends the packet. The miss path uses the same redirect helper.
+
+After a route-map change, the Antrea Agent advances the route generation. Older cache
+entries are ignored and relearned. BPF captures the generation before route lookup, so
+an in-flight fill cannot revive a route from an earlier generation. Repeated updates of
+an unchanged route preserve the cache. The cache uses LRU eviction without periodic
+expiration; it contains disposable forwarding results, not TCP connection or NAT state.
 
 Pod addresses are identified by Pod CIDRs. The local gateway IP is excluded so that
 Node-originated traffic keeps using the host stack. Loading fails if the Node's own
@@ -54,12 +65,14 @@ to let the host stack handle traffic it cannot accelerate, including:
 
 - ICMP, ICMPv6, SCTP and other protocols outside TCP/UDP.
 - IPv4 options, IPv6 extension headers, IPv6 fragments and IPv6 jumbograms.
-- Missing route-map entries or unresolved neighbors.
+- Missing route-map entries or failed FIB lookups.
 - Expired TTL or Hop Limit, and packets that need kernel MTU handling.
 
 GRO aggregates can be redirected while preserving their segmentation metadata.
-Ordinary oversized packets fall back to the stack. Aggregates also fall back when
-the outgoing MTU is smaller than the incoming MTU, or the incoming MTU is unknown.
+When an skb exceeds the output MTU, `bpf_check_mtu` with `BPF_MTU_CHK_SEGS` checks
+its segment lengths against the output interface. Aggregates whose segments fit
+continue through eBPF even when the input interface has a larger MTU. Ordinary
+oversized packets and aggregates with oversized segments fall back to the stack.
 
 Failure to load the programs is logged; the Antrea Agent continues using the host stack.
 Accelerated packets are redirected at TC ingress before reaching the host's
@@ -67,9 +80,9 @@ netfilter `FORWARD` hook, so iptables/nftables rules at that hook do not apply t
 
 ## Neighbor refresh
 
-A successful `bpf_fib_lookup` can return a cached MAC even when the neighbor is
-`STALE`. Redirecting traffic does not trigger normal kernel neighbor probing, so
-lookup failures alone cannot keep MAC addresses fresh.
+`bpf_redirect_neigh` uses the kernel neighbor subsystem for Ethernet addresses,
+neighbor probing and unresolved-packet queuing. Flow-cache entries do not contain MAC
+addresses, so a neighbor update does not require rewriting cached flows.
 
 The Antrea Agent registers peer Node IPs on the transport interface and local Pod IPs on
 `antrea-gw0` with `NTF_EXT_MANAGED` and `NTF_EXT_LEARNED`. The kernel then resolves
@@ -141,18 +154,22 @@ Missing or replaced interfaces are logged as errors. Interface indices and MTUs 
 
 - `host_dp_forwarded`: redirect requested toward a peer Node.
 - `host_dp_returned`: redirect requested toward OVS through `antrea-gw0`.
-- `host_dp_forward_miss`: outbound lookup or packet rewrite failed; traffic falls back to the host stack.
-- `host_dp_return_miss`: inbound lookup or packet rewrite failed; traffic falls back to the host stack.
+- `host_dp_forward_miss`: outbound lookup, packet rewrite or redirect-helper failure.
+- `host_dp_return_miss`: inbound lookup, packet rewrite or redirect-helper failure.
 - `host_dp_passed`: packet is outside the acceleration scope.
 - `host_dp_ttl_expired`: TTL or Hop Limit exhausted, or the IPv4 TTL/checksum update failed.
 - `host_dp_too_big`: packet falls back to the host stack for MTU handling.
 
 Redirect counters record attempts, not confirmed delivery. Miss counters do not
-distinguish lookup failures from packet rewrite failures.
+distinguish lookup failures, packet rewrite failures and redirect-helper rejection.
+Lookup and rewrite failures return to the host stack; a redirect-helper rejection drops
+the packet rather than returning a packet with an already modified TTL to the stack.
 
 Each route map holds up to 1024 CIDR entries. IPv4 and IPv6 use separate maps;
 both families share one Node configuration structure and one set of counters. Route keys store IP bytes in
 network order for longest-prefix matching.
+Each flow cache holds up to 65536 directional entries. Cache insertion failure leaves
+the resolved packet's forwarding behavior unchanged.
 
 ## Limitations
 
@@ -160,6 +177,8 @@ network order for longest-prefix matching.
   source IP (for example, noEncap with `noSNAT: true`) are not supported. Backend
   replies can bypass host reverse NAT and break the connection, for both IPv4 and IPv6.
 - Interface replacement or MTU changes require restarting the Antrea Agent.
+- Flow-cache invalidation follows Antrea-managed route changes. Independent changes to
+  kernel routes are not monitored for cache invalidation.
 - CNI Pod updates trigger registration or release after updating the interface store;
   the periodic check repairs any missed updates.
 - Neighbor flag ownership is tracked only in memory. An Antrea Agent crash can leave managed
