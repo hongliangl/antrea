@@ -61,6 +61,7 @@ func Test_getGatesResponse(t *testing.T) {
 				{Component: "agent", Name: "AntreaProxy", Status: "Enabled", Version: "GA"},
 				{Component: "agent", Name: "BGPPolicy", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent", Name: "CleanupStaleUDPSvcConntrack", Status: cleanupStaleUDPSvcConntrackStatus, Version: "BETA"},
+				{Component: "agent", Name: "EBPFHostDataPath", Status: "Disabled", Version: "ALPHA"},
 				{Component: "agent", Name: "Egress", Status: egressStatus, Version: "BETA"},
 				{Component: "agent", Name: "EgressSeparateSubnet", Status: egressSeparateSubnetStatus, Version: "BETA"},
 				{Component: "agent", Name: "EgressTrafficShaping", Status: "Disabled", Version: "ALPHA"},
@@ -92,7 +93,7 @@ func Test_getGatesResponse(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := getFeatureGatesResponse(tt.cfg, AgentMode)
-			assert.Equal(t, got, tt.want, "The feature gates for Antrea agent are not correct")
+			assert.Equal(t, tt.want, got, "The feature gates for Antrea agent are not correct")
 		})
 	}
 }

@@ -49,6 +49,8 @@ import (
 	"antrea.io/antrea/v2/pkg/agent/controller/serviceexternalip"
 	"antrea.io/antrea/v2/pkg/agent/controller/traceflow"
 	"antrea.io/antrea/v2/pkg/agent/controller/trafficcontrol"
+	"antrea.io/antrea/v2/pkg/agent/ebpf"
+	ebpfmetrics "antrea.io/antrea/v2/pkg/agent/ebpf/metrics"
 	"antrea.io/antrea/v2/pkg/agent/externalnode"
 	"antrea.io/antrea/v2/pkg/agent/flowexporter"
 	flowexporteroptions "antrea.io/antrea/v2/pkg/agent/flowexporter/options"
@@ -299,6 +301,20 @@ func run(o *Options) error {
 	// Create an ifaceStore that caches network interfaces managed by this node.
 	ifaceStore := interfacestore.NewInterfaceStore()
 
+	// podUpdateChannel notifies components after CNIServer updates local Pod interfaces.
+	var podUpdateChannel *channel.SubscribableChannel
+	if o.nodeType == config.K8sNode {
+		podUpdateChannel = channel.NewSubscribableChannel("PodUpdate", 100)
+	}
+
+	var ebpfClient ebpf.Interface
+	if features.DefaultFeatureGate.Enabled(features.EBPFHostDataPath) &&
+		o.nodeType == config.K8sNode &&
+		(networkConfig.TrafficEncapMode == config.TrafficEncapModeNoEncap ||
+			networkConfig.TrafficEncapMode == config.TrafficEncapModeHybrid) {
+		ebpfClient = ebpf.NewClient(networkConfig, ifaceStore, podUpdateChannel)
+	}
+
 	// podNetworkWait is used to wait and notify that preconditions for Pod network are ready.
 	// Processes that are supposed to finish before enabling Pod network should increment the wait group and decrement
 	// it when finished.
@@ -372,6 +388,18 @@ func run(o *Options) error {
 		ipsecCertController = ipseccertificate.NewIPSecCertificateController(k8sClient, ovsBridgeClient, nodeConfig.Name)
 	}
 
+	if ebpfClient != nil {
+		defer ebpfClient.Close()
+
+		err = ebpfClient.Initialize(nodeConfig)
+		if err != nil {
+			klog.ErrorS(err, "Failed to initialize eBPF client")
+			ebpfClient = nil
+		} else if *o.config.EnablePrometheusMetrics {
+			ebpfmetrics.Register(ebpfClient)
+		}
+	}
+
 	var nodeRouteController *noderoute.Controller
 	if o.nodeType == config.K8sNode {
 		nodeRouteController = noderoute.NewNodeRouteController(
@@ -380,6 +408,7 @@ func run(o *Options) error {
 			ovsctl.NewClient(o.config.OVSBridge),
 			ovsBridgeClient,
 			routeClient,
+			ebpfClient,
 			ifaceStore,
 			networkConfig,
 			nodeConfig,
@@ -389,19 +418,13 @@ func run(o *Options) error {
 		)
 	}
 
-	// podUpdateChannel is a channel for receiving Pod updates from CNIServer and
-	// notifying NetworkPolicyController, StretchedNetworkPolicyController and
-	// EgressController to reconcile rules related to the updated Pods.
-	var podUpdateChannel *channel.SubscribableChannel
 	// externalEntityUpdateChannel is a channel for receiving ExternalEntity updates from ExternalNodeController and
 	// notifying NetworkPolicyController to reconcile rules related to the updated ExternalEntities.
 	var externalEntityUpdateChannel *channel.SubscribableChannel
 	// antreaNodeConfigUpdateChannel broadcasts effective AntreaNodeConfig-derived state
 	// (e.g. secondary-network OVS bridge) to subscribers on the agent.
 	var antreaNodeConfigUpdateChannel *channel.SubscribableChannel
-	if o.nodeType == config.K8sNode {
-		podUpdateChannel = channel.NewSubscribableChannel("PodUpdate", 100)
-	} else {
+	if o.nodeType != config.K8sNode {
 		externalEntityUpdateChannel = channel.NewSubscribableChannel("ExternalEntityUpdate", 100)
 	}
 
@@ -850,6 +873,9 @@ func run(o *Options) error {
 		}
 		go cniServer.Run(stopCh)
 		go nodeRouteController.Run(stopCh)
+		if ebpfClient != nil {
+			go ebpfClient.Run(stopCh)
+		}
 	} else {
 		go externalEntityUpdateChannel.Run(stopCh)
 		go localExternalNodeInformer.Run(stopCh)

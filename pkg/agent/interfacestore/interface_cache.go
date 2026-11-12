@@ -16,6 +16,7 @@ package interfacestore
 
 import (
 	"fmt"
+	"net"
 
 	"k8s.io/client-go/tools/cache"
 
@@ -161,6 +162,15 @@ func (c *interfaceCache) GetInterfaceByIP(interfaceIP string) (*InterfaceConfig,
 func (c *interfaceCache) GetContainerInterfaceNum() int {
 	keys, _ := c.cache.IndexKeys(interfaceTypeIndex, ContainerInterface.String())
 	return len(keys)
+}
+
+// GetContainerIPs returns the current IPv4 and IPv6 addresses of container interfaces.
+func (c *interfaceCache) GetContainerIPs() []net.IP {
+	var ips []net.IP
+	for _, iface := range c.GetInterfacesByType(ContainerInterface) {
+		ips = append(ips, iface.IPs...)
+	}
+	return ips
 }
 
 func (c *interfaceCache) GetInterfacesByType(interfaceType InterfaceType) []*InterfaceConfig {
