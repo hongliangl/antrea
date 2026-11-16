@@ -36,6 +36,7 @@ import (
 
 	"antrea.io/antrea/v2/pkg/agent/config"
 	"antrea.io/antrea/v2/pkg/agent/controller/ipseccertificate"
+	"antrea.io/antrea/v2/pkg/agent/ebpf"
 	"antrea.io/antrea/v2/pkg/agent/interfacestore"
 	"antrea.io/antrea/v2/pkg/agent/openflow"
 	"antrea.io/antrea/v2/pkg/agent/route"
@@ -101,6 +102,9 @@ type Controller struct {
 	// eventHandlerRegistration.HasSynced will be used to track whether even handlers have been
 	// called for the initial list.
 	eventHandlerRegistration cache.ResourceEventHandlerRegistration
+	// ebpfClient mirrors directly routed peer Pod CIDRs into eBPF in noEncap and hybrid modes.
+	// Peers reached through tunnels are excluded. It is nil when EBPFHostDataPath is disabled.
+	ebpfClient ebpf.Interface
 }
 
 // NewNodeRouteController instantiates a new Controller object which will process Node events
@@ -111,6 +115,7 @@ func NewNodeRouteController(
 	ovsCtlClient ovsctl.OVSCtlClient,
 	ovsBridgeClient ovsconfig.OVSBridgeClient,
 	routeClient route.Interface,
+	ebpfClient ebpf.Interface,
 	interfaceStore interfacestore.InterfaceStore,
 	networkConfig *config.NetworkConfig,
 	nodeConfig *config.NodeConfig,
@@ -123,6 +128,7 @@ func NewNodeRouteController(
 		ofClient:         client,
 		ovsCtlClient:     ovsCtlClient,
 		routeClient:      routeClient,
+		ebpfClient:       ebpfClient,
 		interfaceStore:   interfaceStore,
 		networkConfig:    networkConfig,
 		nodeConfig:       nodeConfig,
@@ -509,6 +515,13 @@ func (c *Controller) deleteNodeRoute(nodeName string) error {
 		if err := c.routeClient.DeleteRoutes(podCIDR); err != nil {
 			return fmt.Errorf("failed to delete the route to Node %s: %v", nodeName, err)
 		}
+		// Deleting a CIDR which was never added is not an error, so this does not have to repeat the
+		// condition addNodeRoute added it under.
+		if c.ebpfClient != nil {
+			if err := c.ebpfClient.DeletePodRoute(podCIDR); err != nil {
+				return fmt.Errorf("failed to delete the eBPF route to Node %s: %v", nodeName, err)
+			}
+		}
 	}
 	if err := c.ofClient.UninstallNodeFlows(nodeName); err != nil {
 		return fmt.Errorf("failed to uninstall flows to Node %s: %v", nodeName, err)
@@ -667,11 +680,21 @@ func (c *Controller) addNodeRoute(nodeName string, node *corev1.Node) error {
 				return err
 			}
 			peerGatewayIPs.IPv6 = peerGatewayIP
+			if c.ebpfClient != nil && c.networkConfig.NeedsDirectRoutingToPeer(peerNodeIPs.IPv6, c.nodeConfig.NodeTransportIPv6Addr) {
+				if err := c.ebpfClient.AddPodRoute(peerPodCIDR, peerNodeIPs.IPv6); err != nil {
+					return err
+				}
+			}
 		} else {
 			if err := c.routeClient.AddRoutes(peerPodCIDR, nodeName, peerNodeIPs.IPv4, peerGatewayIP); err != nil {
 				return err
 			}
 			peerGatewayIPs.IPv4 = peerGatewayIP
+			if c.ebpfClient != nil && c.networkConfig.NeedsDirectRoutingToPeer(peerNodeIPs.IPv4, c.nodeConfig.NodeTransportIPv4Addr) {
+				if err := c.ebpfClient.AddPodRoute(peerPodCIDR, peerNodeIPs.IPv4); err != nil {
+					return err
+				}
+			}
 		}
 	}
 

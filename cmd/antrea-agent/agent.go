@@ -49,6 +49,8 @@ import (
 	"antrea.io/antrea/v2/pkg/agent/controller/serviceexternalip"
 	"antrea.io/antrea/v2/pkg/agent/controller/traceflow"
 	"antrea.io/antrea/v2/pkg/agent/controller/trafficcontrol"
+	"antrea.io/antrea/v2/pkg/agent/ebpf"
+	ebpfmetrics "antrea.io/antrea/v2/pkg/agent/ebpf/metrics"
 	"antrea.io/antrea/v2/pkg/agent/externalnode"
 	"antrea.io/antrea/v2/pkg/agent/flowexporter"
 	flowexporteroptions "antrea.io/antrea/v2/pkg/agent/flowexporter/options"
@@ -299,6 +301,14 @@ func run(o *Options) error {
 	// Create an ifaceStore that caches network interfaces managed by this node.
 	ifaceStore := interfacestore.NewInterfaceStore()
 
+	var ebpfClient ebpf.Interface
+	if features.DefaultFeatureGate.Enabled(features.EBPFHostDataPath) &&
+		o.nodeType == config.K8sNode &&
+		(networkConfig.TrafficEncapMode == config.TrafficEncapModeNoEncap ||
+			networkConfig.TrafficEncapMode == config.TrafficEncapModeHybrid) {
+		ebpfClient = ebpf.NewClient(networkConfig)
+	}
+
 	// podNetworkWait is used to wait and notify that preconditions for Pod network are ready.
 	// Processes that are supposed to finish before enabling Pod network should increment the wait group and decrement
 	// it when finished.
@@ -372,6 +382,18 @@ func run(o *Options) error {
 		ipsecCertController = ipseccertificate.NewIPSecCertificateController(k8sClient, ovsBridgeClient, nodeConfig.Name)
 	}
 
+	if ebpfClient != nil {
+		defer ebpfClient.Close()
+
+		err = ebpfClient.Initialize(nodeConfig)
+		if err != nil {
+			klog.ErrorS(err, "Failed to initialize eBPF client")
+			ebpfClient = nil
+		} else if *o.config.EnablePrometheusMetrics {
+			ebpfmetrics.Register(ebpfClient)
+		}
+	}
+
 	var nodeRouteController *noderoute.Controller
 	if o.nodeType == config.K8sNode {
 		nodeRouteController = noderoute.NewNodeRouteController(
@@ -380,6 +402,7 @@ func run(o *Options) error {
 			ovsctl.NewClient(o.config.OVSBridge),
 			ovsBridgeClient,
 			routeClient,
+			ebpfClient,
 			ifaceStore,
 			networkConfig,
 			nodeConfig,
@@ -850,6 +873,9 @@ func run(o *Options) error {
 		}
 		go cniServer.Run(stopCh)
 		go nodeRouteController.Run(stopCh)
+		if ebpfClient != nil {
+			go ebpfClient.Run(stopCh)
+		}
 	} else {
 		go externalEntityUpdateChannel.Run(stopCh)
 		go localExternalNodeInformer.Run(stopCh)

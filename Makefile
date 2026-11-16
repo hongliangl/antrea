@@ -356,6 +356,15 @@ mockgen:
 	@echo "===> Updating generated mock code <==="
 	$(CURDIR)/hack/update-codegen.sh mockgen
 
+# Regenerates the embedded BPF objects in Docker with a fixed clang toolchain.
+# Kept separate from codegen, which does not compile the C datapath.
+.PHONY: bpf-objects
+bpf-objects:
+	@echo "===> Compiling the eBPF host datapath programs <==="
+	docker buildx build --build-arg GO_VERSION=$(GO_VERSION) \
+		--output "type=local,dest=$(CURDIR)/pkg/agent/ebpf/internal/objects" \
+		-f "$(CURDIR)/build/images/Dockerfile.bpf-objects" "$(CURDIR)"
+
 ### Docker images ###
 
 # This target is for development only. It assumes that "make bin" has been run previously and will

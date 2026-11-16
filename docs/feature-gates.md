@@ -65,6 +65,7 @@ edit the Agent configuration in the
 | `NodeNetworkPolicy`             | Agent              | `false` | Alpha      | v1.15         | N/A          | N/A        | Yes                |                                                        |
 | `BGPPolicy`                     | Agent              | `false` | Alpha      | v2.1          | N/A          | N/A        | No                 |                                                        |
 | `NodeLatencyMonitor`            | Agent              | `false` | Alpha      | v2.1          | N/A          | N/A        | No                 |                                                        |
+| `EBPFHostDataPath`              | Agent              | `false` | Alpha      | v2.8          | N/A          | N/A        | No                 |                                                        |
 | `PacketCapture`                 | Agent              | `false` | Alpha      | v2.2          | N/A          | N/A        | No                 |                                                        |
 | `NFTablesHostNetworkMode`       | Agent              | `false` | Alpha      | v2.5          | N/A          | N/A        | Yes                |                                                        |
 | `AntreaNodeConfig`              | Agent              | `true`  | Beta       | N/A           | v2.7         | N/A        | No                 | Configures the secondary network OVS bridge per Node.  |
@@ -464,6 +465,44 @@ policies interact with Antrea-native tiers.
 #### Requirements for this Feature
 
 This feature is only supported for Linux Nodes at the moment.
+
+### EBPFHostDataPath
+
+`EBPFHostDataPath` accelerates directly routed cross-Node Pod TCP/UDP traffic in noEncap and hybrid modes.
+It supports IPv4-only, IPv6-only and dual-stack Nodes. The Node route controller adds only directly routed
+peers to the BPF route maps. In hybrid mode, traffic between Nodes in the same transport subnet is
+accelerated; traffic between Nodes in different transport subnets keeps using tunnels. Eligible packets
+are redirected between interfaces, bypassing host IP forwarding and netfilter.
+
+Nothing else moves out of the host network stack. The masquerade of the traffic leaving the cluster, Egress,
+Service handling and the Node network policies stay in iptables and in the OVS pipeline, and so does every
+packet which is not a cross-Node Pod packet.
+
+Those routes are still installed while this runs, and the datapath falls back to them for anything it cannot
+handle, so a Node forwards the same traffic whether the feature is enabled or not. Failing to load the
+programs is logged and does not stop the Agent.
+
+The datapath uses `bpf_redirect_neigh` for Ethernet addressing, ARP/NDP resolution and neighbor revalidation.
+The Agent does not register managed neighbors or maintain per-Pod neighbor state.
+The `antrea_agent_ebpf_packets_total` metric reports forwarded, returned, missed, passed,
+and other packet counts.
+
+Two things behave differently once it forwards, and both follow from the packets no longer going through
+the host network stack:
+
+- Rules in the netfilter `FORWARD` chain no longer apply to the traffic between the Pods of two Nodes. A Node
+  which restricts that traffic there has to restrict it elsewhere. Antrea's own rules are not affected: the
+  ones it puts there accept that traffic unconditionally.
+- The connections do not appear in conntrack, so `conntrack -L` does not list them and the counters of the
+  iptables rules they used to traverse do not move.
+
+#### Requirements for this Feature
+
+This feature is only supported for Linux Nodes, for IPv4 and IPv6, and in the noEncap and hybrid traffic modes.
+The kernel must support `bpf_fib_lookup` with `BPF_FIB_LOOKUP_SKIP_NEIGH`, `bpf_redirect_neigh`,
+and `bpf_check_mtu` with `BPF_MTU_CHK_SEGS`. Program loading fails if required helpers are unavailable,
+and the Agent continues using the host stack. A kernel 6.6 or later is used through a BPF link;
+an older kernel uses a clsact traffic control filter. Managed-neighbor support is not required.
 
 ### EgressTrafficShaping
 

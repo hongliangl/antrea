@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="745" viewBox="0 0 1200 745" role="img" aria-labelledby="title desc">
+  <title id="title">Build-time generation and runtime loading of Antrea eBPF programs</title>
+  <desc id="desc">Clang compiles C into an ELF object; the Antrea generator embeds instructions, map definitions and relocation metadata in Go. The Agent creates maps, writes configuration, binds references, loads programs for kernel verification, and attaches the two TC ingress hooks.</desc>
+  <defs>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#526379"/></marker>
+  </defs>
+  <rect width="1200" height="745" rx="16" fill="#f6f8fc"/>
+  <g font-family="Arial, Helvetica, sans-serif" fill="#172b45">
+    <text x="36" y="45" font-size="25" font-weight="700">Compile at build time. Load and attach on the Node.</text>
+    <text x="36" y="75" font-size="15" fill="#526379">Antrea-owned generator and loader · no runtime C compiler or ELF parser</text>
+    <rect x="36" y="110" width="1128" height="193" rx="14" fill="#edf3ff" stroke="#c1d2ed"/>
+    <text x="56" y="143" font-size="16" font-weight="700" fill="#2167c5">BUILD TIME · make bpf-objects, then build the Agent</text>
+    <g fill="#fff" stroke="#9cb7dd" stroke-width="1.5">
+      <rect x="60" y="170" width="220" height="85" rx="10"/>
+      <rect x="340" y="170" width="220" height="85" rx="10"/>
+      <rect x="620" y="170" width="220" height="85" rx="10"/>
+      <rect x="900" y="170" width="220" height="85" rx="10"/>
+    </g>
+    <g text-anchor="middle">
+      <text x="170" y="204" font-size="17" font-weight="700">C packet programs</text>
+      <text x="170" y="230" font-size="13" fill="#526379">host_datapath.bpf.c</text>
+      <text x="450" y="204" font-size="17" font-weight="700">Clang 18 → ELF</text>
+      <text x="450" y="230" font-size="13" fill="#526379">Dockerized BPF compilation</text>
+      <text x="730" y="204" font-size="17" font-weight="700">Go object generator</text>
+      <text x="730" y="230" font-size="13" fill="#526379">Instructions + maps + relocations</text>
+      <text x="1010" y="204" font-size="17" font-weight="700">Agent binary</text>
+      <text x="1010" y="230" font-size="13" fill="#526379">Generated Go data embedded</text>
+    </g>
+    <g fill="none" stroke="#526379" stroke-width="2" marker-end="url(#a)">
+      <path d="M280 212 H336"/><path d="M560 212 H616"/><path d="M840 212 H896"/>
+    </g>
+    <text x="60" y="282" font-size="13" fill="#526379">Generated instructions are committed; CI checks that they match the C source.</text>
+    <rect x="36" y="338" width="1128" height="349" rx="14" fill="#eef7f1" stroke="#bddbc9"/>
+    <text x="56" y="372" font-size="16" font-weight="700" fill="#36825a">RUNTIME · eBPF client Initialize</text>
+    <g fill="#fff" stroke="#8bb79e" stroke-width="1.5">
+      <rect x="60" y="403" width="220" height="103" rx="10"/>
+      <rect x="340" y="403" width="220" height="103" rx="10"/>
+      <rect x="620" y="403" width="220" height="103" rx="10"/>
+      <rect x="900" y="403" width="220" height="103" rx="10"/>
+    </g>
+    <g text-anchor="middle">
+      <text x="170" y="435" font-size="17" font-weight="700">1. Create maps</text>
+      <text x="170" y="462" font-size="13" fill="#526379">BPF_MAP_CREATE</text>
+      <text x="170" y="484" font-size="13" fill="#526379">Retain kernel map FDs</text>
+      <text x="450" y="435" font-size="17" font-weight="700">2. Write configuration</text>
+      <text x="450" y="462" font-size="13" fill="#526379">node_config[0]</text>
+      <text x="450" y="484" font-size="13" fill="#526379">Before attaching programs</text>
+      <text x="730" y="435" font-size="17" font-weight="700">3. Bind map references</text>
+      <text x="730" y="462" font-size="13" fill="#526379">Patch generated relocations</text>
+      <text x="730" y="484" font-size="13" fill="#526379">BPF_PSEUDO_MAP_FD</text>
+      <text x="1010" y="435" font-size="17" font-weight="700">4. Load programs</text>
+      <text x="1010" y="462" font-size="13" fill="#526379">BPF_PROG_LOAD</text>
+      <text x="1010" y="484" font-size="13" fill="#526379">Kernel verification → program FDs</text>
+    </g>
+    <g fill="none" stroke="#526379" stroke-width="2" marker-end="url(#a)">
+      <path d="M280 453 H336"/><path d="M560 453 H616"/><path d="M840 453 H896"/>
+      <path d="M1010 506 V566"/>
+    </g>
+    <rect x="720" y="570" width="400" height="77" rx="10" fill="#fff" stroke="#8bb79e" stroke-width="1.5"/>
+    <text x="920" y="601" font-size="18" text-anchor="middle" font-weight="700">5. Attach ingress hooks</text>
+    <text x="920" y="627" font-size="13" text-anchor="middle" fill="#526379">TCX BPF link, or clsact TC filter fallback</text>
+    <rect x="60" y="570" width="260" height="77" rx="10" fill="#e9f1ff" stroke="#6b98d5"/>
+    <rect x="370" y="570" width="270" height="77" rx="10" fill="#e9f1ff" stroke="#6b98d5"/>
+    <g text-anchor="middle">
+      <text x="190" y="600" font-size="17" font-weight="700">hostdp_fwd</text>
+      <text x="190" y="626" font-size="13" fill="#526379">Gateway ingress</text>
+      <text x="505" y="600" font-size="17" font-weight="700">hostdp_return</text>
+      <text x="505" y="626" font-size="13" fill="#526379">Transport ingress</text>
+    </g>
+    <g fill="none" stroke="#526379" stroke-width="2" marker-end="url(#a)">
+      <path d="M720 608 H644"/>
+      <path d="M750 570 V543 H190 V566"/>
+    </g>
+    <text x="36" y="722" font-size="14" fill="#526379">Load and attach establish execution. Later Node changes update route-map entries, not program instructions.</text>
+  </g>
+</svg>
