@@ -17,6 +17,9 @@ noEncap and hybrid modes. Only traffic that uses direct routing to the peer Node
 accelerated. In hybrid mode, traffic between Nodes in the same transport subnet is
 accelerated; traffic between Nodes in different transport subnets keeps using tunnels.
 
+For an illustrated framework overview and prototype performance results, see
+[Antrea eBPF Host Forwarding Framework](ebpf-host-forwarding-framework.md).
+
 ## Packet path
 
 Normally, OVS sends a remote Pod packet through `antrea-gw0`, then the host network

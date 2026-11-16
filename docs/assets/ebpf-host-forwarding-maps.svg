@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="695" viewBox="0 0 1200 695" role="img" aria-labelledby="title desc">
+  <title id="title">How the Antrea Agent and eBPF programs exchange data through kernel maps</title>
+  <desc id="desc">The Go client writes route and configuration maps with BPF syscalls. TC programs read the same kernel maps and increment stats. The client reads stats for Prometheus. No per-packet userspace callback or CNI-driven neighbor registration is needed.</desc>
+  <defs>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#2167c5"/></marker>
+    <marker id="g" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#36825a"/></marker>
+  </defs>
+  <rect width="1200" height="695" rx="16" fill="#f6f8fc"/>
+  <g font-family="Arial, Helvetica, sans-serif" fill="#172b45">
+    <text x="36" y="45" font-size="25" font-weight="700">One set of kernel maps. Two ways to access it.</text>
+    <text x="36" y="75" font-size="15" fill="#526379">Go: file descriptors + syscalls. eBPF: loaded map references + helpers.</text>
+    <rect x="36" y="110" width="420" height="505" rx="14" fill="#edf3ff" stroke="#c1d2ed"/>
+    <rect x="515" y="110" width="649" height="505" rx="14" fill="#eef7f1" stroke="#bddbc9"/>
+    <text x="56" y="143" font-size="17" font-weight="700" fill="#2167c5">USERSPACE · ANTREA AGENT</text>
+    <text x="535" y="143" font-size="17" font-weight="700" fill="#36825a">KERNEL</text>
+    <g fill="#fff" stroke="#9cb7dd" stroke-width="1.5">
+      <rect x="66" y="174" width="360" height="66" rx="10"/>
+      <rect x="66" y="311" width="360" height="89" rx="10"/>
+      <rect x="66" y="505" width="360" height="65" rx="10"/>
+    </g>
+    <g text-anchor="middle">
+      <text x="246" y="202" font-size="17" font-weight="700">Node route controller</text>
+      <text x="246" y="223" font-size="13" fill="#526379">Normal kernel routes + eligible peer CIDRs</text>
+      <text x="246" y="343" font-size="18" font-weight="700">Go eBPF client</text>
+      <text x="246" y="369" font-size="13" fill="#526379">Map updates · loading · attachments</text>
+      <text x="246" y="533" font-size="17" font-weight="700">Prometheus collector</text>
+      <text x="246" y="554" font-size="13" fill="#526379">Read packet outcome counters on scrape</text>
+    </g>
+    <path d="M246 240 V307" fill="none" stroke="#2167c5" stroke-width="2" marker-end="url(#a)"/>
+    <text x="261" y="278" font-size="13" fill="#2167c5">AddPodRoute / DeletePodRoute</text>
+    <g fill="#fff" stroke="#8bb79e" stroke-width="1.5">
+      <rect x="550" y="174" width="270" height="96" rx="10"/>
+      <rect x="858" y="174" width="274" height="96" rx="10"/>
+      <rect x="550" y="352" width="582" height="78" rx="10"/>
+      <rect x="550" y="505" width="270" height="65" rx="10"/>
+    </g>
+    <g text-anchor="middle">
+      <text x="685" y="204" font-size="17" font-weight="700">pod_routes / pod_routes6</text>
+      <text x="685" y="229" font-size="13" fill="#526379">Remote Pod CIDR → peer Node IP</text>
+      <text x="685" y="250" font-size="13" fill="#526379">LPM trie · 1024 entries per family</text>
+      <text x="995" y="204" font-size="17" font-weight="700">node_config[0]</text>
+      <text x="995" y="229" font-size="13" fill="#526379">Local CIDRs · gateway IPs</text>
+      <text x="995" y="250" font-size="13" fill="#526379">MTUs · gateway index</text>
+      <text x="841" y="384" font-size="18" font-weight="700">hostdp_fwd / hostdp_return</text>
+      <text x="841" y="409" font-size="13" fill="#526379">Execute for packets at the attached TC ingress hooks</text>
+      <text x="685" y="533" font-size="17" font-weight="700">stats[0..6]</text>
+      <text x="685" y="554" font-size="13" fill="#526379">Seven shared atomic counters</text>
+    </g>
+    <g fill="none" stroke="#2167c5" stroke-width="2" marker-end="url(#a)">
+      <path d="M426 335 H480 V215 H546"/>
+      <path d="M426 377 H495 V294 H995 V274"/>
+    </g>
+    <text x="855" y="460" font-size="13" fill="#2167c5">Go writes map entries</text>
+    <text x="855" y="480" font-size="12" fill="#2167c5">through BPF syscalls.</text>
+    <g fill="none" stroke="#36825a" stroke-width="2" marker-end="url(#g)">
+      <path d="M685 270 V348"/><path d="M995 270 V348"/>
+      <path d="M685 430 V501"/>
+      <path d="M550 538 H430"/>
+    </g>
+    <text x="716" y="335" font-size="12" fill="#36825a">BPF map lookups</text>
+    <text x="703" y="469" font-size="13" fill="#36825a">Atomic increment</text>
+    <text x="66" y="480" font-size="13" fill="#2167c5">Stats() → BPF_MAP_LOOKUP_ELEM</text>
+    <text x="855" y="524" font-size="14" font-weight="700">No MAC map</text>
+    <text x="855" y="548" font-size="13" fill="#526379">ARP / NDP belongs to</text>
+    <text x="855" y="568" font-size="13" fill="#526379">kernel neighbor output.</text>
+    <text x="36" y="650" font-size="14">Route-map updates affect subsequent packets without reloading the programs.</text>
+    <text x="36" y="674" font-size="13" fill="#526379">Map references bind to kernel objects during loading. Packets do not call back into Go.</text>
+  </g>
+</svg>
