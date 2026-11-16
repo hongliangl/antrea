@@ -48,7 +48,7 @@
     </g>
     <g fill="none" stroke="#2167c5" stroke-width="2" marker-end="url(#a)">
       <path d="M426 335 H480 V215 H546"/>
-      <path d="M426 377 H495 V294 H995 V274"/>
+      <path d="M400 311 V285 H446 V157 H995 V170"/>
     </g>
     <text x="855" y="460" font-size="13" fill="#2167c5">Go writes map entries</text>
     <text x="855" y="480" font-size="12" fill="#2167c5">through BPF syscalls.</text>
