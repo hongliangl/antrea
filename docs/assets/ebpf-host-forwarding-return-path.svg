@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="485" viewBox="0 0 1200 485" role="img" aria-labelledby="title desc">
+  <title id="title">Antrea return forwarding: normal and eBPF paths</title>
+  <desc id="desc">Packets travel right to left from a peer Node to a local Pod. Normally the host forwards through routing and netfilter, then neighbor output, the gateway and OVS. The accelerated path runs hostdp_return at transport ingress, checks the remote Pod source and local Pod destination, looks up the local route, checks MTU and TTL, and redirects through kernel neighbor output to the gateway and OVS. Unsupported packets fall back to the host stack.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#526379"/></marker>
+    <marker id="blue-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#2167c5"/></marker>
+  </defs>
+  <rect width="1200" height="485" rx="16" fill="#f6f8fc"/>
+  <g font-family="Arial, Helvetica, sans-serif" fill="#172b45">
+    <text x="36" y="45" font-size="25" font-weight="700">Return path: peer Node to local Pod</text>
+    <text x="36" y="75" font-size="15" fill="#526379">Read right to left · IPv4 and IPv6 · TCP / UDP</text>
+    <text x="36" y="121" font-size="14" font-weight="700" fill="#526379">NORMAL RETURN PATH</text>
+    <g fill="#fff" stroke="#bdc9d9" stroke-width="1.5">
+      <rect x="36" y="145" width="110" height="78" rx="10"/>
+      <rect x="190" y="145" width="140" height="78" rx="10"/>
+      <rect x="375" y="145" width="285" height="78" rx="10" fill="#e9f5ed" stroke="#7caf91"/>
+      <rect x="720" y="145" width="245" height="78" rx="10" fill="#fff3e5" stroke="#d69a52"/>
+      <rect x="1010" y="145" width="150" height="78" rx="10"/>
+    </g>
+    <g text-anchor="middle" font-size="17" font-weight="700">
+      <text x="91" y="189">Local Pod</text><text x="260" y="178">OVS</text>
+      <text x="517" y="177">Kernel neighbor output</text><text x="842" y="177">Host IP forwarding</text>
+      <text x="1085" y="189">Peer Node</text>
+    </g>
+    <g text-anchor="middle" font-size="13" fill="#526379">
+      <text x="260" y="201">Existing pipeline</text><text x="517" y="201">ARP / NDP + Ethernet addresses</text>
+      <text x="842" y="201">Routing + netfilter</text>
+    </g>
+    <g fill="none" stroke="#526379" stroke-width="2" marker-end="url(#arrow)">
+      <path d="M1010 184 H969"/><path d="M720 184 H664"/><path d="M375 184 H334"/><path d="M190 184 H150"/>
+    </g>
+    <text x="36" y="294" font-size="14" font-weight="700" fill="#2167c5">ACCELERATED RETURN PATH</text>
+    <g fill="#fff" stroke="#bdc9d9" stroke-width="1.5">
+      <rect x="36" y="318" width="110" height="88" rx="10"/>
+      <rect x="190" y="318" width="140" height="88" rx="10"/>
+      <rect x="375" y="318" width="285" height="88" rx="10" fill="#e9f5ed" stroke="#7caf91"/>
+      <rect x="720" y="318" width="245" height="88" rx="10" fill="#e9f1ff" stroke="#6b98d5"/>
+      <rect x="1010" y="318" width="150" height="88" rx="10"/>
+    </g>
+    <g text-anchor="middle" font-size="17" font-weight="700">
+      <text x="91" y="367">Local Pod</text><text x="260" y="351">OVS</text>
+      <text x="517" y="350">Kernel neighbor output</text><text x="842" y="344">TC ingress: hostdp_return</text>
+      <text x="1085" y="367">Peer Node</text>
+    </g>
+    <g text-anchor="middle" font-size="13" fill="#526379">
+      <text x="260" y="376">Existing pipeline</text><text x="517" y="375">bpf_redirect_neigh → gateway egress</text>
+      <text x="842" y="368" font-size="12">Remote source + local destination</text>
+      <text x="842" y="389" font-size="12">Local route / FIB · MTU · TTL</text>
+    </g>
+    <g fill="none" stroke="#2167c5" stroke-width="2.5" marker-end="url(#blue-arrow)">
+      <path d="M1010 362 H969"/><path d="M720 362 H664"/><path d="M375 362 H334"/><path d="M190 362 H150"/>
+    </g>
+    <path d="M842 318 V229" fill="none" stroke="#a16b2a" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+    <text x="540" y="255" font-size="13" fill="#885920">Unsupported / lookup or MTU fallback</text>
+    <text x="540" y="277" font-size="13" fill="#885920">TC_ACT_OK → normal stack</text>
+    <text x="337" y="432" font-size="13" fill="#526379">Gateway egress</text>
+    <text x="951" y="432" font-size="13" fill="#526379">Transport ingress</text>
+    <text x="36" y="469" font-size="12" fill="#526379">OVS receives the packet through the gateway and performs the existing local-Pod delivery pipeline.</text>
+  </g>
+</svg>

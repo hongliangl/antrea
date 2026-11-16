@@ -1,11 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="590" viewBox="0 0 1200 590" role="img" aria-labelledby="title desc">
-  <title id="title">Antrea host forwarding: normal and eBPF paths</title>
-  <desc id="desc">Both paths retain OVS. The accelerated outbound path substitutes a TC ingress program for normal host IP forwarding and netfilter, then uses kernel neighbor output. Return traffic uses a second ingress program before OVS. Unsupported packets fall back to the host stack.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="485" viewBox="0 0 1200 485" role="img" aria-labelledby="title desc">
+  <title id="title">Antrea outbound forwarding: normal and eBPF paths</title>
+  <desc id="desc">Both outbound paths retain OVS. The accelerated path substitutes a gateway TC ingress program for normal host IP forwarding and netfilter, then uses kernel neighbor output. Unsupported packets fall back to the host stack.</desc>
   <defs>
     <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#526379"/></marker>
     <marker id="blue-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#2167c5"/></marker>
   </defs>
-  <rect width="1200" height="590" rx="16" fill="#f6f8fc"/>
+  <rect width="1200" height="485" rx="16" fill="#f6f8fc"/>
   <g font-family="Arial, Helvetica, sans-serif" fill="#172b45">
     <text x="36" y="45" font-size="25" font-weight="700">OVS stays. The host-forwarding path gets shorter.</text>
     <text x="36" y="75" font-size="15" fill="#526379">Directly routed cross-Node Pod traffic · IPv4 and IPv6 · TCP / UDP</text>
@@ -54,9 +54,6 @@
     <text x="538" y="277" font-size="13" fill="#885920">TC_ACT_OK → normal stack</text>
     <text x="344" y="432" font-size="13" fill="#526379">Gateway ingress</text>
     <text x="958" y="432" font-size="13" fill="#526379">Transport egress</text>
-    <rect x="36" y="465" width="1124" height="85" rx="10" fill="#fff" stroke="#d6deea"/>
-    <text x="56" y="493" font-size="14" font-weight="700">RETURN PATH</text>
-    <text x="56" y="520" font-size="15">Peer → transport TC ingress: hostdp_return → kernel neighbor output → gateway → OVS → local Pod</text>
-    <text x="36" y="576" font-size="12" fill="#526379">The accelerated path bypasses host forwarding / netfilter. Normal kernel routes remain installed.</text>
+    <text x="36" y="469" font-size="12" fill="#526379">The accelerated path bypasses host forwarding / netfilter. Normal kernel routes remain installed.</text>
   </g>
 </svg>

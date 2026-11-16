@@ -1,8 +1,5 @@
 # Antrea eBPF Host Forwarding Framework
 
-Design and prototype results for technical and management discussion. Updated 2026-11-16.
-Implementation reference: `work/antrea-ebpf-c-learning`, commit `e39483eb1`.
-
 ## Executive overview
 
 This prototype accelerates the Linux host-forwarding portion of directly routed cross-Node
@@ -26,10 +23,16 @@ build-time generator and runtime loader, without introducing a third-party eBPF 
 
 ## 1. What changes in the packet path
 
-![Normal and accelerated host-forwarding paths](../assets/ebpf-host-forwarding-path.svg)
+![Normal and accelerated outbound paths](../assets/ebpf-host-forwarding-path.svg)
 
-*Figure 1. OVS stays in the path. Eligible traffic takes a shorter host-forwarding path;
+*Figure 1a. Outbound traffic enters the host through the gateway. OVS stays in the path;
 unsupported packets continue through the normal stack.*
+
+![Normal and accelerated return paths](../assets/ebpf-host-forwarding-return-path.svg)
+
+*Figure 1b. Return traffic enters through the transport interface. The program checks the
+remote Pod source and local Pod destination, then uses kernel neighbor output to send
+the packet through the gateway to OVS. Unsupported packets use normal host forwarding.*
 
 Normally, OVS sends a remote-Pod packet through `antrea-gw0`. Linux then forwards it using
 the routes installed by Antrea and processes the applicable host netfilter hooks.
@@ -193,8 +196,8 @@ and invalidation complexity, so the current design performs routing decisions pe
 
 ### Evidence boundaries
 
-- The benchmark predates the managed-neighbor cleanup in `e39483eb1`; performance has not
-  been rerun for that commit. The later x86_64 namespace tests are correctness checks only.
+- The benchmark predates the managed-neighbor cleanup; performance has not been rerun
+  after that cleanup. The later x86_64 namespace tests are correctness checks only.
 - Raw run logs, repeat counts, variance, and complete host/VM resource settings were not
   included in the benchmark handoff. The table is a reported summary, not a new measurement.
 - Do not combine these numbers with the AWS/Kind results in the existing
