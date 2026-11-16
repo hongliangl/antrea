@@ -301,18 +301,12 @@ func run(o *Options) error {
 	// Create an ifaceStore that caches network interfaces managed by this node.
 	ifaceStore := interfacestore.NewInterfaceStore()
 
-	// podUpdateChannel notifies components after CNIServer updates local Pod interfaces.
-	var podUpdateChannel *channel.SubscribableChannel
-	if o.nodeType == config.K8sNode {
-		podUpdateChannel = channel.NewSubscribableChannel("PodUpdate", 100)
-	}
-
 	var ebpfClient ebpf.Interface
 	if features.DefaultFeatureGate.Enabled(features.EBPFHostDataPath) &&
 		o.nodeType == config.K8sNode &&
 		(networkConfig.TrafficEncapMode == config.TrafficEncapModeNoEncap ||
 			networkConfig.TrafficEncapMode == config.TrafficEncapModeHybrid) {
-		ebpfClient = ebpf.NewClient(networkConfig, ifaceStore, podUpdateChannel)
+		ebpfClient = ebpf.NewClient(networkConfig)
 	}
 
 	// podNetworkWait is used to wait and notify that preconditions for Pod network are ready.
@@ -418,13 +412,19 @@ func run(o *Options) error {
 		)
 	}
 
+	// podUpdateChannel is a channel for receiving Pod updates from CNIServer and
+	// notifying NetworkPolicyController, StretchedNetworkPolicyController and
+	// EgressController to reconcile rules related to the updated Pods.
+	var podUpdateChannel *channel.SubscribableChannel
 	// externalEntityUpdateChannel is a channel for receiving ExternalEntity updates from ExternalNodeController and
 	// notifying NetworkPolicyController to reconcile rules related to the updated ExternalEntities.
 	var externalEntityUpdateChannel *channel.SubscribableChannel
 	// antreaNodeConfigUpdateChannel broadcasts effective AntreaNodeConfig-derived state
 	// (e.g. secondary-network OVS bridge) to subscribers on the agent.
 	var antreaNodeConfigUpdateChannel *channel.SubscribableChannel
-	if o.nodeType != config.K8sNode {
+	if o.nodeType == config.K8sNode {
+		podUpdateChannel = channel.NewSubscribableChannel("PodUpdate", 100)
+	} else {
 		externalEntityUpdateChannel = channel.NewSubscribableChannel("ExternalEntityUpdate", 100)
 	}
 

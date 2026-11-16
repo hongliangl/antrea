@@ -110,12 +110,11 @@ struct node_config {
 	__u32 transport_mtu;
 	__u32 gateway_mtu;
 	__u32 gateway_ifindex;
-	__u32 forwarding_enabled;
 	struct ip_config4 ipv4;
 	struct ip_config6 ipv6;
 };
 
-// Node configuration, refreshed when interfaces change.
+// Node configuration, written before attaching the programs.
 __attribute__((section(".bpf_maps"), used))
 struct bpf_map_def node_config = {
 	.type = BPF_MAP_TYPE_ARRAY,
@@ -344,7 +343,7 @@ static inline int redirect_via(struct __sk_buff *skb,
 __attribute__((always_inline))
 static inline int forward_ipv4(struct __sk_buff *skb, struct iphdr *ip) {
 	struct node_config *config = load_config();
-	if (config == 0 || config->forwarding_enabled != 1) {
+	if (config == 0) {
 		increment_stat(STAT_PASS);
 		return TC_ACT_OK;
 	}
@@ -370,7 +369,7 @@ static inline int forward_ipv4(struct __sk_buff *skb, struct iphdr *ip) {
 __attribute__((always_inline))
 static inline int return_ipv4(struct __sk_buff *skb, struct iphdr *ip) {
 	struct node_config *config = load_config();
-	if (config == 0 || config->forwarding_enabled != 1) {
+	if (config == 0) {
 		increment_stat(STAT_PASS);
 		return TC_ACT_OK;
 	}
@@ -549,7 +548,7 @@ static inline int redirect_via6(struct __sk_buff *skb,
 __attribute__((always_inline))
 static inline int forward_ipv6(struct __sk_buff *skb, struct ipv6hdr *ip) {
 	struct node_config *config = load_config();
-	if (config == 0 || config->forwarding_enabled != 1) {
+	if (config == 0) {
 		increment_stat(STAT_PASS);
 		return TC_ACT_OK;
 	}
@@ -575,7 +574,7 @@ static inline int forward_ipv6(struct __sk_buff *skb, struct ipv6hdr *ip) {
 __attribute__((always_inline))
 static inline int return_ipv6(struct __sk_buff *skb, struct ipv6hdr *ip) {
 	struct node_config *config = load_config();
-	if (config == 0 || config->forwarding_enabled != 1) {
+	if (config == 0) {
 		increment_stat(STAT_PASS);
 		return TC_ACT_OK;
 	}

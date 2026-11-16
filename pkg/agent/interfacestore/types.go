@@ -132,7 +132,6 @@ type InterfaceStore interface {
 	GetNodeTunnelInterface(nodeName string) (*InterfaceConfig, bool)
 	GetInterfaceByOFPort(ofPort uint32) (*InterfaceConfig, bool)
 	GetContainerInterfaceNum() int
-	GetContainerIPs() []net.IP
 	GetInterfacesByType(interfaceType InterfaceType) []*InterfaceConfig
 	Len() int
 	GetInterfaceKeysByType(interfaceType InterfaceType) []string

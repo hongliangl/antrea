@@ -72,20 +72,14 @@ netfilter `FORWARD` hook, so iptables/nftables rules at that hook do not apply t
 neighbor probing and unresolved-packet queuing. The programs do not cache MAC
 addresses, so neighbor updates take effect through the kernel.
 
-The Antrea Agent registers peer Node IPs on the transport interface and local Pod IPs on
-`antrea-gw0` with `NTF_EXT_MANAGED` and `NTF_EXT_LEARNED`. The kernel then resolves
-and refreshes these entries using ARP for IPv4 and NDP for IPv6. Existing
-`PERMANENT` and `NOARP` entries are left unchanged.
+Neighbor resolution and revalidation are driven by packet transmission through
+`bpf_redirect_neigh`, using ARP for IPv4 and NDP for IPv6. Unresolved packets are queued
+by the kernel while it resolves their next hop. Idle neighbors follow the normal kernel
+neighbor lifecycle; the Agent does not pre-register, pin or periodically probe them.
 
-Redirects start disabled. The first successful neighbor reconciliation enables them;
-a later reconciliation error pauses them until reconciliation succeeds again.
-Node route changes and CNI Pod updates trigger reconciliation. A 30-second check
-also reads local Pod addresses from the interface store and repairs registrations.
-The kernel runs the probes; the Antrea Agent does not send ARP or NDP probes itself.
-
-A runtime check verifies managed-neighbor support for each enabled address family
-before attaching the programs. This requires Linux 5.16 or a kernel with the feature
-backported. If the check fails, traffic stays on the host stack.
+The eBPF client does not subscribe to CNI Pod updates or maintain per-Pod neighbor state.
+Normal kernel routes remain installed, and the kernel remains responsible for neighbor
+entries, including administrator-configured static entries.
 
 ## Build and loading
 
@@ -97,7 +91,7 @@ pkg/agent/ebpf/
   bpf/                C datapath programs and map definitions
   internal/objects/   Generated Go instructions and map metadata
   internal/bpf/       Linux BPF syscalls and TC attachment
-  *.go                Go client: Node configuration, route maps and managed neighbors
+  *.go                Go client: Node configuration, route maps and program lifecycle
 
 hack/gen-bpf-objects/  Build-time ELF-to-Go generator
 ```
@@ -163,9 +157,5 @@ network order for longest-prefix matching.
   source IP (for example, noEncap with `noSNAT: true`) are not supported. Backend
   replies can bypass host reverse NAT and break the connection, for both IPv4 and IPv6.
 - Interface replacement or MTU changes require restarting the Antrea Agent.
-- CNI Pod updates trigger registration or release after updating the interface store;
-  the periodic check repairs any missed updates.
-- Neighbor flag ownership is tracked only in memory. An Antrea Agent crash can leave managed
-  registrations behind; cleanup of orphaned registrations across restarts is not implemented.
 - Neighbor recovery time depends on kernel settings and peer reachability.
 - Verifier errors report instruction indices without mapping them back to C source lines.

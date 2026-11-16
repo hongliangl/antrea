@@ -53,9 +53,8 @@ func TestDatapathObjects(t *testing.T) {
 	assert.EqualValues(t, 0, unsafe.Offsetof(nodeConfig{}.transportMTU))
 	assert.EqualValues(t, 4, unsafe.Offsetof(nodeConfig{}.gatewayMTU))
 	assert.EqualValues(t, 8, unsafe.Offsetof(nodeConfig{}.gatewayIfIndex))
-	assert.EqualValues(t, 12, unsafe.Offsetof(nodeConfig{}.forwardingEnabled))
-	assert.EqualValues(t, 16, unsafe.Offsetof(nodeConfig{}.ipv4))
-	assert.EqualValues(t, 28, unsafe.Offsetof(nodeConfig{}.ipv6))
+	assert.EqualValues(t, 12, unsafe.Offsetof(nodeConfig{}.ipv4))
+	assert.EqualValues(t, 24, unsafe.Offsetof(nodeConfig{}.ipv6))
 	assert.EqualValues(t, 4, unsafe.Offsetof(ipConfig4{}.localPodNet))
 	assert.EqualValues(t, 8, unsafe.Offsetof(ipConfig4{}.gatewayIP))
 	assert.EqualValues(t, 4, unsafe.Offsetof(ipConfig6{}.localPodNet))
@@ -208,7 +207,6 @@ func TestSyncProgram(t *testing.T) {
 			}
 			c := &client{}
 			require.ErrorContains(t, c.syncProgram(&stored), tt.expectedErr)
-			assert.True(t, stored.missing)
 			assert.Equal(t, tt.ifIndex, stored.ifIndex, "the initial attachment target must not change")
 			assert.Empty(t, c.attachments)
 		})
@@ -246,7 +244,7 @@ func TestInitializeTransportIPOverlap(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := NewClient(&agentconfig.NetworkConfig{
 				TrafficEncapMode: agentconfig.TrafficEncapModeNoEncap,
-			}, nil, nil)
+			})
 			assert.ErrorContains(t, c.Initialize(&tt.nodeConfig), tt.expectedErr)
 			assert.NoError(t, c.Close())
 		})
@@ -272,14 +270,7 @@ func TestNewClientInitialization(t *testing.T) {
 			// Construction succeeds before interfaces exist; Initialize resolves them.
 			c := NewClient(&agentconfig.NetworkConfig{
 				TrafficEncapMode: tt.mode,
-			}, nil, nil).(*client)
-			// Pod updates coalesce into one pending sync without blocking the event handler.
-			for _, event := range []string{"add", "delete"} {
-				c.processPodUpdate(event)
-				c.processPodUpdate(event)
-				require.Len(t, c.podUpdateCh, 1)
-				<-c.podUpdateCh
-			}
+			})
 			err := c.Initialize(&agentconfig.NodeConfig{
 				NodeTransportInterfaceName: "missing-ebpf-interface",
 				PodIPv4CIDR:                ip.MustParseCIDR("10.10.0.0/24"),

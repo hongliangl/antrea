@@ -25,7 +25,6 @@
 package testing
 
 import (
-	net "net"
 	reflect "reflect"
 
 	interfacestore "antrea.io/antrea/v2/pkg/agent/interfacestore"
@@ -90,20 +89,6 @@ func (m *MockInterfaceStore) DeleteInterface(interfaceConfig *interfacestore.Int
 func (mr *MockInterfaceStoreMockRecorder) DeleteInterface(interfaceConfig any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteInterface", reflect.TypeOf((*MockInterfaceStore)(nil).DeleteInterface), interfaceConfig)
-}
-
-// GetContainerIPs mocks base method.
-func (m *MockInterfaceStore) GetContainerIPs() []net.IP {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetContainerIPs")
-	ret0, _ := ret[0].([]net.IP)
-	return ret0
-}
-
-// GetContainerIPs indicates an expected call of GetContainerIPs.
-func (mr *MockInterfaceStoreMockRecorder) GetContainerIPs() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetContainerIPs", reflect.TypeOf((*MockInterfaceStore)(nil).GetContainerIPs))
 }
 
 // GetContainerInterface mocks base method.

@@ -482,10 +482,10 @@ Those routes are still installed while this runs, and the datapath falls back to
 handle, so a Node forwards the same traffic whether the feature is enabled or not. Failing to load the
 programs is logged and does not stop the Agent.
 
-When enabled, the datapath starts with redirects disabled. It enables them after the first successful
-managed-neighbor reconciliation and pauses them if a later reconciliation fails. Packets then continue through
-the host network stack until reconciliation succeeds. The `antrea_agent_ebpf_packets_total` metric
-reports forwarded, returned, missed, passed, and other packet counts.
+The datapath uses `bpf_redirect_neigh` for Ethernet addressing, ARP/NDP resolution and neighbor revalidation.
+The Agent does not register managed neighbors or maintain per-Pod neighbor state.
+The `antrea_agent_ebpf_packets_total` metric reports forwarded, returned, missed, passed,
+and other packet counts.
 
 Two things behave differently once it forwards, and both follow from the packets no longer going through
 the host network stack:
@@ -498,10 +498,11 @@ the host network stack:
 
 #### Requirements for this Feature
 
-This feature is only supported for Linux Nodes, for IPv4, and in the noEncap and hybrid traffic modes. The
-Nodes need a kernel 4.18 or later. A kernel 6.6 or later is used through a BPF link, which the kernel detaches
-on its own; an older one is used through a traffic control filter, which the Agent removes when it starts and
-when it stops.
+This feature is only supported for Linux Nodes, for IPv4 and IPv6, and in the noEncap and hybrid traffic modes.
+The kernel must support `bpf_fib_lookup` with `BPF_FIB_LOOKUP_SKIP_NEIGH`, `bpf_redirect_neigh`,
+and `bpf_check_mtu` with `BPF_MTU_CHK_SEGS`. Program loading fails if required helpers are unavailable,
+and the Agent continues using the host stack. A kernel 6.6 or later is used through a BPF link;
+an older kernel uses a clsact traffic control filter. Managed-neighbor support is not required.
 
 ### EgressTrafficShaping
 

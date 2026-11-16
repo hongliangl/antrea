@@ -31,7 +31,6 @@ import (
 	agentconfig "antrea.io/antrea/v2/pkg/agent/config"
 	"antrea.io/antrea/v2/pkg/agent/ebpf/internal/bpf"
 	"antrea.io/antrea/v2/pkg/agent/ebpf/internal/objects"
-	"antrea.io/antrea/v2/pkg/util/channel"
 )
 
 // instructionSize is the size of an eBPF instruction. A wide one, which is what holds a map reference, takes
@@ -71,7 +70,7 @@ const (
 	mapStats      = "stats"
 )
 
-// syncInterval controls program attachment checks and neighbor reconciliation retries.
+// syncInterval controls program attachment checks.
 const syncInterval = 30 * time.Second
 
 // ipConfig4 matches struct ip_config4.
@@ -90,34 +89,25 @@ type ipConfig6 struct {
 
 // nodeConfig matches struct node_config.
 type nodeConfig struct {
-	transportMTU      uint32
-	gatewayMTU        uint32
-	gatewayIfIndex    uint32
-	forwardingEnabled uint32
-	ipv4              ipConfig4
-	ipv6              ipConfig6
+	transportMTU   uint32
+	gatewayMTU     uint32
+	gatewayIfIndex uint32
+	ipv4           ipConfig4
+	ipv6           ipConfig6
 }
 
-// storedInterfaceState records the initial attachment target and its availability.
+// storedInterfaceState records the initial attachment target.
 type storedInterfaceState struct {
 	// program is the program attached to the interface, and name the name the interface is looked up by.
 	program string
 	name    string
 	ifIndex int
-	// missing prevents neighbor registration on an absent or replaced interface.
-	missing bool
 }
 
-// client owns the maps, programs, attachments and interface reconciliation state.
+// client owns the maps, programs and interface attachments.
 type client struct {
 	// networkConfig supplies the traffic mode checked during initialization.
 	networkConfig *agentconfig.NetworkConfig
-	// interfaceStore supplies local Pod IPs for neighbor registration.
-	interfaceStore interfaceStore
-	// podUpdateSubscriber delivers CNI Pod lifecycle notifications.
-	podUpdateSubscriber channel.Subscriber
-	// podUpdateCh coalesces CNI Pod notifications.
-	podUpdateCh chan struct{}
 	// mutex protects kernel resources and runtime state during reconciliation, route updates, Stats and Close.
 	mutex sync.Mutex
 	// mapFDs holds open BPF map descriptors by map name.
@@ -128,12 +118,6 @@ type client struct {
 	attachments map[string]*bpf.Attachment
 	// interfaceStates stores initial attachment targets and their availability by program name.
 	interfaceStates map[string]*storedInterfaceState
-	// neighborManager registers Pod and peer Node neighbors for kernel refresh.
-	neighborManager *neighborManager
-	// nextHops maps remote Pod CIDRs to peer Node IPs used for neighbor registration.
-	nextHops map[string]net.IP
-	// nodeConfig is the last configuration successfully written to the node_config map.
-	nodeConfig nodeConfig
 	// initialized is true while maps and programs are ready for use.
 	initialized bool
 }
@@ -141,20 +125,13 @@ type client struct {
 var _ Interface = (*client)(nil)
 
 // NewClient prepares the eBPF client. Initialize creates its kernel resources.
-func NewClient(
-	networkConfig *agentconfig.NetworkConfig,
-	interfaceStore interfaceStore,
-	podUpdateSubscriber channel.Subscriber,
-) Interface {
+func NewClient(networkConfig *agentconfig.NetworkConfig) Interface {
 	return &client{
-		networkConfig:       networkConfig,
-		interfaceStore:      interfaceStore,
-		podUpdateSubscriber: podUpdateSubscriber,
-		podUpdateCh:         make(chan struct{}, 1),
-		mapFDs:              make(map[string]int),
-		programFDs:          make(map[string]int),
-		attachments:         make(map[string]*bpf.Attachment),
-		interfaceStates:     make(map[string]*storedInterfaceState),
+		networkConfig:   networkConfig,
+		mapFDs:          make(map[string]int),
+		programFDs:      make(map[string]int),
+		attachments:     make(map[string]*bpf.Attachment),
+		interfaceStates: make(map[string]*storedInterfaceState),
 	}
 }
 
@@ -188,31 +165,6 @@ func (c *client) Initialize(agentNodeConfig *agentconfig.NodeConfig) error {
 		return fmt.Errorf("error getting the gateway interface %s: %w", agentNodeConfig.GatewayConfig.Name, err)
 	}
 
-	var podCIDRs []*net.IPNet
-	var gatewayIPs []net.IP
-	var families []int
-	if agentNodeConfig.PodIPv4CIDR != nil {
-		podCIDRs = append(podCIDRs, agentNodeConfig.PodIPv4CIDR)
-		gatewayIPs = append(gatewayIPs, agentNodeConfig.GatewayConfig.IPv4)
-		families = append(families, unix.AF_INET)
-	}
-	if agentNodeConfig.PodIPv6CIDR != nil {
-		podCIDRs = append(podCIDRs, agentNodeConfig.PodIPv6CIDR)
-		gatewayIPs = append(gatewayIPs, agentNodeConfig.GatewayConfig.IPv6)
-		families = append(families, unix.AF_INET6)
-	}
-	neighbors := &neighborManager{
-		podCIDRs:   podCIDRs,
-		gatewayIPs: gatewayIPs,
-		families:   families,
-		owned:      make(map[neighborKey]neighborFlags),
-		paused:     true,
-	}
-	if err = neighbors.probe(); err != nil {
-		return fmt.Errorf("managed neighbors are required for eBPF forwarding: %w", err)
-	}
-	c.neighborManager = neighbors
-	c.nextHops = make(map[string]net.IP)
 	// A kernel older than 5.11 accounts the memory of the maps against the locked memory limit rather
 	// than against the cgroup of the process, and the default limit is far below what they need.
 	if err = unix.Setrlimit(unix.RLIMIT_MEMLOCK, &unix.Rlimit{Cur: unix.RLIM_INFINITY, Max: unix.RLIM_INFINITY}); err != nil {
@@ -244,7 +196,6 @@ func (c *client) Initialize(agentNodeConfig *agentconfig.NodeConfig) error {
 		return err
 	}
 	c.initialized = true
-	c.syncNeighbors()
 	klog.InfoS("Loaded the eBPF host datapath",
 		"transportIfIndex", transport.Index,
 		"gatewayIfIndex", gateway.Index,
@@ -258,9 +209,6 @@ func (c *client) Run(stopCh <-chan struct{}) {
 	klog.InfoS("Starting the eBPF client", "interval", syncInterval)
 	defer klog.InfoS("Shutting down the eBPF client")
 
-	subscriberID := c.podUpdateSubscriber.Subscribe(c.processPodUpdate)
-	defer c.podUpdateSubscriber.Unsubscribe(subscriberID)
-
 	ticker := time.NewTicker(syncInterval)
 	defer ticker.Stop()
 	c.sync()
@@ -271,12 +219,6 @@ func (c *client) Run(stopCh <-chan struct{}) {
 			return
 		case <-ticker.C:
 			c.sync()
-		case <-c.podUpdateCh:
-			c.mutex.Lock()
-			if c.initialized {
-				c.syncNeighbors()
-			}
-			c.mutex.Unlock()
 		}
 	}
 }
@@ -294,21 +236,17 @@ func (c *client) sync() {
 				"program", stored.program)
 		}
 	}
-	c.syncNeighbors()
 }
 
 // syncProgram restores a missing program attachment on its original interface.
 func (c *client) syncProgram(stored *storedInterfaceState) error {
 	link, err := netlink.LinkByName(stored.name)
 	if err != nil {
-		stored.missing = true
 		return fmt.Errorf("getting interface %s: %w", stored.name, err)
 	}
 	if link.Attrs().Index != stored.ifIndex {
-		stored.missing = true
 		return fmt.Errorf("interface %s index changed from %d to %d", stored.name, stored.ifIndex, link.Attrs().Index)
 	}
-	stored.missing = false
 
 	if old := c.attachments[stored.program]; old != nil {
 		attached, err := old.Attached()
@@ -427,14 +365,12 @@ func (c *client) relocate(def objects.Program) ([]byte, error) {
 	return patched, nil
 }
 
-// writeNodeConfig updates the map and retains the last successfully written configuration.
-// Call during initialization or with the client mutex held.
+// writeNodeConfig initializes the Node configuration before attaching the programs.
 func (c *client) writeNodeConfig(config nodeConfig) error {
 	key := uint32(0)
 	if err := bpf.UpdateMapElement(c.mapFDs[mapNodeConfig], unsafe.Pointer(&key), unsafe.Pointer(&config), 0); err != nil {
 		return fmt.Errorf("writing the Node configuration: %w", err)
 	}
-	c.nodeConfig = config
 
 	return nil
 }
@@ -457,9 +393,6 @@ func (c *client) AddPodRoute(podCIDR *net.IPNet, nextHop net.IP) error {
 		return fmt.Errorf("adding the route to %s via %s: %w", podCIDR, nextHop, err)
 	}
 
-	c.nextHops[podCIDR.String()] = append(net.IP(nil), nextHop...)
-	c.syncNeighbors()
-
 	return nil
 }
 
@@ -477,9 +410,6 @@ func (c *client) DeletePodRoute(podCIDR *net.IPNet) error {
 	if err != nil && err != unix.ENOENT {
 		return fmt.Errorf("deleting the route to %s: %w", podCIDR, err)
 	}
-	delete(c.nextHops, podCIDR.String())
-	c.syncNeighbors()
-
 	return nil
 }
 
@@ -529,11 +459,6 @@ func (c *client) cleanup() error {
 		}
 		delete(c.attachments, name)
 	}
-	if c.neighborManager != nil {
-		record(c.neighborManager.sync(nil))
-		c.neighborManager = nil
-	}
-	clear(c.nextHops)
 	clear(c.interfaceStates)
 	for name, fd := range c.programFDs {
 		record(unix.Close(fd))

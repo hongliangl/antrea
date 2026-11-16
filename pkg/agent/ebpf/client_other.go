@@ -21,15 +21,10 @@ import (
 	"net"
 
 	agentconfig "antrea.io/antrea/v2/pkg/agent/config"
-	"antrea.io/antrea/v2/pkg/util/channel"
 )
 
 // NewClient prepares a client whose Initialize method reports that Linux is required.
-func NewClient(
-	networkConfig *agentconfig.NetworkConfig,
-	interfaceStore interfaceStore,
-	podUpdateSubscriber channel.Subscriber,
-) Interface {
+func NewClient(networkConfig *agentconfig.NetworkConfig) Interface {
 	return &client{}
 }
 

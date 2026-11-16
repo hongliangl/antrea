@@ -22,8 +22,7 @@
 // where they are, in iptables and in the OVS pipeline.
 //
 // Kernel routes remain installed for unsupported packets and failed route lookups. The programs use
-// bpf_redirect_neigh to obtain Ethernet addresses from the kernel neighbor subsystem. The Agent
-// registers managed neighbors for resolution and refresh.
+// bpf_redirect_neigh for Ethernet addressing, neighbor resolution and revalidation through the kernel.
 //
 // The programs live in bpf/host_datapath.bpf.c. hack/gen-bpf-objects extracts their compiled instructions
 // into internal/objects, so the Agent needs neither a compiler nor an ELF loader at runtime.
@@ -34,11 +33,6 @@ import (
 
 	agentconfig "antrea.io/antrea/v2/pkg/agent/config"
 )
-
-// interfaceStore supplies current Pod IPs without importing the store's metrics dependencies.
-type interfaceStore interface {
-	GetContainerIPs() []net.IP
-}
 
 // Stats counts packet processing outcomes. Redirect counters record attempts, not confirmed delivery.
 type Stats struct {
@@ -61,8 +55,8 @@ type Interface interface {
 	// Initialize creates the maps, loads the programs and attaches them to the Node interfaces.
 	// Call it once, before other methods are used concurrently.
 	Initialize(nodeConfig *agentconfig.NodeConfig) error
-	// Run periodically restores missing program attachments on the original interfaces and reconciles neighbors.
-	// CNI Pod updates trigger neighbor reconciliation. Interface or MTU changes require an Agent restart.
+	// Run periodically restores missing program attachments on the original interfaces.
+	// Interface or MTU changes require an Agent restart.
 	// It must be called after Initialize succeeds.
 	Run(stopCh <-chan struct{})
 	// AddPodRoute records that podCIDR is reachable through nextHop.
